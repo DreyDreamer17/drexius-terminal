@@ -55,6 +55,12 @@ pub fn run() {
             vault::vault_status,
             vault::vault_unlock,
             vault::vault_lock,
+            vault::vault_list,
+            vault::vault_save,
+            vault::vault_delete,
+            vault::serial_list_ports,
+            vault::team_vault_export,
+            vault::team_vault_import,
             // hosts
             vault::hosts_list,
             vault::host_save,

@@ -114,9 +114,9 @@ export function TerminalPane({
 
       // Local PTY shell connection
       if (isLocal) {
-        term.write(`\r\n\x1b[90m→ Spawning local PTY shell…\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[90m→ Spawning ${pane.customShell ? 'custom session' : 'local PTY shell'}…\x1b[0m\r\n`);
         try {
-          const sid = await bridge.spawnLocalPty(term.cols, term.rows, undefined, undefined, (ev) => {
+          const sid = await bridge.spawnLocalPty(term.cols, term.rows, pane.customShell, undefined, (ev) => {
             if (dead()) return;
             switch (ev.type) {
               case 'output':

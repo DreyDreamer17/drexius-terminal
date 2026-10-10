@@ -1,5 +1,28 @@
 export type AuthMethod = 'password' | 'key' | 'agent';
 
+export interface Vault {
+  id: string;
+  name: string;
+  kind: 'personal' | 'team';
+  color?: string | null;
+  description?: string | null;
+  createdAt: number;
+}
+
+export interface SerialPortInfo {
+  portName: string;
+  description?: string | null;
+}
+
+export interface EncryptedTeamVaultBundle {
+  version: number;
+  format: string;
+  vaultName: string;
+  salt: string;
+  nonce: string;
+  ciphertext: string;
+}
+
 export interface Host {
   id: string;
   label: string;
@@ -14,6 +37,7 @@ export interface Host {
   hasSecret: boolean;
   os?: string | null;
   jumpHostId?: string | null;
+  vaultId?: string | null;
 }
 
 export interface GeneratedKeyPair {
@@ -35,6 +59,7 @@ export interface Snippet {
   command: string;
   folder?: string | null;
   tags: string[];
+  vaultId?: string | null;
 }
 
 export interface FileEntry {
@@ -74,6 +99,7 @@ export interface Pane {
   hostId: string;
   isLocal?: boolean;
   resume?: boolean;
+  customShell?: string;
 }
 
 export type Layout = 'single' | 'vertical' | 'horizontal' | 'grid';
@@ -94,6 +120,7 @@ export interface KeychainItem {
   authMethod: AuthMethod;
   hasSecret: boolean;
   updatedAt: number;
+  vaultId?: string | null;
 }
 
 export interface KeychainInput {
@@ -104,6 +131,7 @@ export interface KeychainInput {
   password?: string | null;
   privateKey?: string | null;
   passphrase?: string | null;
+  vaultId?: string | null;
 }
 
 export interface DetectedLocalKey {
@@ -146,6 +174,7 @@ export interface TunnelConfig {
   remoteHost: string;
   remotePort: number;
   updatedAt?: number;
+  vaultId?: string | null;
 }
 
 export interface ActiveTunnelInfo {

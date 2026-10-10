@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key } from 'lucide-react';
-import type { AuthMethod, Host, HostSecret, KeychainItem } from '../lib/types';
+import type { AuthMethod, Host, HostSecret, KeychainItem, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { OS_OPTIONS } from '../lib/os';
 import { cn } from '../utils/cn';
@@ -24,8 +24,36 @@ function detectKeyType(k: string): string | null {
   return 'Unrecognized format';
 }
 
-export function HostModal({ host, onClose, onSave }: { host: Host | null; onClose: () => void; onSave: (h: Host, s?: HostSecret) => void }) {
-  const [h, setH] = useState<Host>(host ?? { id: '', label: '', hostname: '', port: 22, username: 'root', authMethod: 'key', keychainId: null, jumpHostId: null, group: '', tags: [], color: COLORS[0], hasSecret: false });
+export function HostModal({
+  host,
+  vaults,
+  defaultVaultId,
+  onClose,
+  onSave,
+}: {
+  host: Host | null;
+  vaults?: Vault[];
+  defaultVaultId?: string;
+  onClose: () => void;
+  onSave: (h: Host, s?: HostSecret) => void;
+}) {
+  const [h, setH] = useState<Host>(
+    host ?? {
+      id: '',
+      label: '',
+      hostname: '',
+      port: 22,
+      username: 'root',
+      authMethod: 'key',
+      keychainId: null,
+      jumpHostId: null,
+      group: '',
+      tags: [],
+      color: COLORS[0],
+      hasSecret: false,
+      vaultId: defaultVaultId && defaultVaultId !== 'all' ? defaultVaultId : 'personal',
+    }
+  );
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
   const [allHosts, setAllHosts] = useState<Host[]>([]);
   const [password, setPassword] = useState('');
@@ -127,6 +155,23 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
             </select>
             <p className="mt-1 text-[11px] text-slate-500">Route and encrypt this SSH connection through an intermediate bastion server.</p>
           </div>
+          {vaults && vaults.length > 0 && (
+            <div>
+              <label className={label}>Target Vault</label>
+              <select
+                className={input}
+                value={h.vaultId || 'personal'}
+                onChange={(e) => set('vaultId', e.target.value)}
+              >
+                {vaults.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name} ({v.kind === 'personal' ? 'Personal' : 'Team Vault'})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px] text-slate-500">The vault where this host profile and credentials reside.</p>
+            </div>
+          )}
           <div>
             <label className={label}>Credential Source</label>
             <div className="grid grid-cols-2 gap-1 rounded-lg border border-white/10 bg-black/30 p-1 mb-2">

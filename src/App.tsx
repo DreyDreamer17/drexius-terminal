@@ -30,10 +30,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
 import { THEMES } from './lib/themes';
-import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig } from './lib/types';
+import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import { LockScreen } from './components/LockScreen';
 import { HostSidebar } from './components/HostSidebar';
 import { HostModal } from './components/HostModal';
+import { VaultMenu } from './components/VaultMenu';
+import { TeamShareModal } from './components/TeamShareModal';
+import { SerialModal } from './components/SerialModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -98,23 +101,33 @@ export default function App() {
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
   const toast = useCallback((m: string) => { setToastMsg(m); setTimeout(() => setToastMsg((c) => (c === m ? null : c)), 2400); }, []);
+  const [vaults, setVaults] = useState<Vault[]>([]);
+  const [activeVaultId, setActiveVaultId] = useState<string | 'all'>(
+    () => localStorage.getItem('nx.vault.active') ?? 'personal'
+  );
+  const [shareModal, setShareModal] = useState<{ initialTab?: 'share' | 'import' } | null>(null);
+  const [showSerial, setShowSerial] = useState(false);
+
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
   useEffect(() => { localStorage.setItem('nx.zen', zen ? '1' : '0'); }, [zen]);
   useEffect(() => { localStorage.setItem('nx.rail', showRail ? '1' : '0'); }, [showRail]);
   useEffect(() => { localStorage.setItem('nx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
+  useEffect(() => { localStorage.setItem('nx.vault.active', activeVaultId); }, [activeVaultId]);
 
   const refresh = useCallback(async () => {
-    const [h, s, k, tun] = await Promise.all([
+    const [h, s, k, tun, v] = await Promise.all([
       bridge.listHosts(),
       bridge.listSnippets(),
       bridge.listKeychain(),
       bridge.listTunnels(),
+      bridge.listVaults(),
     ]);
     setHosts(h);
     setSnippets(s);
     setKeychain(k);
     setTunnels(tun);
+    setVaults(v);
   }, []);
   useEffect(() => { if (unlocked) refresh(); }, [unlocked, refresh]);
 
@@ -143,6 +156,79 @@ export default function App() {
     setQuick(false);
     setPanel(null);
   }, []);
+
+  const handleConnectSerial = useCallback((port: string, baud: number) => {
+    const shortName = port.split('/').pop() || port;
+    const serialHost: Host = {
+      id: `serial_${port.replace(/[^a-zA-Z0-9]/g, '_')}`,
+      label: `Serial ${shortName}`,
+      hostname: port,
+      port: baud,
+      username: 'serial',
+      authMethod: 'agent',
+      tags: ['serial', `${baud}`],
+      hasSecret: true,
+      os: 'linux',
+      color: '#f59e0b',
+      vaultId: activeVaultId === 'all' ? 'personal' : activeVaultId,
+    };
+    const shellCmd = `picocom -b ${baud} ${port} 2>/dev/null || minicom -D ${port} -b ${baud} 2>/dev/null || tio -b ${baud} ${port} 2>/dev/null || (echo "Configuring ${port} at ${baud} baud..." && stty -F ${port} ${baud} raw -echo && cat ${port})`;
+    const pane: Pane = {
+      id: uid(),
+      hostId: serialHost.id,
+      isLocal: true,
+      customShell: shellCmd,
+    };
+    const tab: Tab = {
+      id: uid(),
+      title: `⚡ ${shortName} (${baud})`,
+      color: '#f59e0b',
+      panes: [pane],
+      layout: 'single',
+      activePaneId: pane.id,
+    };
+    setHosts((prev) => (prev.some((h) => h.id === serialHost.id) ? prev : [serialHost, ...prev]));
+    setTabs((t) => [...t, tab]);
+    setActiveTabId(tab.id);
+    setPanel(null);
+    toast(`Opened Serial terminal on ${port} @ ${baud} baud`);
+  }, [activeVaultId, toast]);
+
+  const handleCreateVault = useCallback(async (v: Vault) => {
+    await bridge.saveVault(v);
+    await refresh();
+    toast(`Vault "${v.name}" created`);
+  }, [refresh, toast]);
+
+  const handleDeleteVault = useCallback(async (id: string) => {
+    await bridge.deleteVault(id);
+    if (activeVaultId === id) setActiveVaultId('personal');
+    await refresh();
+    toast('Vault deleted');
+  }, [activeVaultId, refresh, toast]);
+
+  const handleQuickConnectSsh = useCallback((target: { username: string; hostname: string; port: number }) => {
+    const existing = hosts.find(
+      (h) => h.hostname === target.hostname && h.username === target.username && h.port === target.port
+    );
+    if (existing) {
+      openHost(existing);
+      return;
+    }
+    const newHost: Host = {
+      id: uid(),
+      label: `${target.username}@${target.hostname}${target.port !== 22 ? `:${target.port}` : ''}`,
+      hostname: target.hostname,
+      port: target.port,
+      username: target.username,
+      authMethod: 'password',
+      tags: ['quick'],
+      hasSecret: false,
+      color: '#22d3ee',
+      vaultId: activeVaultId === 'all' ? 'personal' : activeVaultId,
+    };
+    setModal({ host: newHost });
+  }, [hosts, openHost, activeVaultId]);
 
   const splitWith = useCallback((h: Host, pref?: Layout) => {
     if (!activeTab) return openHost(h);
@@ -302,8 +388,17 @@ export default function App() {
             </button>
           </div>
 
-          {/* Quick Hosts & SFTP buttons */}
+          {/* Vault Switcher & Quick Hosts & SFTP buttons */}
           <div className="flex items-center gap-1 shrink-0">
+            <VaultMenu
+              vaults={vaults}
+              activeVaultId={activeVaultId}
+              onSelectVault={setActiveVaultId}
+              onCreateVault={handleCreateVault}
+              onDeleteVault={handleDeleteVault}
+              onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
+              onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
+            />
             <button
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
               title="Hosts / Vaults (⌘⇧K)"
@@ -387,6 +482,14 @@ export default function App() {
             >
               <TerminalIcon className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Local Shell</span>
+            </button>
+            <button
+              onClick={() => setShowSerial(true)}
+              title="Serial terminal (UART / RS-232)"
+              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-amber-400/10 hover:text-amber-200 transition"
+            >
+              <Radio className="h-3.5 w-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Serial</span>
             </button>
             <button title="Split vertical (⌘⇧D)" disabled={!activeTab} onClick={() => splitActive('vertical')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Columns2 className="h-3.5 w-3.5" /></button>
             <button title="Split horizontal (⌘⇧E)" disabled={!activeTab} onClick={() => splitActive('horizontal')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Rows2 className="h-3.5 w-3.5" /></button>
@@ -472,7 +575,19 @@ export default function App() {
             <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
             <aside className="fixed bottom-0 top-10 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 48 }}>
               {panel === 'hosts' && (
-                <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
+                <HostSidebar
+                  hosts={hosts}
+                  vaults={vaults}
+                  activeVaultId={activeVaultId}
+                  onConnect={openHost}
+                  onSplit={(h) => splitWith(h)}
+                  onEdit={(h) => setModal({ host: h })}
+                  onDelete={deleteHost}
+                  onOpenTerminal={openLocalTerminal}
+                  onOpenSerial={() => setShowSerial(true)}
+                  onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
+                  onQuickConnectSsh={handleQuickConnectSsh}
+                />
               )}
               {panel === 'keychain' && (
                 <KeychainPanel
@@ -726,7 +841,32 @@ export default function App() {
         </div>
       )}
 
-      {modal && <HostModal host={modal.host} onClose={() => setModal(null)} onSave={saveHost} />}
+      {modal && (
+        <HostModal
+          host={modal.host}
+          vaults={vaults}
+          defaultVaultId={activeVaultId}
+          onClose={() => setModal(null)}
+          onSave={saveHost}
+        />
+      )}
+      {shareModal && (
+        <TeamShareModal
+          vaults={vaults}
+          hosts={hosts}
+          activeVaultId={activeVaultId}
+          initialTab={shareModal.initialTab}
+          onClose={() => setShareModal(null)}
+          onRefresh={refresh}
+          toast={toast}
+        />
+      )}
+      {showSerial && (
+        <SerialModal
+          onClose={() => setShowSerial(false)}
+          onConnect={handleConnectSerial}
+        />
+      )}
       {showSync && <SyncModal onClose={() => setShowSync(false)} toast={toast} />}
       {toastMsg && <div className="nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>
