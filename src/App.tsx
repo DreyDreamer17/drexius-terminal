@@ -279,31 +279,31 @@ export default function App() {
       className="flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
       style={{ background: theme.xterm.background }}
     >
-      {/* ── Top Bar Header (Logo Menu Toggle, Shortcuts, Tabs & Controls) ── */}
+      {/* Top Header Bar — floating controls across the top */}
       {!zen && (
-        <header className="flex h-10 shrink-0 items-center gap-1.5 px-2 pt-1.5 pb-1 bg-transparent border-0 z-30">
-          {/* Termius-style Left Navigation Controls */}
-          <div className="flex items-center gap-1 shrink-0">
-            {/* App Logo Toggle Button (Acts as the Menu button to toggle side navigation) */}
-            <div className="flex w-[48px] shrink-0 items-center justify-center">
-              <button
-                onClick={() => setShowRail((v) => !v)}
-                title={showRail ? 'Collapse side navigation (⌘⇧B)' : 'Expand side navigation (⌘⇧B)'}
-                className={cn(
-                  'group relative flex h-8 w-8 items-center justify-center rounded-xl transition-all duration-200 cursor-pointer',
-                  showRail
-                    ? 'bg-cyan-500/15 ring-1 ring-cyan-400/40 shadow-[0_0_14px_rgba(34,211,238,0.35)]'
-                    : 'bg-white/[0.04] ring-1 ring-white/10 opacity-75 hover:opacity-100 hover:ring-cyan-400/30 hover:bg-white/[0.08]'
-                )}
-              >
-                <img
-                  src="/nexus-logo.png"
-                  alt="NexusTerminal"
-                  className="h-6 w-6 rounded-lg object-contain transition-transform group-hover:scale-105 group-active:scale-95"
-                />
-              </button>
-            </div>
+        <header className="flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 z-30">
+          {/* Logo / Sidebar Toggle Button (replaces hamburger menu, aligned with rail below) */}
+          <div className="flex w-12 shrink-0 items-center justify-center">
+            <button
+              onClick={() => setShowRail((v) => !v)}
+              title={showRail ? 'Hide sidebar (⌘⇧B)' : 'Show sidebar (⌘⇧B)'}
+              className={cn(
+                'group relative grid h-8 w-8 place-items-center rounded-xl transition-all duration-200 cursor-pointer select-none',
+                showRail
+                  ? 'bg-cyan-500/15 border border-cyan-400/50 shadow-[0_0_16px_rgba(34,211,238,0.35)] hover:bg-cyan-500/25 hover:border-cyan-400/70 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]'
+                  : 'bg-white/[0.04] border border-white/10 opacity-70 hover:opacity-100 hover:bg-white/[0.08] hover:border-white/20'
+              )}
+            >
+              <img
+                src="/nexus-logo.png"
+                alt="NexusTerminal"
+                className="h-5.5 w-5.5 rounded-lg object-contain transition-transform duration-200 group-hover:scale-105 group-active:scale-95"
+              />
+            </button>
+          </div>
 
+          {/* Quick Hosts & SFTP buttons */}
+          <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
               title="Hosts / Vaults (⌘⇧K)"
@@ -438,18 +438,18 @@ export default function App() {
         </header>
       )}
 
-      {/* ── Main workspace body ── */}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
-        {/* Icon rail — floating buttons, no solid dividing wall */}
+      {/* Main App Body */}
+      <div className="flex flex-1 min-h-0 min-w-0 relative">
+        {/* Icon rail — floating buttons aligned directly underneath the logo button */}
         {!zen && showRail && (
-          <nav className="flex w-[48px] shrink-0 flex-col items-center gap-1.5 py-1.5 z-20 bg-transparent">
+          <nav className="flex w-12 shrink-0 flex-col items-center gap-1.5 py-1.5 z-20 bg-transparent">
             {rail.map((r) => (
               <button
                 key={r.id}
                 title={r.label}
                 onClick={r.act}
                 className={cn(
-                  'group relative grid h-9 w-9 place-items-center rounded-xl transition shadow-sm',
+                  'group relative grid h-8 w-8 place-items-center rounded-xl transition shadow-sm',
                   r.on
                     ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-[0_0_12px_rgba(34,211,238,0.25)]'
                     : 'bg-white/[0.04] text-slate-400 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15'
@@ -459,36 +459,18 @@ export default function App() {
                 <r.icon className="h-4 w-4" />
               </button>
             ))}
-            <div className="mt-auto flex flex-col items-center gap-1.5 pb-2">
-              <button
-                title="Zero-knowledge sync"
-                onClick={() => setShowSync(true)}
-                className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"
-              >
-                <Cloud className="h-4 w-4" />
-              </button>
-              <button
-                title="Lock vault"
-                onClick={lock}
-                className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"
-              >
-                <Lock className="h-4 w-4" />
-              </button>
+            <div className="mt-auto flex flex-col items-center gap-1.5 pb-1">
+              <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
+              <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
             </div>
           </nav>
         )}
 
-        {/* Side panel — overlay drawer, terminal keeps full width */}
+        {/* Side panel — overlay drawer */}
         {panel && (
           <>
             <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-            <aside
-              className="fixed bottom-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl"
-              style={{
-                top: zen ? 0 : 40,
-                left: (zen || !showRail) ? 0 : 48,
-              }}
-            >
+            <aside className="fixed bottom-0 top-10 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 48 }}>
               {panel === 'hosts' && (
                 <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
               )}
@@ -525,8 +507,7 @@ export default function App() {
 
         {/* Main workspace */}
         <main className="relative flex min-w-0 flex-1 flex-col">
-
-        {/* Panes */}
+          {/* Panes */}
         <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
           {!tabs.length && <Welcome hosts={hosts} onOpen={openHost} onLocal={openLocalTerminal} onNew={() => setModal({ host: null })} />}
           {tabs.map((t) => {
