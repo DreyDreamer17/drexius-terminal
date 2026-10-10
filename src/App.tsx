@@ -221,20 +221,23 @@ export default function App() {
   ];
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#06080d] text-slate-200 selection:bg-cyan-400/30">
-      {/* Icon rail — hidden in Zen or when collapsed */}
+    <div
+      className="flex h-screen w-screen overflow-hidden text-slate-200 selection:bg-cyan-400/30"
+      style={{ background: theme.xterm.background }}
+    >
+      {/* Icon rail — floating buttons, no solid dividing wall */}
       {!zen && showRail && (
-      <nav className="flex w-[60px] shrink-0 flex-col items-center gap-1 border-r border-white/5 bg-[#080b12] py-3">
-        <img src="/nexus-logo.png" alt="NexusTerminal" className="mb-3 h-9 w-9 rounded-xl shadow-[0_0_24px_-4px_rgba(34,211,238,0.6)]" />
+      <nav className="flex w-[52px] shrink-0 flex-col items-center gap-1.5 py-2.5 z-20 bg-transparent">
+        <img src="/nexus-logo.png" alt="NexusTerminal" className="mb-2 h-8 w-8 rounded-xl shadow-[0_0_20px_-4px_rgba(34,211,238,0.5)]" />
         {rail.map((r) => (
-          <button key={r.id} title={r.label} onClick={r.act} className={cn('group relative grid h-10 w-10 place-items-center rounded-xl transition', r.on ? 'bg-white/[0.07] text-white' : 'text-slate-500 hover:bg-white/[0.04] hover:text-slate-200')}>
-            {r.on && <span className="absolute -left-3 h-5 w-1 rounded-r-full bg-gradient-to-b from-cyan-300 to-fuchsia-400" />}
-            <r.icon className="h-[18px] w-[18px]" />
+          <button key={r.id} title={r.label} onClick={r.act} className={cn('group relative grid h-9 w-9 place-items-center rounded-xl transition shadow-sm', r.on ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-[0_0_12px_rgba(34,211,238,0.25)]' : 'bg-white/[0.04] text-slate-400 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15')}>
+            {r.on && <span className="absolute -left-1.5 h-4 w-1 rounded-r-full bg-gradient-to-b from-cyan-300 to-fuchsia-400" />}
+            <r.icon className="h-4 w-4" />
           </button>
         ))}
-        <div className="mt-auto flex flex-col items-center gap-1">
-          <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-10 w-10 place-items-center rounded-xl text-slate-500 hover:bg-white/[0.04] hover:text-slate-200"><Cloud className="h-[18px] w-[18px]" /></button>
-          <button title="Lock vault" onClick={lock} className="grid h-10 w-10 place-items-center rounded-xl text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"><Lock className="h-[18px] w-[18px]" /></button>
+        <div className="mt-auto flex flex-col items-center gap-1.5">
+          <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
+          <button title="Lock vault" onClick={lock} className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
         </div>
       </nav>
       )}
@@ -243,7 +246,7 @@ export default function App() {
       {panel && (
         <>
           <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-          <aside className="fixed bottom-0 top-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 60 }}>
+          <aside className="fixed bottom-0 top-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 52 }}>
             {panel === 'hosts' && (
               <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
             )}
@@ -280,17 +283,19 @@ export default function App() {
 
       {/* Main workspace */}
       <main className="relative flex min-w-0 flex-1 flex-col">
-        {/* Tab bar — slim, hidden in Zen */}
+        {/* Tab bar — floating controls over the terminal canvas */}
         {!zen && (
-        <div className="flex h-9 shrink-0 items-center gap-1 border-b border-white/5 bg-[#080b12] px-2">
+        <div className="flex h-10 shrink-0 items-center gap-1.5 px-3 pt-1.5 pb-1 bg-transparent border-0">
           {/* Termius-style Left Navigation Controls */}
-          <div className="flex items-center gap-1 pr-1.5 border-r border-white/5 shrink-0">
+          <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => setShowRail((v) => !v)}
-              title={showRail ? 'Collapse icon rail (⌘⇧B)' : 'Expand icon rail (⌘⇧B)'}
+              title={showRail ? 'Hide sidebar rail (⌘⇧B)' : 'Show sidebar rail (⌘⇧B)'}
               className={cn(
-                'grid h-7 w-7 place-items-center rounded-lg transition',
-                showRail ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'
+                'grid h-7 w-7 place-items-center rounded-lg transition border',
+                showRail
+                  ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40'
+                  : 'bg-white/[0.04] border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white hover:border-white/10'
               )}
             >
               <Menu className="h-3.5 w-3.5" />
@@ -299,56 +304,76 @@ export default function App() {
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
               title="Hosts / Vaults (⌘⇧K)"
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition',
-                panel === 'hosts' ? 'bg-cyan-400/15 text-cyan-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                panel === 'hosts'
+                  ? 'bg-cyan-400/20 text-cyan-200 border-cyan-400/40'
+                  : 'bg-white/[0.06] border-white/10 text-slate-300 hover:bg-white/[0.12] hover:text-white hover:border-white/20'
               )}
             >
-              <Server className="h-3.5 w-3.5" />
+              <Server className="h-3.5 w-3.5 text-cyan-400" />
               <span className="font-medium hidden sm:inline">Hosts</span>
             </button>
             <button
               onClick={() => setShowSftp((v) => !v)}
               title="SFTP File Browser (⌘⇧F)"
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition',
-                showSftp ? 'bg-emerald-400/15 text-emerald-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                showSftp
+                  ? 'bg-emerald-400/20 text-emerald-200 border-emerald-400/40'
+                  : 'bg-white/[0.06] border-white/10 text-slate-300 hover:bg-white/[0.12] hover:text-white hover:border-white/20'
               )}
             >
-              <HardDrive className="h-3.5 w-3.5" />
+              <HardDrive className="h-3.5 w-3.5 text-emerald-400" />
               <span className="font-medium hidden sm:inline">SFTP</span>
             </button>
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1">
+          <div className="h-4 w-[1px] bg-white/10 mx-0.5 shrink-0" />
+
+          {/* Floating Tabs */}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5">
             {tabs.map((t) => {
               const tabLive = t.panes.map((p) => registry.get(p.id)?.status);
               const dot = tabLive.includes('disconnected') || tabLive.includes('error') ? 'bg-rose-500' : tabLive.every((s) => s === 'connected') ? 'bg-emerald-400' : 'bg-amber-400';
+              const isActive = t.id === activeTabId;
               return (
-                <div key={t.id} onClick={() => setActiveTabId(t.id)}
-                  className={cn('group relative flex h-8 min-w-[140px] max-w-[220px] cursor-pointer items-center gap-2 rounded-lg px-3 text-xs transition',
-                    t.id === activeTabId ? 'bg-white/[0.07] text-white' : 'text-slate-400 hover:bg-white/[0.03] hover:text-slate-200')}>
-                  {t.id === activeTabId && <span className="absolute inset-x-3 -bottom-[7px] h-[2px] rounded-full" style={{ background: t.color ?? theme.accent }} />}
+                <div
+                  key={t.id}
+                  onClick={() => setActiveTabId(t.id)}
+                  className={cn(
+                    'group relative flex h-7 min-w-[130px] max-w-[220px] cursor-pointer items-center gap-2 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                    isActive
+                      ? 'border-emerald-500/40 bg-emerald-950/70 text-emerald-200 ring-1 ring-emerald-500/20'
+                      : 'border-white/5 bg-white/[0.03] text-slate-400 hover:border-white/10 hover:bg-white/[0.07] hover:text-slate-200'
+                  )}
+                >
                   <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dot)} />
                   <span className="truncate font-medium">{t.title}</span>
-                  {t.panes.length > 1 && <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">{t.panes.length}</span>}
-                  <button onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} className="ml-auto rounded p-0.5 text-slate-500 opacity-0 hover:bg-white/10 hover:text-white group-hover:opacity-100"><X className="h-3 w-3" /></button>
+                  {t.panes.length > 1 && (
+                    <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">{t.panes.length}</span>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(t.id);
+                    }}
+                    className="ml-auto rounded p-0.5 text-slate-400 opacity-60 hover:bg-white/10 hover:text-white hover:opacity-100"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 </div>
               );
             })}
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={openLocalTerminal}
-              title="New local shell (⌘T)"
-              className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/5 hover:text-cyan-300 transition"
-            >
-              <TerminalIcon className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Local Shell</span>
-            </button>
             <div className="relative">
-              <button onClick={() => setQuick((v) => !v)} title="Quick connect (⌘⇧K)" className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-white/5 hover:text-white"><Plus className="h-4 w-4" /></button>
+              <button
+                onClick={() => setQuick((v) => !v)}
+                title="Quick connect (⌘⇧K)"
+                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
               {quick && (
-                <div className="absolute left-0 top-10 z-40 w-72 overflow-hidden rounded-xl border border-white/10 bg-[#0e131d] shadow-2xl">
+                <div className="absolute left-0 top-9 z-40 w-72 overflow-hidden rounded-xl border border-white/10 bg-[#0e131d] shadow-2xl">
                   <div className="border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500">Quick connect</div>
                   <button onClick={openLocalTerminal} className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5">
                     <TerminalIcon className="h-3.5 w-3.5 text-cyan-400" />
@@ -367,14 +392,24 @@ export default function App() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-0.5 border-l border-white/5 pl-2">
-            <button title="Split vertical (⌘⇧D)" disabled={!activeTab} onClick={() => splitActive('vertical')} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-white/5 hover:text-white disabled:opacity-30"><Columns2 className="h-4 w-4" /></button>
-            <button title="Split horizontal (⌘⇧E)" disabled={!activeTab} onClick={() => splitActive('horizontal')} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-white/5 hover:text-white disabled:opacity-30"><Rows2 className="h-4 w-4" /></button>
-            <button title="Grid" disabled={!activeTab || (activeTab?.panes.length ?? 0) < 3} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 disabled:opacity-30"><Grid2x2 className="h-4 w-4" /></button>
+
+          {/* Floating Right Actions */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={openLocalTerminal}
+              title="New local shell (⌘T)"
+              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+            >
+              <TerminalIcon className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Local Shell</span>
+            </button>
+            <button title="Split vertical (⌘⇧D)" disabled={!activeTab} onClick={() => splitActive('vertical')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Columns2 className="h-3.5 w-3.5" /></button>
+            <button title="Split horizontal (⌘⇧E)" disabled={!activeTab} onClick={() => splitActive('horizontal')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Rows2 className="h-3.5 w-3.5" /></button>
+            <button title="Grid" disabled={!activeTab || (activeTab?.panes.length ?? 0) < 3} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 disabled:opacity-30"><Grid2x2 className="h-3.5 w-3.5" /></button>
             <div className="relative">
-              <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 hover:bg-white/5 hover:text-white"><Palette className="h-4 w-4" /></button>
+              <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"><Palette className="h-3.5 w-3.5" /></button>
               {showThemes && (
-                <div className="absolute right-0 top-10 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
+                <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
                   {THEMES.map((t) => (
                     <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
                       <span className="flex h-5 w-8 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
@@ -393,10 +428,9 @@ export default function App() {
                 </div>
               )}
             </div>
-            <button title="SFTP" onClick={() => setShowSftp((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showSftp ? 'text-emerald-300' : 'text-slate-500 hover:text-white')}><HardDrive className="h-4 w-4" /></button>
-            <button title="AI" onClick={() => setShowAI((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showAI ? 'text-fuchsia-300' : 'text-slate-500 hover:text-white')}><Sparkles className="h-4 w-4" /></button>
-            <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showStatusBar ? 'text-cyan-300' : 'text-slate-500 hover:text-white')}><PanelBottom className="h-4 w-4" /></button>
-            <button title="Zen mode (⌘⇧Z)" onClick={() => setZen((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', zen ? 'text-cyan-300' : 'text-slate-500 hover:text-white')}><Maximize2 className="h-4 w-4" /></button>
+            <button title="AI Assistant (⌘⇧A)" onClick={() => setShowAI((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showAI ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Sparkles className="h-3.5 w-3.5" /></button>
+            <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showStatusBar ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><PanelBottom className="h-3.5 w-3.5" /></button>
+            <button title="Zen mode (⌘⇧Z)" onClick={() => setZen((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', zen ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Maximize2 className="h-3.5 w-3.5" /></button>
           </div>
         </div>
         )}
