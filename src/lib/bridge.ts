@@ -21,6 +21,10 @@ import type {
   KeychainInput,
   KeychainItem,
   KnownHost,
+  LocalDeviceInfo,
+  PairedDevice,
+  PairingHostInfo,
+  PairingJoinResult,
   SerialPortInfo,
   SessionEvent,
   Snapshot,
@@ -638,5 +642,57 @@ export const bridge = {
   async importTeamVault(bundle: EncryptedTeamVaultBundle, passphrase: string): Promise<string> {
     if (isTauri) return invoke('team_vault_import', { bundle, passphrase });
     return bundle.vaultName;
+  },
+
+  // ── Direct Device Pairing & LAN Sync ──
+  async pairingStartHost(): Promise<PairingHostInfo> {
+    if (isTauri) return invoke('pairing_start_host');
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    return {
+      pin,
+      ip: '192.168.1.100',
+      port: 48291,
+      deviceName: 'Nexus Web Sandbox',
+      qrPayload: `nxpair://192.168.1.100:48291?pin=${pin}&pk=demo&name=Nexus%20Sandbox`,
+    };
+  },
+
+  async pairingStopHost(): Promise<void> {
+    if (isTauri) return invoke('pairing_stop_host');
+  },
+
+  async pairingJoinClient(targetHost: string, port: number, pin: string, deviceName?: string): Promise<PairingJoinResult> {
+    if (isTauri) return invoke('pairing_join_client', { targetHost, port, pin, deviceName: deviceName ?? null });
+    return {
+      success: true,
+      serverDeviceName: 'Simulated Desktop',
+      vaultsCount: 1,
+      hostsCount: 4,
+      keysCount: 2,
+      snippetsCount: 6,
+    };
+  },
+
+  async pairingListDevices(): Promise<PairedDevice[]> {
+    if (isTauri) return invoke('pairing_list_devices');
+    const stored = localStorage.getItem('nx.paired.devices');
+    return stored ? JSON.parse(stored) : [
+      { id: 'dev-1', deviceName: 'MacBook Pro 16"', deviceType: 'laptop', ipAddress: '192.168.1.45', pairedAt: Date.now() - 86400000 * 3, lastSync: Date.now() - 3600000 },
+    ];
+  },
+
+  async pairingRevokeDevice(id: string): Promise<void> {
+    if (isTauri) return invoke('pairing_revoke_device', { id });
+    const list = await this.pairingListDevices();
+    localStorage.setItem('nx.paired.devices', JSON.stringify(list.filter((d) => d.id !== id)));
+  },
+
+  async pairingGetLocalInfo(): Promise<LocalDeviceInfo> {
+    if (isTauri) return invoke('pairing_get_local_info');
+    return {
+      deviceName: 'Local Workstation',
+      os: 'linux',
+      ip: '192.168.1.105',
+    };
   },
 };

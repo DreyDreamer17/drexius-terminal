@@ -25,6 +25,7 @@ import {
   Terminal as TerminalIcon,
   PanelBottom,
   Radio,
+  QrCode,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
@@ -37,6 +38,7 @@ import { HostModal } from './components/HostModal';
 import { VaultMenu } from './components/VaultMenu';
 import { TeamShareModal } from './components/TeamShareModal';
 import { SerialModal } from './components/SerialModal';
+import { DevicePairingModal } from './components/DevicePairingModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -107,6 +109,7 @@ export default function App() {
   );
   const [shareModal, setShareModal] = useState<{ initialTab?: 'share' | 'import' } | null>(null);
   const [showSerial, setShowSerial] = useState(false);
+  const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
 
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
@@ -398,6 +401,7 @@ export default function App() {
               onDeleteVault={handleDeleteVault}
               onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
               onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
+              onOpenPairingModal={() => setShowPairing({ initialTab: 'share' })}
             />
             <button
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
@@ -563,6 +567,13 @@ export default function App() {
               </button>
             ))}
             <div className="mt-auto flex flex-col items-center gap-1.5 pb-1">
+              <button
+                title="Direct device pairing (QR & PIN LAN sync)"
+                onClick={() => setShowPairing({ initialTab: 'share' })}
+                className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
+              >
+                <QrCode className="h-4 w-4" />
+              </button>
               <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
               <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
             </div>
@@ -867,7 +878,21 @@ export default function App() {
           onConnect={handleConnectSerial}
         />
       )}
-      {showSync && <SyncModal onClose={() => setShowSync(false)} toast={toast} />}
+      {showPairing && (
+        <DevicePairingModal
+          initialTab={showPairing.initialTab}
+          onClose={() => setShowPairing(null)}
+          onRefresh={refresh}
+          toast={toast}
+        />
+      )}
+      {showSync && (
+        <SyncModal
+          onClose={() => setShowSync(false)}
+          onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
+          toast={toast}
+        />
+      )}
       {toastMsg && <div className="nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>
   );
@@ -908,7 +933,15 @@ function Welcome({ hosts, onOpen, onLocal, onNew }: { hosts: Host[]; onOpen: (h:
   );
 }
 
-function SyncModal({ onClose, toast }: { onClose: () => void; toast: (m: string) => void }) {
+function SyncModal({
+  onClose,
+  onOpenPairing,
+  toast,
+}: {
+  onClose: () => void;
+  onOpenPairing: () => void;
+  toast: (m: string) => void;
+}) {
   const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
   const save = async () => {
     localStorage.setItem('nx.sync.relay', url);
@@ -930,7 +963,27 @@ function SyncModal({ onClose, toast }: { onClose: () => void; toast: (m: string)
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400/20 to-violet-500/20 ring-1 ring-white/10"><Cloud className="h-5 w-5 text-cyan-200" /></div>
           <div><h3 className="text-sm font-semibold text-white">Zero-knowledge sync</h3><p className="text-[11px] text-slate-500">End-to-end encrypted · bring your own relay</p></div>
         </div>
-        <ol className="mt-5 space-y-2">
+
+        {/* Direct Wi-Fi / LAN Pairing Shortcut */}
+        <div className="mt-4 rounded-xl border border-cyan-500/20 bg-cyan-950/25 p-3 flex items-center justify-between">
+          <div>
+            <div className="text-xs font-semibold text-cyan-200">No relay? Link directly over LAN</div>
+            <div className="text-[10.5px] text-slate-400">Clone your vault to a second device in 2 seconds via QR & PIN.</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenPairing();
+            }}
+            className="flex items-center gap-1 rounded-lg bg-cyan-500/20 border border-cyan-400/40 px-2.5 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/30 transition shrink-0 shadow-sm"
+          >
+            <QrCode className="h-3.5 w-3.5" />
+            <span>Pair Device</span>
+          </button>
+        </div>
+
+        <ol className="mt-4 space-y-2">
           {steps.map(([k, v], i) => (
             <li key={k} className="flex items-center gap-3 text-xs">
               <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/5 text-[10px] text-slate-400 ring-1 ring-white/10">{i + 1}</span>
@@ -939,7 +992,7 @@ function SyncModal({ onClose, toast }: { onClose: () => void; toast: (m: string)
             </li>
           ))}
         </ol>
-        <label className="mt-5 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL (WebDAV / S3 / self-hosted)</label>
+        <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL (WebDAV / S3 / self-hosted)</label>
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:border-cyan-400/40 focus:outline-none" />
         <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with blinded IDs. New devices pair via an X25519 QR handshake.</p>
         <div className="mt-5 flex justify-end gap-2">
