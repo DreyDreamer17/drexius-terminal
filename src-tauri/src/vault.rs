@@ -57,6 +57,18 @@ pub struct EncryptedTeamVaultBundle {
     pub ciphertext: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedDevice {
+    pub id: String,
+    pub device_name: String,
+    pub device_type: String,
+    pub ip_address: Option<String>,
+    pub public_key: Option<String>,
+    pub paired_at: i64,
+    pub last_sync: i64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
@@ -107,7 +119,7 @@ pub struct HostProfile {
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
-#[derive(Default, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Default, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct HostSecret {
     pub password: Option<String>,
@@ -263,6 +275,10 @@ CREATE TABLE IF NOT EXISTS vaults (
 CREATE TABLE IF NOT EXISTS sync_log (
     record_id TEXT PRIMARY KEY, tbl TEXT NOT NULL, hlc TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS paired_devices (
+    id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL,
+    ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL
+);
 "#;
 
 fn now() -> i64 {
@@ -320,6 +336,7 @@ impl Vault {
         let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", []);
         // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
         let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });

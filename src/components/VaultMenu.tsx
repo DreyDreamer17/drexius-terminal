@@ -9,6 +9,7 @@ import {
   Share2,
   Download,
   Trash2,
+  QrCode,
 } from 'lucide-react';
 import type { Vault } from '../lib/types';
 import { cn } from '../utils/cn';
@@ -21,6 +22,7 @@ interface Props {
   onDeleteVault: (id: string) => Promise<void>;
   onOpenShareModal: () => void;
   onOpenImportModal: () => void;
+  onOpenPairingModal?: () => void;
 }
 
 export function VaultMenu({
@@ -31,6 +33,7 @@ export function VaultMenu({
   onDeleteVault,
   onOpenShareModal,
   onOpenImportModal,
+  onOpenPairingModal,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -205,6 +208,19 @@ export function VaultMenu({
                   <Download className="h-3.5 w-3.5 text-fuchsia-400" />
                   <span>Import Shared Vault (.nxvault)…</span>
                 </button>
+
+                {onOpenPairingModal && (
+                  <button
+                    onClick={() => {
+                      setOpen(false);
+                      onOpenPairingModal();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-amber-300 hover:bg-white/5 transition"
+                  >
+                    <QrCode className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Link Device (QR & PIN)…</span>
+                  </button>
+                )}
               </div>
             </div>
           </>

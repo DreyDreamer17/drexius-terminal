@@ -2,6 +2,7 @@
 
 mod error;
 mod local_pty;
+mod pairing;
 mod sftp;
 mod snapshot;
 mod ssh;
@@ -36,6 +37,7 @@ pub fn run() {
             app.manage(sync::SyncEngine::default());
             app.manage(local_pty::LocalPtyManager::default());
             app.manage(tunnel::TunnelManager::default());
+            app.manage(pairing::PairingManager::default());
 
             // Background snapshot flusher: persists dirty session state every 10 s.
             let handle = app.handle().clone();
@@ -117,6 +119,13 @@ pub fn run() {
             sync::sync_status,
             sync::sync_configure,
             sync::sync_now,
+            // direct device pairing
+            pairing::pairing_start_host,
+            pairing::pairing_stop_host,
+            pairing::pairing_join_client,
+            pairing::pairing_list_devices,
+            pairing::pairing_revoke_device,
+            pairing::pairing_get_local_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NexusTerminal");

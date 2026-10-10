@@ -14,6 +14,39 @@ export interface SerialPortInfo {
   description?: string | null;
 }
 
+export interface PairedDevice {
+  id: string;
+  deviceName: string;
+  deviceType: string;
+  ipAddress?: string | null;
+  publicKey?: string | null;
+  pairedAt: number;
+  lastSync: number;
+}
+
+export interface PairingHostInfo {
+  pin: string;
+  ip: string;
+  port: number;
+  deviceName: string;
+  qrPayload: string;
+}
+
+export interface PairingJoinResult {
+  success: boolean;
+  serverDeviceName: string;
+  vaultsCount: number;
+  hostsCount: number;
+  keysCount: number;
+  snippetsCount: number;
+}
+
+export interface LocalDeviceInfo {
+  deviceName: string;
+  os: string;
+  ip: string;
+}
+
 export interface EncryptedTeamVaultBundle {
   version: number;
   format: string;
