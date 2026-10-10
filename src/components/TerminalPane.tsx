@@ -396,10 +396,15 @@ export function TerminalPane({
       }}
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
       className={cn(
-        'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-xl border transition-colors',
-        active
-          ? 'border-white/15 shadow-[0_0_0_1px_rgba(34,211,238,0.15),0_10px_40px_-10px_rgba(34,211,238,0.25)]'
-          : 'border-white/5'
+        'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-colors',
+        showHeader
+          ? cn(
+              'rounded-xl border',
+              active
+                ? 'border-white/15 shadow-[0_0_0_1px_rgba(34,211,238,0.15),0_10px_40px_-10px_rgba(34,211,238,0.25)]'
+                : 'border-white/5'
+            )
+          : 'rounded-none border-0'
       )}
       style={{ background: theme.xterm.background }}
     >
@@ -452,7 +457,12 @@ export function TerminalPane({
 
       {/* Floating In-Terminal Search Widget */}
       {showSearch && (
-        <div className="absolute right-3 top-10 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur">
+        <div
+          className={cn(
+            'absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur',
+            showHeader ? 'top-10' : 'top-2'
+          )}
+        >
           <input
             ref={searchInputRef}
             type="text"
@@ -530,12 +540,17 @@ export function TerminalPane({
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1 px-2 pt-2">
+      <div className={cn('relative min-h-0 flex-1', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
         <div ref={elRef} className="h-full w-full" />
       </div>
 
       {status === 'connecting' && (
-        <div className="pointer-events-none absolute right-3 top-10 flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-3 py-1 text-[11px] text-slate-300 backdrop-blur">
+        <div
+          className={cn(
+            'pointer-events-none absolute right-3 flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-3 py-1 text-[11px] text-slate-300 backdrop-blur',
+            showHeader ? 'top-10' : 'top-3'
+          )}
+        >
           <Loader2 className="h-3 w-3 animate-spin text-cyan-300" />
           {isLocal ? 'Initializing shell…' : 'Handshaking…'}
         </div>

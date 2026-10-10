@@ -23,6 +23,8 @@ import {
   KeyRound,
   Network,
   Terminal as TerminalIcon,
+  Menu,
+  PanelBottom,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
@@ -78,6 +80,8 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [quick, setQuick] = useState(false);
   const [zen, setZen] = useState(() => localStorage.getItem('nx.zen') === '1');
+  const [showRail, setShowRail] = useState(() => localStorage.getItem('nx.rail') === '1');
+  const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('nx.status') === '1');
 
   const theme = THEMES.find((t) => t.id === themeId) ?? THEMES[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
@@ -93,6 +97,8 @@ export default function App() {
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
   useEffect(() => { localStorage.setItem('nx.zen', zen ? '1' : '0'); }, [zen]);
+  useEffect(() => { localStorage.setItem('nx.rail', showRail ? '1' : '0'); }, [showRail]);
+  useEffect(() => { localStorage.setItem('nx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
 
   const refresh = useCallback(async () => {
     const [h, s, k, tun] = await Promise.all([
@@ -182,6 +188,8 @@ export default function App() {
       else if (k === 'f') { e.preventDefault(); setShowSftp((v) => !v); }
       else if (k === 'k') { e.preventDefault(); setQuick((v) => !v); }
       else if (k === 'z') { e.preventDefault(); setZen((v) => !v); }
+      else if (k === 'b') { e.preventDefault(); setShowRail((v) => !v); }
+      else if (k === '/') { e.preventDefault(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -214,8 +222,8 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#06080d] text-slate-200 selection:bg-cyan-400/30">
-      {/* Icon rail — hidden in Zen */}
-      {!zen && (
+      {/* Icon rail — hidden in Zen or when collapsed */}
+      {!zen && showRail && (
       <nav className="flex w-[60px] shrink-0 flex-col items-center gap-1 border-r border-white/5 bg-[#080b12] py-3">
         <img src="/nexus-logo.png" alt="NexusTerminal" className="mb-3 h-9 w-9 rounded-xl shadow-[0_0_24px_-4px_rgba(34,211,238,0.6)]" />
         {rail.map((r) => (
@@ -235,7 +243,7 @@ export default function App() {
       {panel && (
         <>
           <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-          <aside className="fixed bottom-0 top-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: zen ? 0 : 60 }}>
+          <aside className="fixed bottom-0 top-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 60 }}>
             {panel === 'hosts' && (
               <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
             )}
@@ -275,7 +283,43 @@ export default function App() {
         {/* Tab bar — slim, hidden in Zen */}
         {!zen && (
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-white/5 bg-[#080b12] px-2">
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {/* Termius-style Left Navigation Controls */}
+          <div className="flex items-center gap-1 pr-1.5 border-r border-white/5 shrink-0">
+            <button
+              onClick={() => setShowRail((v) => !v)}
+              title={showRail ? 'Collapse icon rail (⌘⇧B)' : 'Expand icon rail (⌘⇧B)'}
+              className={cn(
+                'grid h-7 w-7 place-items-center rounded-lg transition',
+                showRail ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white'
+              )}
+            >
+              <Menu className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
+              title="Hosts / Vaults (⌘⇧K)"
+              className={cn(
+                'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition',
+                panel === 'hosts' ? 'bg-cyan-400/15 text-cyan-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              )}
+            >
+              <Server className="h-3.5 w-3.5" />
+              <span className="font-medium hidden sm:inline">Hosts</span>
+            </button>
+            <button
+              onClick={() => setShowSftp((v) => !v)}
+              title="SFTP File Browser (⌘⇧F)"
+              className={cn(
+                'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition',
+                showSftp ? 'bg-emerald-400/15 text-emerald-200' : 'text-slate-400 hover:bg-white/5 hover:text-slate-200'
+              )}
+            >
+              <HardDrive className="h-3.5 w-3.5" />
+              <span className="font-medium hidden sm:inline">SFTP</span>
+            </button>
+          </div>
+
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1">
             {tabs.map((t) => {
               const tabLive = t.panes.map((p) => registry.get(p.id)?.status);
               const dot = tabLive.includes('disconnected') || tabLive.includes('error') ? 'bg-rose-500' : tabLive.every((s) => s === 'connected') ? 'bg-emerald-400' : 'bg-amber-400';
@@ -351,6 +395,7 @@ export default function App() {
             </div>
             <button title="SFTP" onClick={() => setShowSftp((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showSftp ? 'text-emerald-300' : 'text-slate-500 hover:text-white')}><HardDrive className="h-4 w-4" /></button>
             <button title="AI" onClick={() => setShowAI((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showAI ? 'text-fuchsia-300' : 'text-slate-500 hover:text-white')}><Sparkles className="h-4 w-4" /></button>
+            <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', showStatusBar ? 'text-cyan-300' : 'text-slate-500 hover:text-white')}><PanelBottom className="h-4 w-4" /></button>
             <button title="Zen mode (⌘⇧Z)" onClick={() => setZen((v) => !v)} className={cn('grid h-8 w-8 place-items-center rounded-lg hover:bg-white/5', zen ? 'text-cyan-300' : 'text-slate-500 hover:text-white')}><Maximize2 className="h-4 w-4" /></button>
           </div>
         </div>
@@ -359,32 +404,59 @@ export default function App() {
         {/* Panes */}
         <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
           {!tabs.length && <Welcome hosts={hosts} onOpen={openHost} onLocal={openLocalTerminal} onNew={() => setModal({ host: null })} />}
-          {tabs.map((t) => (
-            <div key={t.id} className={cn('absolute inset-0 grid gap-2 p-2', t.id !== activeTabId && 'invisible',
-              t.layout === 'vertical' && 'grid-cols-2', t.layout === 'horizontal' && 'grid-rows-2', t.layout === 'grid' && 'grid-cols-2 grid-rows-2')}>
-              {t.panes.map((p) => {
-                const h = hostMap.get(p.hostId);
-                if (!h) return null;
-                return (
-                  <TerminalPane key={p.id} pane={p} host={h} theme={theme} fontSize={fontSize}
-                    active={t.id === activeTabId && t.activePaneId === p.id} showHeader
-                    onFocus={() => focusPane(t.id, p.id)} onClose={() => closePane(t.id, p.id)} onChange={bump} />
-                );
-              })}
-            </div>
-          ))}
+          {tabs.map((t) => {
+            const isSplit = t.panes.length > 1;
+            return (
+              <div
+                key={t.id}
+                className={cn(
+                  'absolute inset-0',
+                  t.id !== activeTabId && 'invisible',
+                  isSplit
+                    ? cn(
+                        'grid gap-1 p-1 bg-black/40',
+                        t.layout === 'vertical' && 'grid-cols-2',
+                        t.layout === 'horizontal' && 'grid-rows-2',
+                        t.layout === 'grid' && 'grid-cols-2 grid-rows-2'
+                      )
+                    : 'flex p-0'
+                )}
+              >
+                {t.panes.map((p) => {
+                  const h = hostMap.get(p.hostId);
+                  if (!h) return null;
+                  return (
+                    <TerminalPane
+                      key={p.id}
+                      pane={p}
+                      host={h}
+                      theme={theme}
+                      fontSize={fontSize}
+                      active={t.id === activeTabId && t.activePaneId === p.id}
+                      showHeader={isSplit}
+                      onFocus={() => focusPane(t.id, p.id)}
+                      onClose={() => closePane(t.id, p.id)}
+                      onChange={bump}
+                    />
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
 
         {showSftp && <SftpDrawer activePaneId={activePaneId} tick={tick} onClose={() => setShowSftp(false)} toast={toast} />}
 
         {/* Status bar */}
-        <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-white/5 bg-[#080b12] px-3 text-[10.5px] text-slate-500">
-          <span className="flex items-center gap-1 text-emerald-400/90"><ShieldCheck className="h-3 w-3" />{isTauri ? 'SQLCipher AES-256' : 'Vault AES-256-GCM (sandbox)'}</span>
-          <span className="flex items-center gap-1"><Activity className="h-3 w-3" />{connected} live session{connected === 1 ? '' : 's'}</span>
-          {activeLive && <span className="flex items-center gap-1 font-mono"><History className="h-3 w-3 text-fuchsia-300" />snapshot: {activeLive.cwd}</span>}
-          <span className="ml-auto flex items-center gap-1"><Command className="h-3 w-3" />⇧K connect · ⇧D split · ⇧A AI · ⇧F SFTP · ⇧Z zen</span>
-          <span className={cn('flex items-center gap-1', isTauri ? 'text-cyan-300' : 'text-amber-300/80')}><Zap className="h-3 w-3" />{isTauri ? 'Native (Tauri)' : 'Browser sandbox'}</span>
-        </footer>
+        {showStatusBar && (
+          <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-white/5 bg-[#080b12] px-3 text-[10.5px] text-slate-500">
+            <span className="flex items-center gap-1 text-emerald-400/90"><ShieldCheck className="h-3 w-3" />{isTauri ? 'SQLCipher AES-256' : 'Vault AES-256-GCM (sandbox)'}</span>
+            <span className="flex items-center gap-1"><Activity className="h-3 w-3" />{connected} live session{connected === 1 ? '' : 's'}</span>
+            {activeLive && <span className="flex items-center gap-1 font-mono"><History className="h-3 w-3 text-fuchsia-300" />snapshot: {activeLive.cwd}</span>}
+            <span className="ml-auto flex items-center gap-1"><Command className="h-3 w-3" />⇧K connect · ⇧D split · ⇧A AI · ⇧F SFTP · ⇧B rail · ⇧/ status</span>
+            <span className={cn('flex items-center gap-1', isTauri ? 'text-cyan-300' : 'text-amber-300/80')}><Zap className="h-3 w-3" />{isTauri ? 'Native (Tauri)' : 'Browser sandbox'}</span>
+          </footer>
+        )}
 
         {/* Zen restore */}
         {zen && (
