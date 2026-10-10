@@ -244,6 +244,7 @@ export default function App() {
                 keychain={keychain}
                 onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
                 onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
+                onRefresh={refresh}
                 toast={toast}
               />
             )}

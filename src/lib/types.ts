@@ -98,6 +98,14 @@ export interface KeychainInput {
   passphrase?: string | null;
 }
 
+export interface DetectedLocalKey {
+  path: string;
+  filename: string;
+  keyType: string;
+  hasPublic: boolean;
+  comment?: string | null;
+}
+
 export interface ConnectionLog {
   id: string;
   hostId?: string | null;

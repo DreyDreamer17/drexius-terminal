@@ -254,6 +254,8 @@ impl Vault {
         // Migrations
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
+        // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
+        let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
         Ok(())
     }
@@ -575,6 +577,277 @@ pub fn keychain_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
         c.execute("DELETE FROM keychain WHERE id=?1", [&id])?;
         c.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&id])?;
         Ok(())
+    })
+}
+
+pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
+    let mut st = c.prepare(
+        "SELECT h.id, h.label, h.username, h.auth_method, s.password, s.private_key, s.passphrase
+         FROM hosts h
+         JOIN secrets s ON s.host_id = h.id
+         WHERE (h.keychain_id IS NULL OR h.keychain_id = '')
+           AND ((s.private_key IS NOT NULL AND s.private_key != '') OR (s.password IS NOT NULL AND s.password != ''))",
+    )?;
+
+    struct HostSecretRow {
+        host_id: String,
+        label: String,
+        username: String,
+        auth_method: String,
+        password: Option<String>,
+        private_key: Option<String>,
+        passphrase: Option<String>,
+    }
+
+    let rows = st
+        .query_map([], |r| {
+            Ok(HostSecretRow {
+                host_id: r.get(0)?,
+                label: r.get(1)?,
+                username: r.get(2)?,
+                auth_method: r.get(3)?,
+                password: r.get(4)?,
+                private_key: r.get(5)?,
+                passphrase: r.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut imported = 0;
+    for r in rows {
+        // If private_key exists, check if that exact private key is already in keychain
+        let existing_id: Option<String> = if let Some(ref pk) = r.private_key {
+            c.query_row(
+                "SELECT id FROM keychain WHERE private_key = ?1 LIMIT 1",
+                [pk],
+                |row| row.get(0),
+            )
+            .optional()?
+        } else {
+            None
+        };
+
+        let kc_id = if let Some(eid) = existing_id {
+            eid
+        } else {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            let kc_label = if !r.username.is_empty() && !r.label.to_lowercase().contains(&r.username.to_lowercase()) {
+                format!("{} ({})", r.label, r.username)
+            } else {
+                r.label.clone()
+            };
+            c.execute(
+                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    new_id,
+                    kc_label,
+                    r.username,
+                    r.auth_method,
+                    r.password,
+                    r.private_key,
+                    r.passphrase,
+                    now()
+                ],
+            )?;
+            imported += 1;
+            new_id
+        };
+
+        c.execute(
+            "UPDATE hosts SET keychain_id = ?1 WHERE id = ?2",
+            params![kc_id, r.host_id],
+        )?;
+    }
+    Ok(imported)
+}
+
+#[tauri::command]
+pub fn keychain_import_from_hosts(vault: State<'_, Vault>) -> AppResult<usize> {
+    vault.with(|c| import_hosts_keys_internal(c))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedLocalKey {
+    pub path: String,
+    pub filename: String,
+    pub key_type: String,
+    pub has_public: bool,
+    pub comment: Option<String>,
+}
+
+#[tauri::command]
+pub fn keychain_detect_local_keys() -> AppResult<Vec<DetectedLocalKey>> {
+    let mut detected = Vec::new();
+    let ssh_dir = match dirs::home_dir() {
+        Some(h) => h.join(".ssh"),
+        None => return Ok(detected),
+    };
+
+    if !ssh_dir.exists() || !ssh_dir.is_dir() {
+        return Ok(detected);
+    }
+
+    let entries = match std::fs::read_dir(&ssh_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(detected),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        if filename.ends_with(".pub")
+            || filename.starts_with("known_hosts")
+            || filename == "config"
+            || filename.starts_with("authorized_keys")
+            || filename == "environment"
+            || filename.ends_with(".old")
+            || filename.ends_with(".bak")
+        {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if metadata.len() > 65536 {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let key_type = if content.contains("BEGIN OPENSSH PRIVATE KEY") {
+            if filename.contains("ed25519") {
+                "OpenSSH ED25519"
+            } else if filename.contains("rsa") {
+                "OpenSSH RSA"
+            } else if filename.contains("ecdsa") {
+                "OpenSSH ECDSA"
+            } else {
+                "OpenSSH Private Key"
+            }
+        } else if content.contains("BEGIN RSA PRIVATE KEY") {
+            "RSA Private Key (PEM)"
+        } else if content.contains("BEGIN EC PRIVATE KEY") {
+            "ECDSA Private Key (PEM)"
+        } else if content.contains("BEGIN DSA PRIVATE KEY") {
+            "DSA Private Key (PEM)"
+        } else if content.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+            "Encrypted PKCS#8 Key"
+        } else if content.contains("BEGIN PRIVATE KEY") {
+            "PKCS#8 Private Key"
+        } else if content.contains("PuTTY-User-Key-File-") {
+            "PuTTY Private Key"
+        } else {
+            continue;
+        };
+
+        let pub_path = ssh_dir.join(format!("{}.pub", filename));
+        let has_public = pub_path.exists();
+        let comment = if has_public {
+            if let Ok(pub_content) = std::fs::read_to_string(&pub_path) {
+                let parts: Vec<&str> = pub_content.trim().split_whitespace().collect();
+                if parts.len() >= 3 {
+                    Some(parts[2..].join(" "))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        detected.push(DetectedLocalKey {
+            path: path.to_string_lossy().to_string(),
+            filename,
+            key_type: key_type.to_string(),
+            has_public,
+            comment,
+        });
+    }
+
+    detected.sort_by(|a, b| a.filename.cmp(&b.filename));
+    Ok(detected)
+}
+
+#[tauri::command]
+pub fn keychain_import_local_key(
+    path: String,
+    label: Option<String>,
+    passphrase: Option<String>,
+    vault: State<'_, Vault>,
+) -> AppResult<String> {
+    let key_path = PathBuf::from(&path);
+    if !key_path.exists() {
+        return Err(AppError::Other(format!("Key file does not exist: {}", path)));
+    }
+    let content = std::fs::read_to_string(&key_path)
+        .map_err(|e| AppError::Other(format!("Failed to read key file: {}", e)))?;
+
+    let filename = key_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("ssh_key");
+
+    let final_label = match label {
+        Some(l) if !l.trim().is_empty() => l.trim().to_string(),
+        _ => {
+            let pub_path = key_path.with_extension("pub");
+            let comment = if pub_path.exists() {
+                std::fs::read_to_string(pub_path).ok().and_then(|p| {
+                    let parts: Vec<&str> = p.trim().split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        Some(parts[2..].join(" "))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(c) = comment {
+                format!("{} ({})", filename, c)
+            } else {
+                filename.to_string()
+            }
+        }
+    };
+
+    vault.with(|c| {
+        let existing: Option<String> = c
+            .query_row(
+                "SELECT id FROM keychain WHERE private_key = ?1 LIMIT 1",
+                [&content],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        c.execute(
+            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at)
+             VALUES(?1, ?2, NULL, 'key', NULL, ?3, ?4, ?5)",
+            params![id, final_label, content, passphrase, now()],
+        )?;
+        Ok(id)
     })
 }
 

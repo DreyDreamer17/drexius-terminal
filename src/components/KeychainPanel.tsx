@@ -1,20 +1,117 @@
-import { useMemo, useState } from 'react';
-import { Search, Plus, Trash2, KeyRound, Key, Shield, Check, X, Eye, EyeOff, User } from 'lucide-react';
-import type { AuthMethod, KeychainInput, KeychainItem } from '../lib/types';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Search,
+  Plus,
+  Trash2,
+  KeyRound,
+  Key,
+  Shield,
+  Check,
+  X,
+  Eye,
+  EyeOff,
+  User,
+  FolderKey,
+  Download,
+  RefreshCw,
+  Upload,
+} from 'lucide-react';
+import { bridge } from '../lib/bridge';
+import type { AuthMethod, DetectedLocalKey, KeychainInput, KeychainItem } from '../lib/types';
 import { cn } from '../utils/cn';
 
 interface Props {
   keychain: KeychainItem[];
   onSave: (k: KeychainInput) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onRefresh?: () => Promise<void>;
   toast: (m: string) => void;
 }
 
-export function KeychainPanel({ keychain, onSave, onDelete, toast }: Props) {
+export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: Props) {
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<KeychainInput | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Local SSH Key Detection & Host Sync states
+  const [detectedLocal, setDetectedLocal] = useState<DetectedLocalKey[]>([]);
+  const [importingLocal, setImportingLocal] = useState<string | null>(null);
+  const [syncingHosts, setSyncingHosts] = useState(false);
+
+  // Scan local ~/.ssh and auto-import unlinked host keys on mount
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const locals = await bridge.detectLocalSshKeys();
+        if (active) setDetectedLocal(locals);
+      } catch {
+        // ignore
+      }
+
+      try {
+        const count = await bridge.importKeychainFromHosts();
+        if (count > 0 && active && onRefresh) {
+          await onRefresh();
+          toast(`Auto-imported ${count} host credential(s) into Keychain`);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleImportLocal = async (localKey: DetectedLocalKey) => {
+    setImportingLocal(localKey.filename);
+    try {
+      await bridge.importLocalSshKey(localKey.path, localKey.filename);
+      if (onRefresh) await onRefresh();
+      toast(`Imported "${localKey.filename}" to Keychain`);
+    } catch (e) {
+      toast(`Failed to import key: ${String(e)}`);
+    } finally {
+      setImportingLocal(null);
+    }
+  };
+
+  const handleImportAllLocal = async () => {
+    if (!detectedLocal.length) return;
+    setImportingLocal('all');
+    try {
+      let count = 0;
+      for (const k of detectedLocal) {
+        await bridge.importLocalSshKey(k.path, k.filename);
+        count++;
+      }
+      if (onRefresh) await onRefresh();
+      toast(`Imported ${count} local key(s) to Keychain`);
+    } catch (e) {
+      toast(`Failed to import local keys: ${String(e)}`);
+    } finally {
+      setImportingLocal(null);
+    }
+  };
+
+  const handleSyncHosts = async () => {
+    setSyncingHosts(true);
+    try {
+      const count = await bridge.importKeychainFromHosts();
+      if (onRefresh) await onRefresh();
+      if (count > 0) {
+        toast(`Imported ${count} credential(s) from hosts into Keychain`);
+      } else {
+        toast('All host credentials are already in Keychain');
+      }
+    } catch (e) {
+      toast(`Sync failed: ${String(e)}`);
+    } finally {
+      setSyncingHosts(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     return keychain.filter((k) =>
@@ -60,23 +157,33 @@ export function KeychainPanel({ keychain, onSave, onDelete, toast }: Props) {
           <h2 className="text-sm font-semibold text-white">Keychain Identities</h2>
           <p className="text-[11px] text-slate-500">Reusable credentials for multiple SSH hosts</p>
         </div>
-        <button
-          onClick={() =>
-            setEditing({
-              id: '',
-              label: '',
-              username: '',
-              authMethod: 'key',
-              password: '',
-              privateKey: '',
-              passphrase: '',
-            })
-          }
-          className="grid h-7 w-7 place-items-center rounded-lg bg-amber-400/10 text-amber-300 ring-1 ring-amber-400/20 hover:bg-amber-400/20"
-          title="New Identity"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleSyncHosts}
+            disabled={syncingHosts}
+            className="grid h-7 w-7 place-items-center rounded-lg border border-white/10 text-slate-400 hover:border-amber-400/30 hover:bg-amber-400/10 hover:text-amber-300 disabled:opacity-40"
+            title="Import keys from existing hosts"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', syncingHosts && 'animate-spin text-amber-400')} />
+          </button>
+          <button
+            onClick={() =>
+              setEditing({
+                id: '',
+                label: '',
+                username: '',
+                authMethod: 'key',
+                password: '',
+                privateKey: '',
+                passphrase: '',
+              })
+            }
+            className="grid h-7 w-7 place-items-center rounded-lg bg-amber-400/10 text-amber-300 ring-1 ring-amber-400/20 hover:bg-amber-400/20"
+            title="New Identity"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="px-3 pb-2">
@@ -166,7 +273,25 @@ export function KeychainPanel({ keychain, onSave, onDelete, toast }: Props) {
           {editing.authMethod === 'key' && (
             <>
               <div>
-                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Private Key (OpenSSH PEM)</label>
+                <div className="mb-1 flex items-center justify-between">
+                  <label className="block text-[10px] uppercase tracking-wider text-slate-400">
+                    Private Key (OpenSSH PEM)
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1 text-[11px] text-amber-300 hover:text-amber-200">
+                    <Upload className="h-3 w-3" />Import file
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (f) {
+                          const txt = await f.text();
+                          setEditing((prev) => (prev ? { ...prev, privateKey: txt, label: prev.label || f.name } : null));
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
                 <textarea
                   className={cn(inputClass, 'h-20 font-mono text-[11px] resize-none')}
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;..."
@@ -206,12 +331,72 @@ export function KeychainPanel({ keychain, onSave, onDelete, toast }: Props) {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
+        {/* Detected Local SSH Keys banner */}
+        {detectedLocal.length > 0 && (
+          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.03] p-2.5">
+            <div className="flex items-center justify-between pb-1.5 border-b border-amber-400/10">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+                <FolderKey className="h-3.5 w-3.5 text-amber-400" />
+                <span>Detected in ~/.ssh ({detectedLocal.length})</span>
+              </div>
+              <button
+                onClick={handleImportAllLocal}
+                disabled={importingLocal !== null}
+                className="text-[11px] font-medium text-amber-400 hover:text-amber-300 disabled:opacity-50"
+              >
+                {importingLocal === 'all' ? 'Importing…' : 'Import All'}
+              </button>
+            </div>
+            <div className="mt-2 space-y-1.5">
+              {detectedLocal.map((k) => (
+                <div
+                  key={k.path}
+                  className="flex items-center justify-between gap-2 rounded-lg bg-black/30 px-2.5 py-1.5 text-xs"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono font-medium text-slate-200 truncate">{k.filename}</span>
+                      <span className="rounded bg-white/5 px-1.5 py-0.2 text-[9px] uppercase tracking-wider text-slate-400">
+                        {k.keyType}
+                      </span>
+                    </div>
+                    {k.comment && (
+                      <div className="text-[10px] text-slate-500 truncate font-mono">{k.comment}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleImportLocal(k)}
+                    disabled={importingLocal === k.filename}
+                    className="flex shrink-0 items-center gap-1 rounded bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-300 hover:bg-amber-400/25 disabled:opacity-50"
+                  >
+                    <Download className="h-3 w-3" />
+                    {importingLocal === k.filename ? 'Importing…' : 'Import'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
         {!filtered.length && (
-          <div className="py-12 text-center text-xs text-slate-500">
+          <div className="py-8 text-center text-xs text-slate-500">
             <KeyRound className="mx-auto mb-2 h-8 w-8 opacity-30 text-amber-300" />
-            No keychain identities yet.
-            <div className="mt-1 text-[11px] text-slate-600">Create one to share credentials across hosts.</div>
+            <p className="text-slate-300 font-medium">No identities stored in Keychain yet</p>
+            <p className="mt-1 text-[11px] text-slate-500 max-w-[240px] mx-auto">
+              Import detected keys from your ~/.ssh folder or sync keys already saved in your hosts.
+            </p>
+            <div className="mt-4 flex flex-col gap-2 items-center">
+              <button
+                onClick={handleSyncHosts}
+                disabled={syncingHosts}
+                className="flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-400/20 disabled:opacity-50"
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', syncingHosts && 'animate-spin text-amber-400')} />
+                {syncingHosts ? 'Importing…' : 'Import from existing hosts'}
+              </button>
+            </div>
           </div>
         )}
 

@@ -12,6 +12,7 @@ import type {
   ActiveTunnelInfo,
   BridgeError,
   ConnectionLog,
+  DetectedLocalKey,
   FileEntry,
   Host,
   HostSecret,
@@ -390,6 +391,21 @@ export const bridge = {
     s.keychain = s.keychain.filter((k) => k.id !== id);
     delete s.keychainSecrets[id];
     await persistDemo();
+  },
+
+  async importKeychainFromHosts(): Promise<number> {
+    if (isTauri) return invoke('keychain_import_from_hosts');
+    return 0;
+  },
+
+  async detectLocalSshKeys(): Promise<DetectedLocalKey[]> {
+    if (isTauri) return invoke('keychain_detect_local_keys');
+    return [];
+  },
+
+  async importLocalSshKey(path: string, label?: string, passphrase?: string): Promise<string> {
+    if (isTauri) return invoke('keychain_import_local_key', { path, label: label ?? null, passphrase: passphrase ?? null });
+    return '';
   },
 
   // ── Connection Logs (Audit & History) ──

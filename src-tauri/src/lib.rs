@@ -64,6 +64,9 @@ pub fn run() {
             vault::keychain_list,
             vault::keychain_save,
             vault::keychain_delete,
+            vault::keychain_import_from_hosts,
+            vault::keychain_detect_local_keys,
+            vault::keychain_import_local_key,
             // connection logs
             vault::logs_list,
             vault::log_toggle_saved,
