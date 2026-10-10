@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Server,
   Code2,
@@ -79,6 +79,9 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [quick, setQuick] = useState(false);
+  const [quickFilter, setQuickFilter] = useState('');
+  const [quickPos, setQuickPos] = useState<{ top: number; left: number }>({ top: 40, left: 200 });
+  const quickBtnRef = useRef<HTMLButtonElement>(null);
   const [zen, setZen] = useState(() => localStorage.getItem('nx.zen') === '1');
   const [showRail, setShowRail] = useState(() => localStorage.getItem('nx.rail') === '1');
   const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('nx.status') === '1');
@@ -176,24 +179,53 @@ export default function App() {
 
   const focusPane = (tabId: string, paneId: string) => setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
 
+  const filteredHosts = useMemo(() => {
+    if (!quickFilter.trim()) return hosts;
+    const q = quickFilter.toLowerCase().trim();
+    return hosts.filter(
+      (h) =>
+        h.label.toLowerCase().includes(q) ||
+        h.hostname.toLowerCase().includes(q) ||
+        h.username.toLowerCase().includes(q)
+    );
+  }, [hosts, quickFilter]);
+
+  const toggleQuick = useCallback((e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setQuick((prev) => {
+      const next = !prev;
+      if (next && quickBtnRef.current) {
+        const rect = quickBtnRef.current.getBoundingClientRect();
+        setQuickPos({
+          top: rect.bottom + 6,
+          left: Math.min(Math.max(8, rect.left), window.innerWidth - 300),
+        });
+        setQuickFilter('');
+      }
+      return next;
+    });
+  }, []);
+
   // ── Shortcuts ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { setQuick(false); setShowThemes(false); setPanel(null); setModal(null); return; }
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
+      if (!e.shiftKey && k === 't') { e.preventDefault(); openLocalTerminal(); return; }
+      if (k === 'k') { e.preventDefault(); toggleQuick(); return; }
+      if (!e.shiftKey) return;
       if (k === 'd') { e.preventDefault(); splitActive('vertical'); }
       else if (k === 'e') { e.preventDefault(); splitActive('horizontal'); }
       else if (k === 'a') { e.preventDefault(); setShowAI((v) => !v); }
       else if (k === 'f') { e.preventDefault(); setShowSftp((v) => !v); }
-      else if (k === 'k') { e.preventDefault(); setQuick((v) => !v); }
       else if (k === 'z') { e.preventDefault(); setZen((v) => !v); }
       else if (k === 'b') { e.preventDefault(); setShowRail((v) => !v); }
       else if (k === '/') { e.preventDefault(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  });
+  }, [toggleQuick, openLocalTerminal]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret) => { await bridge.saveHost(h, s); setModal(null); toast(`Saved ${h.label} to vault`); refresh(); };
@@ -331,7 +363,7 @@ export default function App() {
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 shrink-0" />
 
           {/* Floating Tabs */}
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {tabs.map((t) => {
               const tabLive = t.panes.map((p) => registry.get(p.id)?.status);
               const dot = tabLive.includes('disconnected') || tabLive.includes('error') ? 'bg-rose-500' : tabLive.every((s) => s === 'connected') ? 'bg-emerald-400' : 'bg-amber-400';
@@ -364,33 +396,14 @@ export default function App() {
                 </div>
               );
             })}
-            <div className="relative">
-              <button
-                onClick={() => setQuick((v) => !v)}
-                title="Quick connect (⌘⇧K)"
-                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </button>
-              {quick && (
-                <div className="absolute left-0 top-9 z-40 w-72 overflow-hidden rounded-xl border border-white/10 bg-[#0e131d] shadow-2xl">
-                  <div className="border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wider text-slate-500">Quick connect</div>
-                  <button onClick={openLocalTerminal} className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5">
-                    <TerminalIcon className="h-3.5 w-3.5 text-cyan-400" />
-                    <span className="text-xs text-slate-200">Local Terminal</span>
-                    <span className="ml-auto font-mono text-[10px] text-slate-500">bash / zsh</span>
-                  </button>
-                  {hosts.map((h) => (
-                    <button key={h.id} onClick={() => openHost(h)} className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5">
-                      <span className="h-2 w-2 rounded-full" style={{ background: h.color ?? '#64748b' }} />
-                      <span className="text-xs text-slate-200">{h.label}</span>
-                      <span className="ml-auto font-mono text-[10px] text-slate-500">{h.username}@{h.hostname}</span>
-                    </button>
-                  ))}
-                  <button onClick={() => { setQuick(false); setModal({ host: null }); }} className="flex w-full items-center gap-2 border-t border-white/5 px-3 py-2 text-xs text-cyan-300 hover:bg-white/5"><Plus className="h-3.5 w-3.5" />New host…</button>
-                </div>
-              )}
-            </div>
+            <button
+              ref={quickBtnRef}
+              onClick={toggleQuick}
+              title="Quick connect (⌘K / ⌘⇧K)"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
           </div>
 
           {/* Floating Right Actions */}
@@ -409,7 +422,9 @@ export default function App() {
             <div className="relative">
               <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"><Palette className="h-3.5 w-3.5" /></button>
               {showThemes && (
-                <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setShowThemes(false)} />
+                  <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
                   {THEMES.map((t) => (
                     <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
                       <span className="flex h-5 w-8 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
@@ -426,6 +441,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+              </>
               )}
             </div>
             <button title="AI Assistant (⌘⇧A)" onClick={() => setShowAI((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showAI ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Sparkles className="h-3.5 w-3.5" /></button>
@@ -502,6 +518,154 @@ export default function App() {
         <aside className="w-[340px] shrink-0 border-l border-white/5 bg-[#0b0f17]">
           <AIPanel activePaneId={activePaneId} toast={toast} />
         </aside>
+      )}
+
+      {/* Quick Connect Floating Palette */}
+      {quick && (
+        <div className="fixed inset-0 z-50 select-none" onClick={() => setQuick(false)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              top: `${quickPos.top}px`,
+              left: `${quickPos.left}px`,
+            }}
+            className="absolute w-80 overflow-hidden rounded-xl border border-white/10 bg-[#0e131d]/95 p-2 shadow-2xl backdrop-blur-xl ring-1 ring-white/10"
+          >
+            <div className="flex items-center justify-between px-2 pt-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/5">
+              <span>Quick Connect</span>
+              <span className="font-mono text-[9px] text-slate-500">Esc to close</span>
+            </div>
+
+            {/* Filter / Connect Input */}
+            <div className="px-1 pt-2 pb-1.5">
+              <input
+                autoFocus
+                type="text"
+                value={quickFilter}
+                onChange={(e) => setQuickFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (filteredHosts.length > 0) {
+                      openHost(filteredHosts[0]);
+                      setQuick(false);
+                    } else if (quickFilter.includes('@')) {
+                      const [user, rest] = quickFilter.split('@');
+                      const [hostStr, portStr] = (rest || '').split(':');
+                      const port = parseInt(portStr) || 22;
+                      setQuick(false);
+                      setModal({
+                        host: {
+                          id: uid(),
+                          label: quickFilter,
+                          hostname: hostStr || '',
+                          port,
+                          username: user || 'root',
+                          authMethod: 'key',
+                          tags: [],
+                          hasSecret: false,
+                        },
+                      });
+                    } else if (!quickFilter || 'local terminal'.includes(quickFilter.toLowerCase())) {
+                      openLocalTerminal();
+                      setQuick(false);
+                    }
+                  }
+                }}
+                placeholder="Search hosts or user@host…"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+              />
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-0.5 px-0.5">
+              {/* Local Terminal Option */}
+              {(!quickFilter || 'local terminal'.includes(quickFilter.toLowerCase())) && (
+                <button
+                  onClick={() => {
+                    openLocalTerminal();
+                    setQuick(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-white/10 group transition"
+                >
+                  <div className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-cyan-500/20 text-cyan-300">
+                    <TerminalIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-slate-200 group-hover:text-white">Local Terminal</div>
+                    <div className="text-[10px] text-slate-500">bash / zsh shell</div>
+                  </div>
+                </button>
+              )}
+
+              {/* Saved Hosts */}
+              {filteredHosts.map((h) => (
+                <button
+                  key={h.id}
+                  onClick={() => {
+                    openHost(h);
+                    setQuick(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-white/10 group transition"
+                >
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ background: h.color ?? '#64748b' }}
+                  />
+                  <div className="min-w-0 flex-1 truncate">
+                    <div className="text-xs font-medium text-slate-200 group-hover:text-white">
+                      {h.label}
+                    </div>
+                    <div className="truncate font-mono text-[10px] text-slate-500">
+                      {h.username}@{h.hostname}:{h.port}
+                    </div>
+                  </div>
+                </button>
+              ))}
+
+              {/* Quick connect to new user@host */}
+              {quickFilter.includes('@') && (
+                <button
+                  onClick={() => {
+                    const [user, rest] = quickFilter.split('@');
+                    const [hostStr, portStr] = (rest || '').split(':');
+                    const port = parseInt(portStr) || 22;
+                    setQuick(false);
+                    setModal({
+                      host: {
+                        id: uid(),
+                        label: quickFilter,
+                        hostname: hostStr || '',
+                        port,
+                        username: user || 'root',
+                        authMethod: 'key',
+                        tags: [],
+                        hasSecret: false,
+                      },
+                    });
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-left hover:bg-cyan-500/20 text-cyan-200 transition"
+                >
+                  <Zap className="h-4 w-4 text-cyan-400 shrink-0" />
+                  <div className="min-w-0 flex-1 truncate text-xs">
+                    Quick setup & connect to <span className="font-semibold text-white">{quickFilter}</span>
+                  </div>
+                </button>
+              )}
+            </div>
+
+            <div className="mt-1.5 border-t border-white/5 pt-1.5">
+              <button
+                onClick={() => {
+                  setQuick(false);
+                  setModal({ host: null });
+                }}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-cyan-300 hover:bg-white/5 transition"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>New host…</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modal && <HostModal host={modal.host} onClose={() => setModal(null)} onSave={saveHost} />}
