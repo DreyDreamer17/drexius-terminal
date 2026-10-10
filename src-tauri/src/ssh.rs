@@ -185,15 +185,81 @@ pub fn open_authenticated(
     secret: &HostSecret,
     vault: &Vault,
 ) -> AppResult<(Session, String)> {
-    let addr = (host.hostname.as_str(), host.port)
-        .to_socket_addrs()
-        .map_err(|e| AppError::Network(format!("DNS lookup failed: {e}")))?
-        .next()
-        .ok_or_else(|| AppError::Network("no address resolved".into()))?;
+    let tcp = if let Some(jump_id) = &host.jump_host_id {
+        if !jump_id.trim().is_empty() {
+            // Retrieve Jump Host profile and secret
+            let (jump_host, jump_secret) = vault.host_with_secret(jump_id)?;
+            // Authenticate jump session (handles nested jumps automatically)
+            let (jump_sess, _) = open_authenticated(&jump_host, &jump_secret, vault)?;
 
-    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|e| AppError::Network(format!("{addr}: {e}")))?;
-    tcp.set_nodelay(true)?;
+            // Bind ephemeral loopback listener
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                .map_err(|e| AppError::Network(format!("Failed to bind jump proxy listener: {e}")))?;
+            let local_addr = listener.local_addr()?;
+            let target_host = host.hostname.clone();
+            let target_port = host.port;
+            let jump_sess_clone = jump_sess.clone();
+
+            // Run proxy for the direct-tcpip channel
+            std::thread::Builder::new()
+                .name(format!("jump-proxy-{}", &host.id[..8.min(host.id.len())]))
+                .spawn(move || {
+                    if let Ok((mut client_stream, _)) = listener.accept() {
+                        let _ = client_stream.set_nodelay(true);
+                        if let Ok(mut channel) = jump_sess_clone.channel_direct_tcpip(&target_host, target_port, None) {
+                            let mut client_clone = match client_stream.try_clone() {
+                                Ok(c) => c,
+                                Err(_) => return,
+                            };
+                            let mut channel_clone = channel.clone();
+                            std::thread::spawn(move || {
+                                let mut buf = [0u8; 8192];
+                                while let Ok(n) = channel_clone.read(&mut buf) {
+                                    if n == 0 || client_clone.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                            let mut buf = [0u8; 8192];
+                            while let Ok(n) = client_stream.read(&mut buf) {
+                                if n == 0 || channel.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| AppError::Io(e))?;
+
+            // Connect local TcpStream to the forwarded loopback port
+            let tcp = TcpStream::connect_timeout(&local_addr, Duration::from_secs(10))
+                .map_err(|e| AppError::Network(format!("Failed to connect to jump proxy: {e}")))?;
+            tcp.set_nodelay(true)?;
+            tcp
+        } else {
+            let addr = (host.hostname.as_str(), host.port)
+                .to_socket_addrs()
+                .map_err(|e| AppError::Network(format!("DNS lookup failed: {e}")))?
+                .next()
+                .ok_or_else(|| AppError::Network("no address resolved".into()))?;
+
+            let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+                .map_err(|e| AppError::Network(format!("{addr}: {e}")))?;
+            tcp.set_nodelay(true)?;
+            tcp
+        }
+    } else {
+        let addr = (host.hostname.as_str(), host.port)
+            .to_socket_addrs()
+            .map_err(|e| AppError::Network(format!("DNS lookup failed: {e}")))?
+            .next()
+            .ok_or_else(|| AppError::Network("no address resolved".into()))?;
+
+        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+            .map_err(|e| AppError::Network(format!("{addr}: {e}")))?;
+        tcp.set_nodelay(true)?;
+        tcp
+    };
 
     let mut sess = Session::new()?;
     sess.set_tcp_stream(tcp);

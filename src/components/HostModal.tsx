@@ -25,8 +25,9 @@ function detectKeyType(k: string): string | null {
 }
 
 export function HostModal({ host, onClose, onSave }: { host: Host | null; onClose: () => void; onSave: (h: Host, s?: HostSecret) => void }) {
-  const [h, setH] = useState<Host>(host ?? { id: '', label: '', hostname: '', port: 22, username: 'root', authMethod: 'key', keychainId: null, group: '', tags: [], color: COLORS[0], hasSecret: false });
+  const [h, setH] = useState<Host>(host ?? { id: '', label: '', hostname: '', port: 22, username: 'root', authMethod: 'key', keychainId: null, jumpHostId: null, group: '', tags: [], color: COLORS[0], hasSecret: false });
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
+  const [allHosts, setAllHosts] = useState<Host[]>([]);
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
@@ -36,6 +37,7 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
 
   useEffect(() => {
     bridge.listKeychain().then(setKeychain).catch(() => {});
+    bridge.listHosts().then(setAllHosts).catch(() => {});
   }, []);
 
   const set = <K extends keyof Host>(k: K, v: Host[K]) => setH((p) => ({ ...p, [k]: v }));
@@ -106,6 +108,24 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
               {OS_OPTIONS.map((o) => <option key={o.label} value={o.id}>{o.label}</option>)}
             </select>
             <p className="mt-1 text-[11px] text-slate-600">Auto-detect fills this in after first successful SSH connection (banner + /etc/os-release).</p>
+          </div>
+          <div>
+            <label className={label}>Jump Host (ProxyJump / Bastion)</label>
+            <select
+              className={input}
+              value={h.jumpHostId ?? ''}
+              onChange={(e) => set('jumpHostId', e.target.value || null)}
+            >
+              <option value="">Direct connection (No jump host)</option>
+              {allHosts
+                .filter((x) => x.id !== h.id && x.id !== '__local__' && !x.id.startsWith('local'))
+                .map((jh) => (
+                  <option key={jh.id} value={jh.id}>
+                    {jh.label} ({jh.username}@{jh.hostname}:{jh.port})
+                  </option>
+                ))}
+            </select>
+            <p className="mt-1 text-[11px] text-slate-500">Route and encrypt this SSH connection through an intermediate bastion server.</p>
           </div>
           <div>
             <label className={label}>Credential Source</label>

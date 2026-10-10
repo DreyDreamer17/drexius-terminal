@@ -35,6 +35,7 @@ interface Props {
   onFocus: () => void;
   onClose: () => void;
   onChange: () => void;
+  onData?: (data: string) => void;
 }
 
 export function TerminalPane({
@@ -47,6 +48,7 @@ export function TerminalPane({
   onFocus,
   onClose,
   onChange,
+  onData,
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -63,6 +65,7 @@ export function TerminalPane({
   const [fingerprint, setFingerprint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [bellFlash, setBellFlash] = useState(false);
 
   // Search state
   const [showSearch, setShowSearch] = useState(false);
@@ -283,6 +286,41 @@ export function TerminalPane({
           else if (ch >= ' ' && !data.startsWith('\x1b')) lineRef.current += ch;
         }
       }
+      onData?.(data);
+    });
+
+    // Copy on selection (Termius convenience)
+    term.onSelectionChange(() => {
+      if (term.hasSelection()) {
+        const sel = term.getSelection();
+        if (sel && sel.length > 0) {
+          navigator.clipboard.writeText(sel).catch(() => {});
+        }
+      }
+    });
+
+    // Terminal Bell (Audio chime & visual ping)
+    term.onBell(() => {
+      setBellFlash(true);
+      setTimeout(() => setBellFlash(false), 300);
+      try {
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(800, ctx.currentTime);
+          gain.gain.setValueAtTime(0.06, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.12);
+        }
+      } catch {
+        // audio context blocked or unavailable
+      }
     });
 
     registry.set({
@@ -395,8 +433,26 @@ export function TerminalPane({
         e.currentTarget.classList.toggle('nx-scroll-near', near);
       }}
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
+      onContextMenu={async (e) => {
+        if (termRef.current?.hasSelection()) return;
+        e.preventDefault();
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text) {
+            const sid = sessionRef.current;
+            if (sid) {
+              if (isLocal) bridge.writeLocalPty(sid, text);
+              else bridge.write(sid, text);
+              onData?.(text);
+            }
+          }
+        } catch {
+          // clipboard permission not granted
+        }
+      }}
       className={cn(
         'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-colors',
+        bellFlash && 'ring-2 ring-amber-400 shadow-[0_0_24px_rgba(251,191,36,0.5)]',
         showHeader
           ? cn(
               'rounded-xl border',
@@ -408,6 +464,9 @@ export function TerminalPane({
       )}
       style={{ background: theme.xterm.background }}
     >
+      {bellFlash && (
+        <span className="absolute top-2 right-2 h-2.5 w-2.5 rounded-full bg-amber-400 animate-ping z-30 pointer-events-none" />
+      )}
       {showHeader && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
           <span className={cn('h-1.5 w-1.5 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />

@@ -13,6 +13,14 @@ export interface Host {
   color?: string | null;
   hasSecret: boolean;
   os?: string | null;
+  jumpHostId?: string | null;
+}
+
+export interface GeneratedKeyPair {
+  algorithm: string;
+  privateKey: string;
+  publicKey: string;
+  fingerprint: string;
 }
 
 export interface HostSecret {

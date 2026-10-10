@@ -14,6 +14,7 @@ import type {
   ConnectionLog,
   DetectedLocalKey,
   FileEntry,
+  GeneratedKeyPair,
   Host,
   HostSecret,
   KeychainInput,
@@ -406,6 +407,24 @@ export const bridge = {
   async importLocalSshKey(path: string, label?: string, passphrase?: string): Promise<string> {
     if (isTauri) return invoke('keychain_import_local_key', { path, label: label ?? null, passphrase: passphrase ?? null });
     return '';
+  },
+
+  async generateSshKey(algorithm: string, bits?: number, comment?: string, passphrase?: string): Promise<GeneratedKeyPair> {
+    if (isTauri) {
+      return invoke<GeneratedKeyPair>('keychain_generate_key', {
+        algorithm,
+        bits: bits ?? null,
+        comment: comment ?? null,
+        passphrase: passphrase ?? null,
+      });
+    }
+    const id = uid().slice(0, 8);
+    return {
+      algorithm: algorithm.toUpperCase(),
+      privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n(demo generated ${algorithm} private key)\n-----END OPENSSH PRIVATE KEY-----`,
+      publicKey: `ssh-${algorithm.toLowerCase()} AAAAC3NzaC1lZDI1NTE5AAAAI${id} demo@nexus`,
+      fingerprint: `SHA256:${id.repeat(4)}`,
+    };
   },
 
   // ── Connection Logs (Audit & History) ──
