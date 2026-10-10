@@ -15,9 +15,11 @@ import {
   Download,
   RefreshCw,
   Upload,
+  Zap,
+  Copy,
 } from 'lucide-react';
 import { bridge } from '../lib/bridge';
-import type { AuthMethod, DetectedLocalKey, KeychainInput, KeychainItem } from '../lib/types';
+import type { AuthMethod, DetectedLocalKey, GeneratedKeyPair, KeychainInput, KeychainItem } from '../lib/types';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -38,6 +40,44 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
   const [detectedLocal, setDetectedLocal] = useState<DetectedLocalKey[]>([]);
   const [importingLocal, setImportingLocal] = useState<string | null>(null);
   const [syncingHosts, setSyncingHosts] = useState(false);
+
+  // SSH Key Generator states
+  const [showKeyGen, setShowKeyGen] = useState(false);
+  const [genAlgo, setGenAlgo] = useState<'ed25519' | 'rsa'>('ed25519');
+  const [genLabel, setGenLabel] = useState('');
+  const [genPassphrase, setGenPassphrase] = useState('');
+  const [genComment, setGenComment] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [generatedResult, setGeneratedResult] = useState<GeneratedKeyPair | null>(null);
+  const [copiedPub, setCopiedPub] = useState(false);
+
+  const handleGenerateKey = async () => {
+    setGenerating(true);
+    try {
+      const res = await bridge.generateSshKey(
+        genAlgo,
+        genAlgo === 'rsa' ? 4096 : undefined,
+        genComment || `${genAlgo}@nexus`,
+        genPassphrase || undefined
+      );
+      setGeneratedResult(res);
+      const label = genLabel.trim() || `Generated ${res.algorithm} Key`;
+      await onSave({
+        id: '',
+        label,
+        username: '',
+        authMethod: 'key',
+        privateKey: res.privateKey,
+        passphrase: genPassphrase || null,
+      });
+      if (onRefresh) await onRefresh();
+      toast(`Generated and saved "${label}" to Keychain!`);
+    } catch (e) {
+      toast(`Key generation failed: ${String(e)}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   // Scan local ~/.ssh and auto-import unlinked host keys on mount
   useEffect(() => {
@@ -158,6 +198,17 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
           <p className="text-[11px] text-slate-500">Reusable credentials for multiple SSH hosts</p>
         </div>
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => {
+              setGeneratedResult(null);
+              setShowKeyGen(true);
+            }}
+            className="flex h-7 items-center gap-1 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2 text-xs font-medium text-cyan-300 hover:bg-cyan-400/20 transition"
+            title="Generate new SSH key pair (Ed25519 / RSA)"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Generate</span>
+          </button>
           <button
             onClick={handleSyncHosts}
             disabled={syncingHosts}
@@ -328,6 +379,151 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
               {saving ? 'Saving…' : 'Save'}
             </button>
           </div>
+        </div>
+      )}
+
+      {showKeyGen && (
+        <div className="mx-3 mb-2 space-y-2.5 rounded-xl border border-cyan-400/30 bg-cyan-400/[0.04] p-3 shadow-lg">
+          <div className="flex items-center justify-between text-xs font-semibold text-cyan-300">
+            <span className="flex items-center gap-1.5">
+              <Zap className="h-3.5 w-3.5" />
+              <span>Generate SSH Key Pair</span>
+            </span>
+            <button onClick={() => setShowKeyGen(false)} className="text-slate-500 hover:text-white">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {!generatedResult ? (
+            <>
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Algorithm</label>
+                <div className="grid grid-cols-2 gap-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setGenAlgo('ed25519')}
+                    className={cn(
+                      'rounded border py-1.5 text-center transition',
+                      genAlgo === 'ed25519'
+                        ? 'border-cyan-400/50 bg-cyan-400/20 font-medium text-cyan-200'
+                        : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                    )}
+                  >
+                    Ed25519 (Recommended)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGenAlgo('rsa')}
+                    className={cn(
+                      'rounded border py-1.5 text-center transition',
+                      genAlgo === 'rsa'
+                        ? 'border-cyan-400/50 bg-cyan-400/20 font-medium text-cyan-200'
+                        : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                    )}
+                  >
+                    RSA 4096-bit
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Identity Label *</label>
+                <input
+                  className={inputClass}
+                  placeholder={`e.g. My ${genAlgo.toUpperCase()} Key`}
+                  value={genLabel}
+                  onChange={(e) => setGenLabel(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Key Comment</label>
+                <input
+                  className={inputClass}
+                  placeholder="e.g. user@nexus-workstation"
+                  value={genComment}
+                  onChange={(e) => setGenComment(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Passphrase (Optional)</label>
+                <input
+                  type="password"
+                  className={inputClass}
+                  placeholder="Leave empty for unencrypted key"
+                  value={genPassphrase}
+                  onChange={(e) => setGenPassphrase(e.target.value)}
+                />
+              </div>
+
+              <div className="flex justify-end gap-1.5 pt-1">
+                <button
+                  onClick={() => setShowKeyGen(false)}
+                  className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-400 hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={generating}
+                  onClick={handleGenerateKey}
+                  className="flex items-center gap-1 rounded-lg bg-cyan-400 px-3 py-1 text-xs font-semibold text-black hover:bg-cyan-300 disabled:opacity-50"
+                >
+                  {generating ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Zap className="h-3.5 w-3.5" />
+                  )}
+                  {generating ? 'Generating…' : 'Generate Key'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+                <Check className="h-4 w-4" />
+                <span>Key pair generated and saved to Keychain!</span>
+              </div>
+              <div>
+                <div className="flex items-center justify-between pb-1">
+                  <label className="block text-[10px] uppercase tracking-wider text-slate-400">
+                    Public Key ({generatedResult.algorithm})
+                  </label>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(generatedResult.publicKey);
+                      setCopiedPub(true);
+                      setTimeout(() => setCopiedPub(false), 2000);
+                    }}
+                    className="flex items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200"
+                  >
+                    {copiedPub ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                    <span>{copiedPub ? 'Copied!' : 'Copy Public Key'}</span>
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  rows={3}
+                  value={generatedResult.publicKey}
+                  className={cn(inputClass, 'font-mono text-[10px] text-cyan-200 select-all')}
+                />
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Copy and paste this public key into <code className="text-slate-400 font-mono">~/.ssh/authorized_keys</code> on your servers.
+              </p>
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={() => {
+                    setShowKeyGen(false);
+                    setGeneratedResult(null);
+                  }}
+                  className="rounded-lg bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/15"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

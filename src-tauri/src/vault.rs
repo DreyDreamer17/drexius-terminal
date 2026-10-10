@@ -56,6 +56,8 @@ pub struct HostProfile {
     pub os: Option<String>,
     #[serde(default)]
     pub keychain_id: Option<String>,
+    #[serde(default)]
+    pub jump_host_id: Option<String>,
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
@@ -170,7 +172,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS hosts (
     id TEXT PRIMARY KEY, label TEXT NOT NULL, hostname TEXT NOT NULL, port INTEGER NOT NULL,
     username TEXT NOT NULL, auth_method TEXT NOT NULL, grp TEXT, tags TEXT NOT NULL DEFAULT '[]',
-    color TEXT, os TEXT, keychain_id TEXT, updated_at INTEGER NOT NULL
+    color TEXT, os TEXT, keychain_id TEXT, jump_host_id TEXT, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS secrets (
     host_id TEXT PRIMARY KEY REFERENCES hosts(id) ON DELETE CASCADE,
@@ -254,6 +256,7 @@ impl Vault {
         // Migrations
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
         // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
         let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
@@ -298,7 +301,7 @@ impl Vault {
         self.with(|c| {
             let host_res = c
                 .query_row(
-                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id,
+                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id,
                             s.password, s.private_key, s.passphrase,
                             k.auth_method, k.password, k.private_key, k.passphrase, k.username
                      FROM hosts h
@@ -308,24 +311,24 @@ impl Vault {
                     [id],
                     |r| {
                         let mut profile = row_to_host(r)?;
-                        let k_auth: Option<String> = r.get(14)?;
+                        let k_auth: Option<String> = r.get(15)?;
                         let (auth_method, password, private_key, passphrase, username) = if let Some(ka) = k_auth {
                             // Sourced from Keychain
-                            let k_user: Option<String> = r.get(18)?;
+                            let k_user: Option<String> = r.get(19)?;
                             (
                                 AuthMethod::parse(&ka),
-                                r.get(15)?,
                                 r.get(16)?,
                                 r.get(17)?,
+                                r.get(18)?,
                                 k_user.unwrap_or(profile.username.clone()),
                             )
                         } else {
                             // Sourced from Host Secret
                             (
                                 profile.auth_method,
-                                r.get(11)?,
                                 r.get(12)?,
                                 r.get(13)?,
+                                r.get(14)?,
                                 profile.username.clone(),
                             )
                         };
@@ -446,6 +449,7 @@ fn row_to_host(r: &rusqlite::Row) -> rusqlite::Result<HostProfile> {
         color: r.get(8)?,
         os: r.get::<_, Option<String>>(9).unwrap_or(None),
         keychain_id: r.get::<_, Option<String>>(10).unwrap_or(None),
+        jump_host_id: r.get::<_, Option<String>>(11).unwrap_or(None),
         has_secret: false,
     })
 }
@@ -476,12 +480,12 @@ pub fn vault_lock(vault: State<'_, Vault>) {
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id,
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL) FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id ORDER BY h.grp, h.label",
         )?;
         let rows = st.query_map([], |r| {
             let mut h = row_to_host(r)?;
-            h.has_secret = r.get(11)?;
+            h.has_secret = r.get(12)?;
             Ok(h)
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -496,15 +500,15 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, updated_at=?12",
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, updated_at=?13",
             params![
                 profile.id, profile.label, profile.hostname, profile.port, profile.username,
                 profile.auth_method.as_str(), profile.group,
                 serde_json::to_string(&profile.tags).unwrap_or_else(|_| "[]".into()),
-                profile.color, profile.os, profile.keychain_id, now()
+                profile.color, profile.os, profile.keychain_id, profile.jump_host_id, now()
             ],
         )?;
         if let Some(s) = &secret {
@@ -848,6 +852,89 @@ pub fn keychain_import_local_key(
             params![id, final_label, content, passphrase, now()],
         )?;
         Ok(id)
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedKeyPair {
+    pub algorithm: String,
+    pub private_key: String,
+    pub public_key: String,
+    pub fingerprint: String,
+}
+
+#[tauri::command]
+pub fn keychain_generate_key(
+    algorithm: String,
+    bits: Option<u32>,
+    comment: Option<String>,
+    passphrase: Option<String>,
+) -> AppResult<GeneratedKeyPair> {
+    let algo = match algorithm.to_lowercase().as_str() {
+        "rsa" => "rsa",
+        "ecdsa" => "ecdsa",
+        _ => "ed25519",
+    };
+
+    let temp_dir = std::env::temp_dir();
+    let unique_id = uuid::Uuid::new_v4().to_string();
+    let key_path = temp_dir.join(format!("nx_keygen_{}", unique_id));
+    let pub_path = temp_dir.join(format!("nx_keygen_{}.pub", unique_id));
+
+    let pass = passphrase.unwrap_or_default();
+    let cmt = comment.unwrap_or_else(|| "nexus-generated-key".into());
+
+    let mut cmd = std::process::Command::new("ssh-keygen");
+    cmd.arg("-t").arg(algo);
+    cmd.arg("-N").arg(&pass);
+    cmd.arg("-C").arg(&cmt);
+    cmd.arg("-f").arg(&key_path);
+    cmd.arg("-q");
+
+    if algo == "rsa" {
+        let b = bits.unwrap_or(4096);
+        cmd.arg("-b").arg(b.to_string());
+    }
+
+    let status = cmd
+        .status()
+        .map_err(|e| AppError::Other(format!("Failed to execute ssh-keygen: {e}")))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&key_path);
+        let _ = std::fs::remove_file(&pub_path);
+        return Err(AppError::Other("ssh-keygen execution failed".into()));
+    }
+
+    let private_key = std::fs::read_to_string(&key_path)
+        .map_err(|e| AppError::Other(format!("Failed to read generated private key: {e}")))?;
+    let public_key = std::fs::read_to_string(&pub_path)
+        .map_err(|e| AppError::Other(format!("Failed to read generated public key: {e}")))?;
+
+    // Compute fingerprint via ssh-keygen -lf
+    let mut fp_cmd = std::process::Command::new("ssh-keygen");
+    fp_cmd.arg("-lf").arg(&pub_path);
+    let fingerprint = if let Ok(output) = fp_cmd.output() {
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.len() >= 2 {
+            parts[1].to_string()
+        } else {
+            s
+        }
+    } else {
+        "SHA256:unknown".to_string()
+    };
+
+    let _ = std::fs::remove_file(&key_path);
+    let _ = std::fs::remove_file(&pub_path);
+
+    Ok(GeneratedKeyPair {
+        algorithm: algo.to_uppercase(),
+        private_key,
+        public_key: public_key.trim().to_string(),
+        fingerprint,
     })
 }
 

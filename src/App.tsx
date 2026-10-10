@@ -25,6 +25,7 @@ import {
   Terminal as TerminalIcon,
   Menu,
   PanelBottom,
+  Radio,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
@@ -85,6 +86,7 @@ export default function App() {
   const [zen, setZen] = useState(() => localStorage.getItem('nx.zen') === '1');
   const [showRail, setShowRail] = useState(() => localStorage.getItem('nx.rail') === '1');
   const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('nx.status') === '1');
+  const [broadcast, setBroadcast] = useState(false);
 
   const theme = THEMES.find((t) => t.id === themeId) ?? THEMES[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
@@ -206,6 +208,26 @@ export default function App() {
     });
   }, []);
 
+  const handlePaneData = useCallback(
+    (tabId: string, sourcePaneId: string, data: string) => {
+      if (!broadcast) return;
+      const tab = tabs.find((t) => t.id === tabId);
+      if (!tab || tab.panes.length <= 1) return;
+      for (const p of tab.panes) {
+        if (p.id === sourcePaneId) continue;
+        const reg = registry.get(p.id);
+        if (reg?.sessionId) {
+          if (p.isLocal) {
+            bridge.writeLocalPty(reg.sessionId, data);
+          } else {
+            bridge.write(reg.sessionId, data);
+          }
+        }
+      }
+    },
+    [broadcast, tabs]
+  );
+
   // ── Shortcuts ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -215,7 +237,8 @@ export default function App() {
       if (!e.shiftKey && k === 't') { e.preventDefault(); openLocalTerminal(); return; }
       if (k === 'k') { e.preventDefault(); toggleQuick(); return; }
       if (!e.shiftKey) return;
-      if (k === 'd') { e.preventDefault(); splitActive('vertical'); }
+      if (k === 'i') { e.preventDefault(); setBroadcast((b) => !b); }
+      else if (k === 'd') { e.preventDefault(); splitActive('vertical'); }
       else if (k === 'e') { e.preventDefault(); splitActive('horizontal'); }
       else if (k === 'a') { e.preventDefault(); setShowAI((v) => !v); }
       else if (k === 'f') { e.preventDefault(); setShowSftp((v) => !v); }
@@ -225,7 +248,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal]);
+  }, [toggleQuick, openLocalTerminal, broadcast, tabs]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret) => { await bridge.saveHost(h, s); setModal(null); toast(`Saved ${h.label} to vault`); refresh(); };
@@ -419,6 +442,21 @@ export default function App() {
             <button title="Split vertical (⌘⇧D)" disabled={!activeTab} onClick={() => splitActive('vertical')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Columns2 className="h-3.5 w-3.5" /></button>
             <button title="Split horizontal (⌘⇧E)" disabled={!activeTab} onClick={() => splitActive('horizontal')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Rows2 className="h-3.5 w-3.5" /></button>
             <button title="Grid" disabled={!activeTab || (activeTab?.panes.length ?? 0) < 3} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 disabled:opacity-30"><Grid2x2 className="h-3.5 w-3.5" /></button>
+            {activeTab && activeTab.panes.length > 1 && (
+              <button
+                title={broadcast ? 'Broadcast input: ON (⌘⇧I) — Keys sent to all panes' : 'Broadcast input: OFF (⌘⇧I)'}
+                onClick={() => setBroadcast((b) => !b)}
+                className={cn(
+                  'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition border font-medium',
+                  broadcast
+                    ? 'bg-rose-500/20 text-rose-300 border-rose-500/40 shadow-[0_0_12px_rgba(244,63,94,0.3)] animate-pulse'
+                    : 'bg-white/[0.04] text-slate-400 hover:bg-white/10 hover:text-white border-white/5'
+                )}
+              >
+                <Radio className="h-3.5 w-3.5" />
+                <span className="hidden md:inline">Broadcast</span>
+              </button>
+            )}
             <div className="relative">
               <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"><Palette className="h-3.5 w-3.5" /></button>
               {showThemes && (
@@ -487,6 +525,7 @@ export default function App() {
                       onFocus={() => focusPane(t.id, p.id)}
                       onClose={() => closePane(t.id, p.id)}
                       onChange={bump}
+                      onData={(d) => handlePaneData(t.id, p.id, d)}
                     />
                   );
                 })}
