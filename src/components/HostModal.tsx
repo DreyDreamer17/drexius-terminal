@@ -30,6 +30,7 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
+  const [saveToKeychain, setSaveToKeychain] = useState(false);
   const [tags, setTags] = useState(h.tags.join(', '));
   const keyType = detectKeyType(privateKey);
 
@@ -40,11 +41,31 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
   const set = <K extends keyof Host>(k: K, v: Host[K]) => setH((p) => ({ ...p, [k]: v }));
   const valid = h.hostname.trim() && h.username.trim() && h.port > 0;
 
-  const submit = () => {
+  const submit = async () => {
     if (!valid) return;
+    const finalLabel = h.label.trim() || h.hostname;
+    const finalHost = { ...h, label: finalLabel, tags: tags.split(',').map((t) => t.trim()).filter(Boolean) };
     const secretChanged = !h.keychainId && ((h.authMethod === 'password' && password) || (h.authMethod === 'key' && privateKey));
     const secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
-    onSave({ ...h, label: h.label.trim() || h.hostname, tags: tags.split(',').map((t) => t.trim()).filter(Boolean) }, secret);
+
+    if (saveToKeychain && secretChanged) {
+      try {
+        const kid = await bridge.saveKeychain({
+          id: '',
+          label: `${finalLabel} (${finalHost.username})`,
+          username: finalHost.username,
+          authMethod: finalHost.authMethod,
+          password: password || null,
+          privateKey: privateKey || null,
+          passphrase: passphrase || null,
+        });
+        finalHost.keychainId = kid;
+      } catch (err) {
+        console.error('Failed to auto-save to keychain', err);
+      }
+    }
+
+    onSave(finalHost, secret);
   };
 
   const methods: { id: AuthMethod; label: string; icon: typeof Lock }[] = [
@@ -236,6 +257,21 @@ export function HostModal({ host, onClose, onSave }: { host: Host | null; onClos
                   <p className="rounded-lg border border-white/5 bg-white/[0.02] p-3 text-xs text-slate-400">
                     Uses keys loaded in your local ssh-agent / Pageant / 1Password agent. Nothing secret is stored.
                   </p>
+                )}
+
+                {!h.keychainId && (h.authMethod === 'key' || h.authMethod === 'password') && (
+                  <label className="mt-2.5 flex cursor-pointer items-center gap-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] p-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={saveToKeychain}
+                      onChange={(e) => setSaveToKeychain(e.target.checked)}
+                      className="rounded border-white/20 bg-black/40 text-amber-400 focus:ring-0"
+                    />
+                    <span className="flex items-center gap-1.5 text-amber-200 font-medium">
+                      <Key className="h-3.5 w-3.5 text-amber-400" />
+                      Save as reusable Keychain Identity
+                    </span>
+                  </label>
                 )}
               </>
             )}
