@@ -1,0 +1,65 @@
+[package]
+name = "nexus-terminal"
+version = "0.1.0"
+description = "NexusTerminal — secure, local-first SSH client with local AI"
+authors = ["NexusTerminal Contributors"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "nexus_terminal_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ── App framework ────────────────────────────────────────────
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+
+# ── SSH / SFTP (libssh2 with vendored OpenSSL → reproducible builds) ──
+ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
+
+# ── Encrypted local storage: SQLCipher (AES-256-CBC + HMAC-SHA512 per page) ──
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "serde_json"] }
+
+# ── Cryptography ─────────────────────────────────────────────
+argon2 = "0.5"                       # Master-password KDF (Argon2id)
+chacha20poly1305 = "0.10"            # XChaCha20-Poly1305 for E2EE sync blobs
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }   # Device pairing
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+keyring = "3"                        # Optional OS keychain unlock
+
+# ── Serialization / utils ────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ciborium = "0.2"                     # Compact CBOR for sync payloads
+base64 = "0.22"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+log = "0.4"
+env_logger = "0.11"
+
+# ── Async (sync transport + AI proxy) ─────────────────────────
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+portable-pty = "0.9.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

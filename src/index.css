@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+
+html, body, #root { height: 100%; background: #06080d; }
+body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.08) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+
+.xterm { height: 100%; }
+.xterm .xterm-viewport { background-color: transparent !important; }
+/* Native viewport scrollbar is fully hidden. */
+.xterm .xterm-viewport { scrollbar-width: none !important; -ms-overflow-style: none; scrollbar-color: transparent transparent; }
+.xterm .xterm-viewport::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+
+/* ─── xterm 6 overlay scrollbar: invisible until cursor nears the right edge ─── */
+.xterm .xterm-scrollable-element > .scrollbar.horizontal {
+  display: none !important;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 14px !important;
+  right: 2px !important;
+  opacity: 0 !important;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* When invisible (no scrollback lines), keep it completely unrendered */
+.xterm .xterm-scrollable-element > .scrollbar.vertical.invisible,
+.xterm .xterm-scrollable-element > .scrollbar.vertical.invisible > .slider {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Reveal only when cursor nears right edge, or user hovers the scrollbar track, or is dragging */
+.nx-scroll-near .xterm .xterm-scrollable-element > .scrollbar.vertical,
+.xterm .xterm-scrollable-element > .scrollbar.vertical:hover,
+.xterm .xterm-scrollable-element > .scrollbar.vertical.active,
+.xterm .xterm-scrollable-element > .scrollbar.vertical:has(.slider.active) {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+/* Sleek, slender slider thumb (5px rounded pill) */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 5px !important;
+  right: 2px !important;
+  left: auto !important;
+  border-radius: 9999px !important;
+  background: rgba(255, 255, 255, 0.25) !important;
+  transition: background-color 0.15s ease !important;
+}
+
+/* Subtle, smooth hover on the thumb — no glowing or resizing */
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider:hover,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider.active {
+  background: rgba(255, 255, 255, 0.42) !important;
+}
+
+.xterm-screen { padding-bottom: 4px; }
+
+@keyframes nx-drift { 0%,100% { transform: translate(0,0) scale(1); } 33% { transform: translate(40px,-30px) scale(1.08); } 66% { transform: translate(-30px,20px) scale(0.95); } }
+@keyframes nx-rise { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes nx-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+.nx-blob { animation: nx-drift 18s ease-in-out infinite; }
+.nx-blob-2 { animation: nx-drift 22s ease-in-out infinite reverse; }
+.nx-rise { animation: nx-rise .45s cubic-bezier(.2,.8,.2,1) both; }
+.nx-float { animation: nx-float 5s ease-in-out infinite; }
