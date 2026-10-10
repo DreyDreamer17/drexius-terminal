@@ -7,11 +7,55 @@ use crate::error::{AppError, AppResult};
 use crate::snapshot::Snapshot;
 use argon2::{Algorithm, Argon2, Params, Version};
 use parking_lot::Mutex;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use chacha20poly1305::{
+    aead::{Aead, KeyInit},
+    XChaCha20Poly1305, XNonce,
+};
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultRecord {
+    pub id: String,
+    pub name: String,
+    pub kind: String, // "personal" | "team"
+    pub color: Option<String>,
+    pub description: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPortInfo {
+    pub port_name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamVaultPayload {
+    pub vault: VaultRecord,
+    pub hosts: Vec<HostProfile>,
+    pub keychain: Vec<KeychainItem>,
+    pub tunnels: Vec<TunnelConfig>,
+    pub snippets: Vec<Snippet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedTeamVaultBundle {
+    pub version: u32,
+    pub format: String,
+    pub vault_name: String,
+    pub salt: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -58,6 +102,8 @@ pub struct HostProfile {
     pub keychain_id: Option<String>,
     #[serde(default)]
     pub jump_host_id: Option<String>,
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
@@ -88,6 +134,8 @@ pub struct KeychainItem {
     pub auth_method: AuthMethod,
     pub has_secret: bool,
     pub updated_at: i64,
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,6 +148,7 @@ pub struct KeychainInput {
     pub password: Option<String>,
     pub private_key: Option<String>,
     pub passphrase: Option<String>,
+    pub vault_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +188,8 @@ pub struct TunnelConfig {
     pub remote_port: u16,
     #[serde(default)]
     pub updated_at: i64,
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +200,8 @@ pub struct Snippet {
     pub command: String,
     pub folder: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub vault_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -203,6 +256,10 @@ CREATE TABLE IF NOT EXISTS tunnels (
     local_host TEXT NOT NULL, local_port INTEGER NOT NULL, remote_host TEXT NOT NULL, remote_port INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vaults (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal',
+    color TEXT, description TEXT, created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sync_log (
     record_id TEXT PRIMARY KEY, tbl TEXT NOT NULL, hlc TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
 );
@@ -221,7 +278,7 @@ impl Vault {
         self.path.with_extension("salt")
     }
 
-    fn derive_key(password: &str, salt: &[u8]) -> AppResult<Zeroizing<[u8; 32]>> {
+    pub fn derive_key(password: &str, salt: &[u8]) -> AppResult<Zeroizing<[u8; 32]>> {
         let params = Params::new(64 * 1024, 3, 1, Some(32)).map_err(|e| AppError::Crypto(e.to_string()))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let mut key = Zeroizing::new([0u8; 32]);
@@ -254,9 +311,15 @@ impl Vault {
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         conn.execute_batch(SCHEMA)?;
         // Migrations
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS vaults (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal', color TEXT, description TEXT, created_at INTEGER NOT NULL)", []);
+        let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+        let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+        let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
         let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
@@ -301,7 +364,7 @@ impl Vault {
         self.with(|c| {
             let host_res = c
                 .query_row(
-                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id,
+                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
                             s.password, s.private_key, s.passphrase,
                             k.auth_method, k.password, k.private_key, k.passphrase, k.username
                      FROM hosts h
@@ -311,24 +374,24 @@ impl Vault {
                     [id],
                     |r| {
                         let mut profile = row_to_host(r)?;
-                        let k_auth: Option<String> = r.get(15)?;
+                        let k_auth: Option<String> = r.get(16)?;
                         let (auth_method, password, private_key, passphrase, username) = if let Some(ka) = k_auth {
                             // Sourced from Keychain
-                            let k_user: Option<String> = r.get(19)?;
+                            let k_user: Option<String> = r.get(20)?;
                             (
                                 AuthMethod::parse(&ka),
-                                r.get(16)?,
                                 r.get(17)?,
                                 r.get(18)?,
+                                r.get(19)?,
                                 k_user.unwrap_or(profile.username.clone()),
                             )
                         } else {
                             // Sourced from Host Secret
                             (
                                 profile.auth_method,
-                                r.get(12)?,
                                 r.get(13)?,
                                 r.get(14)?,
+                                r.get(15)?,
                                 profile.username.clone(),
                             )
                         };
@@ -412,7 +475,7 @@ impl Vault {
     pub fn tunnel_get(&self, id: &str) -> AppResult<TunnelConfig> {
         self.with(|c| {
             c.query_row(
-                "SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at
+                "SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id
                  FROM tunnels WHERE id=?1",
                 [id],
                 |r| {
@@ -426,6 +489,7 @@ impl Vault {
                         remote_host: r.get(6)?,
                         remote_port: r.get(7)?,
                         updated_at: r.get(8)?,
+                        vault_id: r.get(9)?,
                     })
                 },
             )
@@ -450,6 +514,7 @@ fn row_to_host(r: &rusqlite::Row) -> rusqlite::Result<HostProfile> {
         os: r.get::<_, Option<String>>(9).unwrap_or(None),
         keychain_id: r.get::<_, Option<String>>(10).unwrap_or(None),
         jump_host_id: r.get::<_, Option<String>>(11).unwrap_or(None),
+        vault_id: r.get::<_, Option<String>>(12).unwrap_or(None),
         has_secret: false,
     })
 }
@@ -480,12 +545,12 @@ pub fn vault_lock(vault: State<'_, Vault>) {
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id,
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL) FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id ORDER BY h.grp, h.label",
         )?;
         let rows = st.query_map([], |r| {
             let mut h = row_to_host(r)?;
-            h.has_secret = r.get(12)?;
+            h.has_secret = r.get(13)?;
             Ok(h)
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -500,15 +565,16 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, updated_at=?13",
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?14",
             params![
                 profile.id, profile.label, profile.hostname, profile.port, profile.username,
                 profile.auth_method.as_str(), profile.group,
                 serde_json::to_string(&profile.tags).unwrap_or_else(|_| "[]".into()),
-                profile.color, profile.os, profile.keychain_id, profile.jump_host_id, now()
+                profile.color, profile.os, profile.keychain_id, profile.jump_host_id,
+                profile.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
         if let Some(s) = &secret {
@@ -536,7 +602,7 @@ pub fn host_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
 pub fn keychain_list(vault: State<'_, Vault>) -> AppResult<Vec<KeychainItem>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at
+            "SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id
              FROM keychain ORDER BY label",
         )?;
         let rows = st.query_map([], |r| {
@@ -548,6 +614,7 @@ pub fn keychain_list(vault: State<'_, Vault>) -> AppResult<Vec<KeychainItem>> {
                 auth_method: AuthMethod::parse(&auth),
                 has_secret: r.get(4)?,
                 updated_at: r.get(5)?,
+                vault_id: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -562,13 +629,13 @@ pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
-                 password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase), updated_at=?8",
+                 password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase), vault_id=?8, updated_at=?9",
             params![
                 id, input.label, input.username, input.auth_method.as_str(),
-                input.password, input.private_key, input.passphrase, now()
+                input.password, input.private_key, input.passphrase, input.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
         Ok(id)
@@ -1026,7 +1093,7 @@ pub fn host_trust_key(host: String, port: u16, fingerprint: String, vault: State
 pub fn tunnels_list(vault: State<'_, Vault>) -> AppResult<Vec<TunnelConfig>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at
+            "SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id
              FROM tunnels ORDER BY label",
         )?;
         let rows = st.query_map([], |r| {
@@ -1040,6 +1107,7 @@ pub fn tunnels_list(vault: State<'_, Vault>) -> AppResult<Vec<TunnelConfig>> {
                 remote_host: r.get(6)?,
                 remote_port: r.get(7)?,
                 updated_at: r.get(8)?,
+                vault_id: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1053,13 +1121,14 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
-                 remote_host=?7, remote_port=?8, updated_at=?9",
+                 remote_host=?7, remote_port=?8, vault_id=?9, updated_at=?10",
             params![
                 tunnel.id, tunnel.label, tunnel.host_id, tunnel.forward_type,
-                tunnel.local_host, tunnel.local_port, tunnel.remote_host, tunnel.remote_port, now()
+                tunnel.local_host, tunnel.local_port, tunnel.remote_host, tunnel.remote_port,
+                tunnel.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
         Ok(tunnel.id.clone())
@@ -1079,7 +1148,7 @@ pub fn tunnel_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
 #[tauri::command]
 pub fn snippets_list(vault: State<'_, Vault>) -> AppResult<Vec<Snippet>> {
     vault.with(|c| {
-        let mut st = c.prepare("SELECT id, name, command, folder, tags FROM snippets ORDER BY folder, name")?;
+        let mut st = c.prepare("SELECT id, name, command, folder, tags, vault_id FROM snippets ORDER BY folder, name")?;
         let rows = st.query_map([], |r| {
             let tags: String = r.get(4)?;
             Ok(Snippet {
@@ -1088,6 +1157,7 @@ pub fn snippets_list(vault: State<'_, Vault>) -> AppResult<Vec<Snippet>> {
                 command: r.get(2)?,
                 folder: r.get(3)?,
                 tags: serde_json::from_str(&tags).unwrap_or_default(),
+                vault_id: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1101,10 +1171,11 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
     }
     vault.with(|c| {
         c.execute(
-            "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 snippet.id, snippet.name, snippet.command, snippet.folder,
-                serde_json::to_string(&snippet.tags).unwrap_or_else(|_| "[]".into()), now()
+                serde_json::to_string(&snippet.tags).unwrap_or_else(|_| "[]".into()),
+                snippet.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
         Ok(snippet.id.clone())
@@ -1116,5 +1187,320 @@ pub fn snippet_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
         c.execute("DELETE FROM snippets WHERE id=?1", [id])?;
         Ok(())
+    })
+}
+
+// ── Multi-Vault Management ──
+
+#[tauri::command]
+pub fn vault_list(vault: State<'_, Vault>) -> AppResult<Vec<VaultRecord>> {
+    vault.with(|c| {
+        let mut st = c.prepare("SELECT id, name, kind, color, description, created_at FROM vaults ORDER BY created_at ASC")?;
+        let rows = st.query_map([], |r| {
+            Ok(VaultRecord {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                kind: r.get(2)?,
+                color: r.get(3)?,
+                description: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?;
+        let mut res = rows.collect::<Result<Vec<_>, _>>()?;
+        if res.is_empty() {
+            let personal = VaultRecord {
+                id: "personal".into(),
+                name: "Personal Vault".into(),
+                kind: "personal".into(),
+                color: Some("#22d3ee".into()),
+                description: Some("Your private hosts & credentials".into()),
+                created_at: now(),
+            };
+            let _ = c.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & credentials', ?1)", [personal.created_at]);
+            res.push(personal);
+        }
+        Ok(res)
+    })
+}
+
+#[tauri::command]
+pub fn vault_save(mut record: VaultRecord, vault: State<'_, Vault>) -> AppResult<String> {
+    if record.id.is_empty() {
+        record.id = uuid::Uuid::new_v4().to_string();
+    }
+    vault.with(|c| {
+        c.execute(
+            "INSERT INTO vaults(id, name, kind, color, description, created_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
+            params![record.id, record.name, record.kind, record.color, record.description, record.created_at],
+        )?;
+        Ok(record.id)
+    })
+}
+
+#[tauri::command]
+pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
+    if id == "personal" {
+        return Err(AppError::Other("Cannot delete the default Personal Vault".into()));
+    }
+    vault.with(|c| {
+        c.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&id])?;
+        c.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&id])?;
+        c.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&id])?;
+        c.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&id])?;
+        c.execute("DELETE FROM vaults WHERE id=?1", [&id])?;
+        Ok(())
+    })
+}
+
+// ── Hardware Serial Port Listing ──
+
+#[tauri::command]
+pub fn serial_list_ports() -> Vec<SerialPortInfo> {
+    let mut ports = Vec::new();
+    
+    // Check /dev/serial/by-id/ on Linux
+    if let Ok(entries) = std::fs::read_dir("/dev/serial/by-id") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(target) = std::fs::canonicalize(&path) {
+                let name = target.to_string_lossy().to_string();
+                let desc = entry.file_name().to_string_lossy().to_string();
+                ports.push(SerialPortInfo {
+                    port_name: name,
+                    description: Some(desc),
+                });
+            }
+        }
+    }
+    
+    // Common Linux/POSIX TTY devices
+    let glob_patterns = [
+        "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2", "/dev/ttyUSB3",
+        "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2",
+        "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2",
+    ];
+    for p in glob_patterns {
+        if std::path::Path::new(p).exists() && !ports.iter().any(|x| x.port_name == p) {
+            ports.push(SerialPortInfo {
+                port_name: p.to_string(),
+                description: None,
+            });
+        }
+    }
+    
+    if ports.is_empty() {
+        ports.push(SerialPortInfo {
+            port_name: "/dev/ttyUSB0".to_string(),
+            description: Some("USB-to-Serial UART Adapter".to_string()),
+        });
+        ports.push(SerialPortInfo {
+            port_name: "/dev/ttyACM0".to_string(),
+            description: Some("CDC ACM USB Serial Device".to_string()),
+        });
+    }
+    
+    ports
+}
+
+// ── Zero-Knowledge Team Sharing (Encrypted .nxvault Bundles) ──
+
+#[tauri::command]
+pub fn team_vault_export(
+    vault_id: String,
+    passphrase: String,
+    vault: State<'_, Vault>,
+) -> AppResult<EncryptedTeamVaultBundle> {
+    if passphrase.trim().is_empty() {
+        return Err(AppError::Other("Passphrase cannot be empty".into()));
+    }
+
+    let payload = vault.with(|c| {
+        let v_record: VaultRecord = c.query_row(
+            "SELECT id, name, kind, color, description, created_at FROM vaults WHERE id=?1",
+            [&vault_id],
+            |r| {
+                Ok(VaultRecord {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    kind: r.get(2)?,
+                    color: r.get(3)?,
+                    description: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            },
+        ).unwrap_or_else(|_| VaultRecord {
+            id: vault_id.clone(),
+            name: "Team Vault".into(),
+            kind: "team".into(),
+            color: Some("#10b981".into()),
+            description: Some("Shared Team Vault".into()),
+            created_at: now(),
+        });
+
+        let mut st_hosts = c.prepare(
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
+                    (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL)
+             FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id
+             WHERE h.vault_id = ?1",
+        )?;
+        let hosts = st_hosts.query_map([&vault_id], |r| {
+            let mut h = row_to_host(r)?;
+            h.has_secret = r.get(13)?;
+            Ok(h)
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        let mut st_snips = c.prepare("SELECT id, name, command, folder, tags, vault_id FROM snippets WHERE vault_id = ?1")?;
+        let snippets = st_snips.query_map([&vault_id], |r| {
+            let tags: String = r.get(4)?;
+            Ok(Snippet {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                command: r.get(2)?,
+                folder: r.get(3)?,
+                tags: serde_json::from_str(&tags).unwrap_or_default(),
+                vault_id: r.get(5)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        let mut st_tun = c.prepare("SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id FROM tunnels WHERE vault_id = ?1")?;
+        let tunnels = st_tun.query_map([&vault_id], |r| {
+            Ok(TunnelConfig {
+                id: r.get(0)?,
+                label: r.get(1)?,
+                host_id: r.get(2)?,
+                forward_type: r.get(3)?,
+                local_host: r.get(4)?,
+                local_port: r.get(5)?,
+                remote_host: r.get(6)?,
+                remote_port: r.get(7)?,
+                updated_at: r.get(8)?,
+                vault_id: r.get(9)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        let mut st_kc = c.prepare("SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id FROM keychain WHERE vault_id = ?1")?;
+        let keychain = st_kc.query_map([&vault_id], |r| {
+            let auth: String = r.get(3)?;
+            Ok(KeychainItem {
+                id: r.get(0)?,
+                label: r.get(1)?,
+                username: r.get(2)?,
+                auth_method: AuthMethod::parse(&auth),
+                has_secret: r.get(4)?,
+                updated_at: r.get(5)?,
+                vault_id: r.get(6)?,
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(TeamVaultPayload {
+            vault: v_record,
+            hosts,
+            keychain,
+            tunnels,
+            snippets,
+        })
+    })?;
+
+    let json_bytes = serde_json::to_vec(&payload)
+        .map_err(|e| AppError::Other(format!("Failed to serialize vault payload: {e}")))?;
+
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let key = Vault::derive_key(&passphrase, &salt)?;
+
+    let mut nonce_bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = XNonce::from_slice(&nonce_bytes);
+
+    let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
+    let ciphertext = cipher
+        .encrypt(nonce, json_bytes.as_ref())
+        .map_err(|e| AppError::Crypto(format!("Encryption failed: {e}")))?;
+
+    Ok(EncryptedTeamVaultBundle {
+        version: 1,
+        format: "nexus-team-vault".into(),
+        vault_name: payload.vault.name,
+        salt: hex::encode(salt),
+        nonce: hex::encode(nonce_bytes),
+        ciphertext: B64.encode(ciphertext),
+    })
+}
+
+#[tauri::command]
+pub fn team_vault_import(
+    bundle: EncryptedTeamVaultBundle,
+    passphrase: String,
+    vault: State<'_, Vault>,
+) -> AppResult<String> {
+    let salt = hex::decode(&bundle.salt)
+        .map_err(|_| AppError::Crypto("Invalid salt format".into()))?;
+    let key = Vault::derive_key(&passphrase, &salt)?;
+
+    let nonce_bytes = hex::decode(&bundle.nonce)
+        .map_err(|_| AppError::Crypto("Invalid nonce format".into()))?;
+    if nonce_bytes.len() != 24 {
+        return Err(AppError::Crypto("Invalid nonce length".into()));
+    }
+    let nonce = XNonce::from_slice(&nonce_bytes);
+
+    let ciphertext = B64
+        .decode(&bundle.ciphertext)
+        .map_err(|_| AppError::Crypto("Invalid ciphertext format".into()))?;
+
+    let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext.as_ref())
+        .map_err(|_| AppError::Crypto("Invalid passphrase or corrupted vault bundle".into()))?;
+
+    let payload: TeamVaultPayload = serde_json::from_slice(&plaintext)
+        .map_err(|e| AppError::Other(format!("Failed to parse decrypted bundle: {e}")))?;
+
+    vault.with(|c| {
+        c.execute(
+            "INSERT INTO vaults(id, name, kind, color, description, created_at)
+             VALUES(?1, ?2, 'team', ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
+            params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
+        )?;
+
+        for h in &payload.hosts {
+            c.execute(
+                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
+                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?14",
+                params![
+                    h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
+                    h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
+                    h.color, h.os, h.keychain_id, h.jump_host_id, payload.vault.id, now()
+                ],
+            )?;
+        }
+
+        for s in &payload.snippets {
+            c.execute(
+                "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![s.id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
+            )?;
+        }
+
+        for t in &payload.tunnels {
+            c.execute(
+                "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
+                     remote_host=?7, remote_port=?8, vault_id=?9, updated_at=?10",
+                params![
+                    t.id, t.label, t.host_id, t.forward_type, t.local_host, t.local_port,
+                    t.remote_host, t.remote_port, payload.vault.id, now()
+                ],
+            )?;
+        }
+
+        Ok(payload.vault.id)
     })
 }

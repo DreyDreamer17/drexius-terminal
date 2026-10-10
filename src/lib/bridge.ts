@@ -13,6 +13,7 @@ import type {
   BridgeError,
   ConnectionLog,
   DetectedLocalKey,
+  EncryptedTeamVaultBundle,
   FileEntry,
   GeneratedKeyPair,
   Host,
@@ -20,10 +21,12 @@ import type {
   KeychainInput,
   KeychainItem,
   KnownHost,
+  SerialPortInfo,
   SessionEvent,
   Snapshot,
   Snippet,
   TunnelConfig,
+  Vault,
 } from './types';
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -54,6 +57,7 @@ interface DemoState {
   keychainSecrets: Record<string, HostSecret>;
   connectionLogs: ConnectionLog[];
   tunnels: TunnelConfig[];
+  vaults: Vault[];
 }
 
 const SEED: DemoState = {
@@ -94,6 +98,10 @@ const SEED: DemoState = {
   tunnels: [
     { id: 'tun-1', label: 'Postgres Staging', hostId: 'h-stage', forwardType: 'local', localHost: '127.0.0.1', localPort: 5433, remoteHost: 'localhost', remotePort: 5432, updatedAt: Date.now() - 86400000 },
     { id: 'tun-2', label: 'Internal SOCKS Proxy', hostId: 'h-prod', forwardType: 'dynamic', localHost: '127.0.0.1', localPort: 1080, remoteHost: '127.0.0.1', remotePort: 0, updatedAt: Date.now() - 86400000 * 2 },
+  ],
+  vaults: [
+    { id: 'personal', name: 'Personal Vault', kind: 'personal', color: '#22d3ee', description: 'Your private hosts & credentials', createdAt: Date.now() - 86400000 * 30 },
+    { id: 'devops-team', name: 'DevOps Team', kind: 'team', color: '#10b981', description: 'Shared cloud infrastructure & clusters', createdAt: Date.now() - 86400000 * 14 },
   ],
 };
 
@@ -567,5 +575,68 @@ export const bridge = {
       return;
     }
     demoSessions.delete(sessionId);
+  },
+
+  // ── Multi-Vault Management ──
+  async listVaults(): Promise<Vault[]> {
+    if (isTauri) return invoke('vault_list');
+    const st = need();
+    if (!st.vaults || st.vaults.length === 0) {
+      st.vaults = [
+        { id: 'personal', name: 'Personal Vault', kind: 'personal', color: '#22d3ee', description: 'Your private hosts & secrets', createdAt: Date.now() },
+      ];
+    }
+    return [...st.vaults];
+  },
+
+  async saveVault(record: Vault): Promise<string> {
+    if (isTauri) return invoke('vault_save', { record });
+    const st = need();
+    if (!st.vaults) st.vaults = [];
+    const idx = st.vaults.findIndex((v: Vault) => v.id === record.id);
+    const id = record.id || uid();
+    const updated = { ...record, id };
+    if (idx >= 0) st.vaults[idx] = updated;
+    else st.vaults.push(updated);
+    await persistDemo();
+    return id;
+  },
+
+  async deleteVault(id: string): Promise<void> {
+    if (id === 'personal') throw new Error('Cannot delete the default Personal Vault');
+    if (isTauri) return invoke('vault_delete', { id });
+    const st = need();
+    st.vaults = (st.vaults ?? []).filter((v: Vault) => v.id !== id);
+    st.hosts.forEach((h: Host) => { if (h.vaultId === id) h.vaultId = 'personal'; });
+    await persistDemo();
+  },
+
+  // ── Serial Ports ──
+  async listSerialPorts(): Promise<SerialPortInfo[]> {
+    if (isTauri) return invoke('serial_list_ports');
+    return [
+      { portName: '/dev/ttyUSB0', description: 'FTDI USB Serial Interface (UART)' },
+      { portName: '/dev/ttyACM0', description: 'Arduino / Embedded Serial Device' },
+    ];
+  },
+
+  // ── Zero-Knowledge Team Sharing ──
+  async exportTeamVault(vaultId: string, passphrase: string): Promise<EncryptedTeamVaultBundle> {
+    if (isTauri) return invoke('team_vault_export', { vaultId, passphrase });
+    const st = need();
+    const v = (st.vaults ?? []).find((x: Vault) => x.id === vaultId) ?? { id: vaultId, name: 'Team Vault', kind: 'team', createdAt: Date.now() };
+    return {
+      version: 1,
+      format: 'nexus-team-vault',
+      vaultName: v.name,
+      salt: '00112233445566778899aabbccddeeff',
+      nonce: '00112233445566778899aabbccddeeff0011223344556677',
+      ciphertext: btoa(JSON.stringify({ vault: v, hosts: st.hosts.filter((h: Host) => h.vaultId === vaultId) })),
+    };
+  },
+
+  async importTeamVault(bundle: EncryptedTeamVaultBundle, passphrase: string): Promise<string> {
+    if (isTauri) return invoke('team_vault_import', { bundle, passphrase });
+    return bundle.vaultName;
   },
 };

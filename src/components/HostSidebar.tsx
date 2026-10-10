@@ -1,71 +1,407 @@
 import { useMemo, useState } from 'react';
-import { Search, Plus, KeyRound, Lock, Fingerprint, Pencil, Trash2, Columns2 } from 'lucide-react';
-import type { Host } from '../lib/types';
+import {
+  Search,
+  Plus,
+  KeyRound,
+  Lock,
+  Fingerprint,
+  Pencil,
+  Trash2,
+  Columns2,
+  Terminal as TerminalIcon,
+  Radio,
+  ArrowRight,
+  Users,
+  CheckCircle2,
+  ChevronDown,
+} from 'lucide-react';
+import type { Host, Vault } from '../lib/types';
 import { registry } from '../lib/sessions';
 import { OsIcon } from './OsIcon';
+import { cn } from '../utils/cn';
 
 interface Props {
   hosts: Host[];
+  vaults: Vault[];
+  activeVaultId: string | 'all';
   onConnect: (h: Host) => void;
   onSplit: (h: Host) => void;
   onEdit: (h: Host | null) => void;
   onDelete: (h: Host) => void;
+  onOpenTerminal: () => void;
+  onOpenSerial: () => void;
+  onOpenShareModal: () => void;
+  onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
 }
 
 const authIcon = { key: KeyRound, password: Lock, agent: Fingerprint };
 
-export function HostSidebar({ hosts, onConnect, onSplit, onEdit, onDelete }: Props) {
+function parseSshTarget(input: string): { username: string; hostname: string; port: number } | null {
+  let s = input.trim();
+  if (s.startsWith('ssh ')) {
+    s = s.slice(4).trim();
+  }
+  let port = 22;
+  const pMatch = s.match(/-p\s*(\d+)/i);
+  if (pMatch) {
+    port = parseInt(pMatch[1], 10) || 22;
+    s = s.replace(/-p\s*\d+/i, '').trim();
+  }
+  if (!s) return null;
+  let username = 'root';
+  let hostname = s;
+  if (s.includes('@')) {
+    const parts = s.split('@');
+    username = parts[0];
+    hostname = parts.slice(1).join('@');
+  }
+  if (hostname.includes(':')) {
+    const parts = hostname.split(':');
+    hostname = parts[0];
+    port = parseInt(parts[1], 10) || port;
+  }
+  if (!hostname || hostname.includes(' ')) return null;
+  return { username, hostname, port };
+}
+
+export function HostSidebar({
+  hosts,
+  vaults,
+  activeVaultId,
+  onConnect,
+  onSplit,
+  onEdit,
+  onDelete,
+  onOpenTerminal,
+  onOpenSerial,
+  onOpenShareModal,
+  onQuickConnectSsh,
+}: Props) {
   const [q, setQ] = useState('');
+  const [showMenu, setShowMenu] = useState(false);
+
+  // Filter hosts by active vault first
+  const vaultFilteredHosts = useMemo(() => {
+    if (activeVaultId === 'all') return hosts;
+    return hosts.filter((h) => (h.vaultId || 'personal') === activeVaultId);
+  }, [hosts, activeVaultId]);
+
+  // Then filter by search query
   const groups = useMemo(() => {
-    const f = hosts.filter((h) => `${h.label} ${h.hostname} ${h.username} ${h.tags.join(' ')}`.toLowerCase().includes(q.toLowerCase()));
+    const f = vaultFilteredHosts.filter((h) =>
+      `${h.label} ${h.hostname} ${h.username} ${h.tags.join(' ')}`
+        .toLowerCase()
+        .includes(q.toLowerCase())
+    );
     const m = new Map<string, Host[]>();
-    for (const h of f) { const g = h.group || 'Ungrouped'; m.set(g, [...(m.get(g) ?? []), h]); }
+    for (const h of f) {
+      const g = h.group || 'Ungrouped';
+      m.set(g, [...(m.get(g) ?? []), h]);
+    }
     return [...m.entries()];
-  }, [hosts, q]);
-  const live = new Set(registry.all().filter((p) => p.status === 'connected').map((p) => p.hostId));
+  }, [vaultFilteredHosts, q]);
+
+  const live = new Set(
+    registry
+      .all()
+      .filter((p) => p.status === 'connected')
+      .map((p) => p.hostId)
+  );
+
+  const activeVault =
+    activeVaultId === 'all'
+      ? { id: 'all', name: 'All Vaults', kind: 'team' as const, color: '#38bdf8' }
+      : vaults.find((v) => v.id === activeVaultId) ?? vaults[0];
+
+  const isTeamVault = activeVault && activeVault.kind === 'team';
+
+  // Team steps calculation
+  const hasTeamHosts = vaultFilteredHosts.length > 0;
+  const isExported = localStorage.getItem(`nx.vault.exported.${activeVault?.id}`) === '1';
+  const teamStepsDone = 1 + (hasTeamHosts ? 1 : 0) + (isExported ? 1 : 0);
+
+  const handleUniversalConnect = () => {
+    if (!q.trim()) return;
+    const directMatch = vaultFilteredHosts.find(
+      (h) =>
+        h.label.toLowerCase() === q.toLowerCase() ||
+        h.hostname.toLowerCase() === q.toLowerCase()
+    );
+    if (directMatch) {
+      onConnect(directMatch);
+      setQ('');
+      return;
+    }
+    const parsed = parseSshTarget(q);
+    if (parsed) {
+      onQuickConnectSsh(parsed);
+      setQ('');
+      return;
+    }
+    // If only 1 host matches search
+    const allMatches = vaultFilteredHosts.filter((h) =>
+      `${h.label} ${h.hostname}`.toLowerCase().includes(q.toLowerCase())
+    );
+    if (allMatches.length === 1) {
+      onConnect(allMatches[0]);
+      setQ('');
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between px-4 pb-3 pt-4">
+      {/* Top Header */}
+      <div className="flex items-center justify-between px-3.5 pb-2.5 pt-3.5 border-b border-white/5">
         <div>
-          <h2 className="text-sm font-semibold text-white">Hosts</h2>
-          <p className="text-[11px] text-slate-500">{hosts.length} profiles · encrypted vault</p>
+          <div className="flex items-center gap-1.5">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+              {activeVault?.name ?? 'Hosts'}
+            </h2>
+            {isTeamVault && (
+              <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300 border border-emerald-500/20">
+                <Users className="h-2.5 w-2.5" /> Team
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-slate-500">
+            {vaultFilteredHosts.length} {vaultFilteredHosts.length === 1 ? 'profile' : 'profiles'} · encrypted vault
+          </p>
         </div>
-        <button onClick={() => onEdit(null)} className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/20 hover:bg-cyan-400/20"><Plus className="h-4 w-4" /></button>
       </div>
-      <div className="px-3 pb-2">
-        <div className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.03] px-2.5 py-1.5 focus-within:border-cyan-400/30">
-          <Search className="h-3.5 w-3.5 text-slate-500" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search hosts, tags…" className="w-full bg-transparent text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none" />
+
+      {/* Universal Search & Direct Connect Bar */}
+      <div className="px-3 pt-3 pb-2">
+        <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 shadow-inner focus-within:border-cyan-400/40 focus-within:ring-1 focus-within:ring-cyan-400/20">
+          <Search className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleUniversalConnect();
+            }}
+            placeholder="Find a host or ssh user@hostname..."
+            className="w-full bg-transparent text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none font-mono"
+          />
+          {q.trim() && (
+            <button
+              onClick={handleUniversalConnect}
+              className="flex items-center gap-1 rounded bg-cyan-500/20 px-2 py-0.5 text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/30 transition shrink-0 border border-cyan-400/30 shadow-sm"
+            >
+              Connect <ArrowRight className="h-2.5 w-2.5" />
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Termius-style Quick Action Buttons Row */}
+      <div className="flex items-center gap-1.5 px-3 pb-2.5">
+        <div className="relative">
+          <button
+            onClick={() => onEdit(null)}
+            className="flex h-7 items-center gap-1.5 rounded-lg bg-cyan-500/15 px-2.5 text-xs font-medium text-cyan-200 border border-cyan-400/30 hover:bg-cyan-500/25 transition shadow-sm"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>New host</span>
+            <ChevronDown
+              className="h-3 w-3 text-cyan-300 opacity-60 hover:opacity-100 cursor-pointer"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMenu((m) => !m);
+              }}
+            />
+          </button>
+
+          {showMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setShowMenu(false)} />
+              <div className="absolute left-0 top-8 z-40 w-44 rounded-xl border border-white/10 bg-[#0e131d] p-1 shadow-2xl">
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onEdit(null);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                >
+                  <Plus className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>New Host profile</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onOpenShareModal();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                >
+                  <Users className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>Import Vault bundle…</span>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        <button
+          onClick={onOpenTerminal}
+          title="Open local shell terminal"
+          className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition"
+        >
+          <TerminalIcon className="h-3.5 w-3.5 text-slate-400" />
+          <span>Terminal</span>
+        </button>
+
+        <button
+          onClick={onOpenSerial}
+          title="Connect via Hardware Serial Port (UART / RS-232)"
+          className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs text-slate-300 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
+        >
+          <Radio className="h-3.5 w-3.5 text-amber-400" />
+          <span>Serial</span>
+        </button>
+      </div>
+
+      {/* Termius-style Team Steps Banner */}
+      {isTeamVault && (
+        <div className="mx-3 mb-2 rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-2.5 shadow-sm">
+          <div className="flex items-center justify-between pb-1.5 border-b border-emerald-500/10">
+            <div className="flex items-center gap-1.5">
+              <span className="grid h-4 w-4 place-items-center rounded-full bg-emerald-500/20 text-emerald-300 text-[10px]">
+                {teamStepsDone}
+              </span>
+              <span className="text-[11px] font-medium text-emerald-200">
+                Team steps · {teamStepsDone} of 3 done
+              </span>
+            </div>
+            <button
+              onClick={onOpenShareModal}
+              className="text-[10px] font-semibold text-emerald-400 hover:text-emerald-300 hover:underline"
+            >
+              Share & Invite →
+            </button>
+          </div>
+
+          <div className="mt-2 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10.5px] text-emerald-300/90">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+              <span>Enable team vault</span>
+            </div>
+            <div
+              onClick={onOpenShareModal}
+              className={cn(
+                'flex items-center gap-1.5 text-[10.5px] cursor-pointer hover:underline',
+                hasTeamHosts ? 'text-emerald-300/90' : 'text-slate-400'
+              )}
+            >
+              <span
+                className={cn(
+                  'h-3.5 w-3.5 rounded-full border grid place-items-center text-[8px] shrink-0',
+                  hasTeamHosts
+                    ? 'border-emerald-400 bg-emerald-500/30 text-emerald-300'
+                    : 'border-slate-500 text-slate-500'
+                )}
+              >
+                {hasTeamHosts ? '✓' : '2'}
+              </span>
+              <span>Share data ({vaultFilteredHosts.length} hosts in vault)</span>
+            </div>
+            <div
+              onClick={onOpenShareModal}
+              className={cn(
+                'flex items-center gap-1.5 text-[10.5px] cursor-pointer hover:underline',
+                isExported ? 'text-emerald-300/90' : 'text-slate-400'
+              )}
+            >
+              <span
+                className={cn(
+                  'h-3.5 w-3.5 rounded-full border grid place-items-center text-[8px] shrink-0',
+                  isExported
+                    ? 'border-emerald-400 bg-emerald-500/30 text-emerald-300'
+                    : 'border-slate-500 text-slate-500'
+                )}
+              >
+                {isExported ? '✓' : '3'}
+              </span>
+              <span>Invite members (zero-knowledge bundle)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Host List */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {groups.map(([g, list]) => (
-          <div key={g} className="mt-3">
-            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{g}</div>
+          <div key={g} className="mt-2">
+            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              {g}
+            </div>
             {list.map((h) => {
               const Icon = authIcon[h.authMethod];
               return (
-                <div key={h.id} onDoubleClick={() => onConnect(h)} className="group relative flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 hover:bg-white/[0.04]" onClick={() => onConnect(h)}>
-                  <div className="relative">
-                    <OsIcon os={h.os} color={h.color} size={32} />
-                    {live.has(h.id) && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#0b0f17]" />}
+                <div
+                  key={h.id}
+                  onDoubleClick={() => onConnect(h)}
+                  onClick={() => onConnect(h)}
+                  className="group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.04] transition"
+                >
+                  <div className="relative shrink-0">
+                    <OsIcon os={h.os} color={h.color} size={30} />
+                    {live.has(h.id) && (
+                      <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#0b0f17]" />
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 truncate text-[13px] font-medium text-slate-200">{h.label}<Icon className="h-3 w-3 text-slate-600" /></div>
-                    <div className="truncate font-mono text-[10.5px] text-slate-500">{h.username}@{h.hostname}{h.port !== 22 ? `:${h.port}` : ''}</div>
+                    <div className="flex items-center gap-1.5 truncate text-[13px] font-medium text-slate-200">
+                      <span className="truncate">{h.label}</span>
+                      <Icon className="h-3 w-3 text-slate-500 shrink-0" />
+                    </div>
+                    <div className="truncate font-mono text-[10.5px] text-slate-500">
+                      {h.username}@{h.hostname}
+                      {h.port !== 22 ? `:${h.port}` : ''}
+                    </div>
                   </div>
-                  <div className="absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex" onClick={(e) => e.stopPropagation()}>
-                    <button title="Open in split pane" onClick={() => onSplit(h)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-cyan-300"><Columns2 className="h-3.5 w-3.5" /></button>
-                    <button title="Edit" onClick={() => onEdit(h)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"><Pencil className="h-3.5 w-3.5" /></button>
-                    <button title="Delete" onClick={() => onDelete(h)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"><Trash2 className="h-3.5 w-3.5" /></button>
+                  <div
+                    className="absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      title="Open in split pane"
+                      onClick={() => onSplit(h)}
+                      className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-cyan-300"
+                    >
+                      <Columns2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      title="Edit"
+                      onClick={() => onEdit(h)}
+                      className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      title="Delete"
+                      onClick={() => onDelete(h)}
+                      className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
         ))}
-        {!groups.length && <p className="mt-8 text-center text-xs text-slate-600">No hosts match.</p>}
+        {!groups.length && (
+          <div className="mt-8 text-center px-4">
+            <p className="text-xs text-slate-500">
+              {q ? 'No hosts match your search.' : 'No hosts in this vault.'}
+            </p>
+            <button
+              onClick={() => onEdit(null)}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs text-cyan-300 hover:underline"
+            >
+              <Plus className="h-3 w-3" /> Add a host to {activeVault?.name ?? 'vault'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
