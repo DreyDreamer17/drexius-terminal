@@ -23,7 +23,6 @@ import {
   KeyRound,
   Network,
   Terminal as TerminalIcon,
-  Menu,
   PanelBottom,
   Radio,
 } from 'lucide-react';
@@ -277,84 +276,34 @@ export default function App() {
 
   return (
     <div
-      className="flex h-screen w-screen overflow-hidden text-slate-200 selection:bg-cyan-400/30"
+      className="flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
       style={{ background: theme.xterm.background }}
     >
-      {/* Icon rail — floating buttons, no solid dividing wall */}
-      {!zen && showRail && (
-      <nav className="flex w-[52px] shrink-0 flex-col items-center gap-1.5 py-2.5 z-20 bg-transparent">
-        <img src="/nexus-logo.png" alt="NexusTerminal" className="mb-2 h-8 w-8 rounded-xl shadow-[0_0_20px_-4px_rgba(34,211,238,0.5)]" />
-        {rail.map((r) => (
-          <button key={r.id} title={r.label} onClick={r.act} className={cn('group relative grid h-9 w-9 place-items-center rounded-xl transition shadow-sm', r.on ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-[0_0_12px_rgba(34,211,238,0.25)]' : 'bg-white/[0.04] text-slate-400 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15')}>
-            {r.on && <span className="absolute -left-1.5 h-4 w-1 rounded-r-full bg-gradient-to-b from-cyan-300 to-fuchsia-400" />}
-            <r.icon className="h-4 w-4" />
-          </button>
-        ))}
-        <div className="mt-auto flex flex-col items-center gap-1.5">
-          <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
-          <button title="Lock vault" onClick={lock} className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
-        </div>
-      </nav>
-      )}
-
-      {/* Side panel — overlay drawer, terminal keeps full width */}
-      {panel && (
-        <>
-          <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-          <aside className="fixed bottom-0 top-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 52 }}>
-            {panel === 'hosts' && (
-              <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
-            )}
-            {panel === 'keychain' && (
-              <KeychainPanel
-                keychain={keychain}
-                onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
-                onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
-                onRefresh={refresh}
-                toast={toast}
-              />
-            )}
-            {panel === 'tunnels' && (
-              <PortForwardingPanel
-                hosts={hosts}
-                tunnels={tunnels}
-                onSave={async (t) => { await bridge.saveTunnel(t); refresh(); }}
-                onDelete={async (id) => { await bridge.deleteTunnel(id); refresh(); }}
-                toast={toast}
-              />
-            )}
-            {panel === 'snippets' && (
-              <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast} />
-            )}
-            {panel === 'logs' && (
-              <LogsPanel toast={toast} />
-            )}
-            {panel === 'known_hosts' && (
-              <KnownHostsPanel toast={toast} />
-            )}
-          </aside>
-        </>
-      )}
-
-      {/* Main workspace */}
-      <main className="relative flex min-w-0 flex-1 flex-col">
-        {/* Tab bar — floating controls over the terminal canvas */}
-        {!zen && (
-        <div className="flex h-10 shrink-0 items-center gap-1.5 px-3 pt-1.5 pb-1 bg-transparent border-0">
+      {/* ── Top Bar Header (Logo Menu Toggle, Shortcuts, Tabs & Controls) ── */}
+      {!zen && (
+        <header className="flex h-10 shrink-0 items-center gap-1.5 px-2 pt-1.5 pb-1 bg-transparent border-0 z-30">
           {/* Termius-style Left Navigation Controls */}
           <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => setShowRail((v) => !v)}
-              title={showRail ? 'Hide sidebar rail (⌘⇧B)' : 'Show sidebar rail (⌘⇧B)'}
-              className={cn(
-                'grid h-7 w-7 place-items-center rounded-lg transition border',
-                showRail
-                  ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40'
-                  : 'bg-white/[0.04] border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white hover:border-white/10'
-              )}
-            >
-              <Menu className="h-3.5 w-3.5" />
-            </button>
+            {/* App Logo Toggle Button (Acts as the Menu button to toggle side navigation) */}
+            <div className="flex w-[48px] shrink-0 items-center justify-center">
+              <button
+                onClick={() => setShowRail((v) => !v)}
+                title={showRail ? 'Collapse side navigation (⌘⇧B)' : 'Expand side navigation (⌘⇧B)'}
+                className={cn(
+                  'group relative flex h-8 w-8 items-center justify-center rounded-xl transition-all duration-200 cursor-pointer',
+                  showRail
+                    ? 'bg-cyan-500/15 ring-1 ring-cyan-400/40 shadow-[0_0_14px_rgba(34,211,238,0.35)]'
+                    : 'bg-white/[0.04] ring-1 ring-white/10 opacity-75 hover:opacity-100 hover:ring-cyan-400/30 hover:bg-white/[0.08]'
+                )}
+              >
+                <img
+                  src="/nexus-logo.png"
+                  alt="NexusTerminal"
+                  className="h-6 w-6 rounded-lg object-contain transition-transform group-hover:scale-105 group-active:scale-95"
+                />
+              </button>
+            </div>
+
             <button
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
               title="Hosts / Vaults (⌘⇧K)"
@@ -486,8 +435,96 @@ export default function App() {
             <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showStatusBar ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><PanelBottom className="h-3.5 w-3.5" /></button>
             <button title="Zen mode (⌘⇧Z)" onClick={() => setZen((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', zen ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Maximize2 className="h-3.5 w-3.5" /></button>
           </div>
-        </div>
+        </header>
+      )}
+
+      {/* ── Main workspace body ── */}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Icon rail — floating buttons, no solid dividing wall */}
+        {!zen && showRail && (
+          <nav className="flex w-[48px] shrink-0 flex-col items-center gap-1.5 py-1.5 z-20 bg-transparent">
+            {rail.map((r) => (
+              <button
+                key={r.id}
+                title={r.label}
+                onClick={r.act}
+                className={cn(
+                  'group relative grid h-9 w-9 place-items-center rounded-xl transition shadow-sm',
+                  r.on
+                    ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-[0_0_12px_rgba(34,211,238,0.25)]'
+                    : 'bg-white/[0.04] text-slate-400 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15'
+                )}
+              >
+                {r.on && <span className="absolute -left-1.5 h-4 w-1 rounded-r-full bg-gradient-to-b from-cyan-300 to-fuchsia-400" />}
+                <r.icon className="h-4 w-4" />
+              </button>
+            ))}
+            <div className="mt-auto flex flex-col items-center gap-1.5 pb-2">
+              <button
+                title="Zero-knowledge sync"
+                onClick={() => setShowSync(true)}
+                className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"
+              >
+                <Cloud className="h-4 w-4" />
+              </button>
+              <button
+                title="Lock vault"
+                onClick={lock}
+                className="grid h-9 w-9 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"
+              >
+                <Lock className="h-4 w-4" />
+              </button>
+            </div>
+          </nav>
         )}
+
+        {/* Side panel — overlay drawer, terminal keeps full width */}
+        {panel && (
+          <>
+            <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
+            <aside
+              className="fixed bottom-0 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl"
+              style={{
+                top: zen ? 0 : 40,
+                left: (zen || !showRail) ? 0 : 48,
+              }}
+            >
+              {panel === 'hosts' && (
+                <HostSidebar hosts={hosts} onConnect={openHost} onSplit={(h) => splitWith(h)} onEdit={(h) => setModal({ host: h })} onDelete={deleteHost} />
+              )}
+              {panel === 'keychain' && (
+                <KeychainPanel
+                  keychain={keychain}
+                  onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
+                  onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
+                  onRefresh={refresh}
+                  toast={toast}
+                />
+              )}
+              {panel === 'tunnels' && (
+                <PortForwardingPanel
+                  hosts={hosts}
+                  tunnels={tunnels}
+                  onSave={async (t) => { await bridge.saveTunnel(t); refresh(); }}
+                  onDelete={async (id) => { await bridge.deleteTunnel(id); refresh(); }}
+                  toast={toast}
+                />
+              )}
+              {panel === 'snippets' && (
+                <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast} />
+              )}
+              {panel === 'logs' && (
+                <LogsPanel toast={toast} />
+              )}
+              {panel === 'known_hosts' && (
+                <KnownHostsPanel toast={toast} />
+              )}
+            </aside>
+          </>
+        )}
+
+        {/* Main workspace */}
+        <main className="relative flex min-w-0 flex-1 flex-col">
 
         {/* Panes */}
         <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
@@ -558,6 +595,7 @@ export default function App() {
           <AIPanel activePaneId={activePaneId} toast={toast} />
         </aside>
       )}
+      </div>
 
       {/* Quick Connect Floating Palette */}
       {quick && (
