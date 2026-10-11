@@ -1,5 +1,17 @@
-//! SSH Port Forwarding manager (Local & Dynamic SOCKS5 tunnels).
-//! Multiplexes connections over authenticated SSH sessions.
+//! SSH Port Forwarding manager (Local, Remote & Dynamic SOCKS5 tunnels).
+//!
+//! Three forward types:
+//!   • "local"    — listen on localHost:localPort; each connection opens a `direct-tcpip`
+//!                  channel to remoteHost:remotePort via the SSH session.
+//!   • "dynamic"  — local SOCKS5 proxy on localHost:localPort; clients specify the
+//!                  destination and we open `direct-tcpip` channels.
+//!   • "remote"   — ask the SSH server to listen on remoteHost:remotePort; each inbound
+//!                  connection arrives via a `forwarded-tcpip` channel and we relay it to
+//!                  localHost:localPort (reverse tunnel).
+//!
+//! Local/dynamic use a `TcpListener` and sessions established *to* us. Remote forwards use
+//! ssh2's `Listener` (from `Session::channel_forward_listen`) and channels that the server
+//! pushes *to* us.
 
 use crate::error::{AppError, AppResult};
 use crate::ssh::open_authenticated;
@@ -9,7 +21,7 @@ use serde::Serialize;
 use ssh2::Session;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -24,6 +36,11 @@ pub struct ActiveTunnelInfo {
     pub bytes_up: u64,
     pub bytes_down: u64,
     pub error: Option<String>,
+    /// For remote forwards, the port the SSH server actually bound (may differ from the
+    /// configured port when the server allocates an ephemeral port). For local/dynamic this
+    /// is the same as the configured local port.
+    #[serde(default)]
+    pub bound_port: u16,
 }
 
 struct RunningTunnel {
@@ -32,6 +49,9 @@ struct RunningTunnel {
     bytes_down: Arc<AtomicU64>,
     _session: Session,
     local_port: u16,
+    /// For remote forwards: the port the remote server actually bound (may differ from
+    /// the requested port when the server allocates one, e.g. remote_port = 0).
+    bound_remote_port: u16,
 }
 
 #[derive(Default)]
@@ -59,6 +79,7 @@ impl TunnelManager {
                 bytes_up: t.bytes_up.load(Ordering::Relaxed),
                 bytes_down: t.bytes_down.load(Ordering::Relaxed),
                 error: None,
+                bound_port: t.bound_remote_port.max(t.local_port),
             }
         } else {
             ActiveTunnelInfo {
@@ -67,6 +88,7 @@ impl TunnelManager {
                 bytes_up: 0,
                 bytes_down: 0,
                 error: None,
+                bound_port: 0,
             }
         }
     }
@@ -81,6 +103,7 @@ impl TunnelManager {
                 bytes_up: t.bytes_up.load(Ordering::Relaxed),
                 bytes_down: t.bytes_down.load(Ordering::Relaxed),
                 error: None,
+                bound_port: t.bound_remote_port.max(t.local_port),
             })
             .collect()
     }
@@ -100,28 +123,35 @@ pub fn tunnel_start(
     let (host, secret) = vault.host_with_secret(&tunnel.host_id)?;
     let (session, _) = open_authenticated(&host, &secret, &vault)?;
 
-    let bind_addr = format!("{}:{}", tunnel.local_host, tunnel.local_port);
-    let listener = TcpListener::bind(&bind_addr)
-        .map_err(|e| AppError::Network(format!("Failed to bind {bind_addr}: {e}")))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| AppError::Io(e))?;
-
-    let local_port = tunnel.local_port;
-    spawn_tunnel_worker(
-        id.clone(),
-        format!("tunnel-{}", &id[..8.min(id.len())]),
-        listener,
-        session,
-        tunnel,
-        local_port,
-        &mgr,
-    )?;
+    match tunnel.forward_type.as_str() {
+        "remote" => spawn_remote_worker(id.clone(), session, tunnel, &mgr)?,
+        _ => {
+            // local | dynamic — bind a local TcpListener
+            let bind_addr = format!("{}:{}", tunnel.local_host, tunnel.local_port);
+            let listener = TcpListener::bind(&bind_addr)
+                .map_err(|e| AppError::Network(format!("Failed to bind {bind_addr}: {e}")))?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| AppError::Io(e))?;
+            let local_port = tunnel.local_port;
+            spawn_local_worker(
+                id.clone(),
+                format!("tunnel-{}", &id[..8.min(id.len())]),
+                listener,
+                session,
+                tunnel,
+                local_port,
+                &mgr,
+            )?;
+        }
+    }
 
     Ok(mgr.status(&id))
 }
 
-fn spawn_tunnel_worker(
+/// Worker for local + dynamic (SOCKS5) forwards: accepts TCP connections on a local
+/// listener and opens `direct-tcpip` channels over the SSH session for each.
+fn spawn_local_worker(
     tunnel_id: String,
     thread_name: String,
     listener: TcpListener,
@@ -140,6 +170,7 @@ fn spawn_tunnel_worker(
         bytes_down: bytes_down.clone(),
         _session: session.clone(),
         local_port,
+        bound_remote_port: 0,
     };
 
     mgr.running.lock().insert(tunnel_id, running_tunnel);
@@ -168,6 +199,115 @@ fn spawn_tunnel_worker(
                     }
                     Err(_) => break,
                 }
+            }
+        })
+        .map_err(|e| AppError::Io(e))?;
+
+    Ok(())
+}
+
+/// Worker for remote (reverse) forwards: asks the SSH server to listen on
+/// `remote_host:remote_port`, then for each `forwarded-tcpip` channel pushed by the server
+/// dials a local TCP connection to `local_host:local_port` and relays bytes bidirectionally.
+fn spawn_remote_worker(
+    tunnel_id: String,
+    session: Session,
+    cfg: TunnelConfig,
+    mgr: &TunnelManager,
+) -> AppResult<()> {
+    // Ask the server to start listening. Passing port 0 lets the server allocate one;
+    // (Listener, bound_port) tells us which port it picked.
+    let host = if cfg.remote_host.is_empty() || cfg.remote_host == "0.0.0.0" {
+        None
+    } else {
+        Some(cfg.remote_host.as_str())
+    };
+    let (mut listener, bound_port) = session
+        .channel_forward_listen(cfg.remote_port, host, None)
+        .map_err(AppError::Ssh)?;
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let bytes_up = Arc::new(AtomicU64::new(0));
+    let bytes_down = Arc::new(AtomicU64::new(0));
+
+    let running_tunnel = RunningTunnel {
+        stop_flag: stop_flag.clone(),
+        bytes_up: bytes_up.clone(),
+        bytes_down: bytes_down.clone(),
+        _session: session.clone(),
+        local_port: cfg.local_port,
+        bound_remote_port: bound_port,
+    };
+    mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
+
+    let thread_name = format!("rtun-{}", &tunnel_id[..8.min(tunnel_id.len())]);
+    let stop = stop_flag;
+    let up = bytes_up;
+    let down = bytes_down;
+    let local_target = format!("{}:{}", cfg.local_host, cfg.local_port);
+
+    thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            // Use non-blocking mode on the session so we can poll Listener::accept
+            // cooperatively and react promptly to the stop flag. We poll with a
+            // short sleep rather than blocking indefinitely.
+            let _ = session.set_blocking(false);
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Accept the next forwarded-tcpip channel from the server.
+                let channel = match listener.accept() {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        let io_err = std::io::Error::from(e);
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock {
+                            thread::sleep(Duration::from_millis(25));
+                            continue;
+                        }
+                        // Either the session died (server cancelled forward, network
+                        // drop) or stop was requested.
+                        log::debug!("remote forward accept failed: {io_err}");
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(200));
+                        if !session.authenticated() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                // Open a local TCP connection to the forward target (e.g. 127.0.0.1:8080).
+                let addr = match local_target.to_socket_addrs().ok().and_then(|mut i| i.next()) {
+                    Some(a) => a,
+                    None => {
+                        log::debug!("remote forward: cannot resolve local target {local_target}");
+                        continue;
+                    }
+                };
+                let local = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::debug!("remote forward: failed to connect to {}: {e}", addr);
+                        continue;
+                    }
+                };
+
+                let stop_c = stop.clone();
+                let up_c = up.clone();
+                let down_c = down.clone();
+                let _ = local.set_nonblocking(true);
+                thread::spawn(move || {
+                    // For remote forwards, the SSH channel is what the remote client
+                    // speaks into (bytes arriving "down" from the server), and the local
+                    // TCP stream is what we forward those bytes to (bytes going "up"
+                    // toward the local service). proxy_remote_channel wires them up
+                    // with the byte counters matching that orientation.
+                    proxy_remote_channel(local, channel, stop_c, up_c, down_c);
+                });
             }
         })
         .map_err(|e| AppError::Io(e))?;
@@ -225,7 +365,7 @@ pub fn ai_tunnel_start(
         vault_id: None,
     };
 
-    spawn_tunnel_worker(
+    spawn_local_worker(
         tunnel_id,
         format!("ai-tun-{}", local_port),
         listener,
@@ -414,6 +554,88 @@ fn proxy_bidirectional(
                 let mut written = 0;
                 while written < n {
                     match client.write(&chan_buf[written..n]) {
+                        Ok(0) => break,
+                        Ok(w) => written += w,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if written < n {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+
+        if !had_activity {
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    let _ = channel.send_eof();
+}
+
+/// Bidirectional relay for a **remote** (reverse) forward.
+///
+/// Traffic directions (opposite of `proxy_bidirectional`):
+///   • SSH channel  →  local TCP stream  = remote client's request ("up" in the UI)
+///   • Local stream →  SSH channel       = local service's response ("down" in the UI)
+fn proxy_remote_channel(
+    mut local: TcpStream,
+    mut channel: ssh2::Channel,
+    stop: Arc<AtomicBool>,
+    bytes_up: Arc<AtomicU64>,
+    bytes_down: Arc<AtomicU64>,
+) {
+    let _ = local.set_nonblocking(true);
+
+    let mut chan_buf = [0u8; 16 * 1024];
+    let mut local_buf = [0u8; 16 * 1024];
+
+    while !stop.load(Ordering::Relaxed) {
+        let mut had_activity = false;
+
+        // 1. SSH Channel → Local service (inbound from remote client; "up")
+        match channel.read(&mut chan_buf) {
+            Ok(0) => {
+                if channel.eof() {
+                    break;
+                }
+            }
+            Ok(n) => {
+                had_activity = true;
+                bytes_up.fetch_add(n as u64, Ordering::Relaxed);
+                let mut written = 0;
+                while written < n {
+                    match local.write(&chan_buf[written..n]) {
+                        Ok(0) => break,
+                        Ok(w) => written += w,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if written < n {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+
+        // 2. Local service → SSH Channel (response back to remote client; "down")
+        match local.read(&mut local_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                had_activity = true;
+                bytes_down.fetch_add(n as u64, Ordering::Relaxed);
+                let mut written = 0;
+                while written < n {
+                    match channel.write(&local_buf[written..n]) {
                         Ok(0) => break,
                         Ok(w) => written += w,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

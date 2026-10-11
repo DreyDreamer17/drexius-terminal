@@ -17,7 +17,7 @@ nexusterminal/
 │   │   ├── SftpDrawer.tsx              # Graphical remote file manager
 │   │   ├── SnippetsPanel.tsx           # Snippet library → broadcast to sessions
 │   │   ├── KeychainPanel.tsx           # Reusable identities, key import/generation
-│   │   ├── PortForwardingPanel.tsx     # Local / dynamic (SOCKS5) tunnels
+│   │   ├── PortForwardingPanel.tsx     # Local / remote (reverse) / dynamic (SOCKS5) tunnels
 │   │   ├── KnownHostsPanel.tsx · LogsPanel.tsx · SerialModal.tsx
 │   │   ├── VaultMenu.tsx · TeamShareModal.tsx   # Multi-vault + encrypted team bundles
 │   │   ├── DevicePairingModal.tsx      # QR + PIN device pairing
@@ -38,7 +38,7 @@ nexusterminal/
         ├── ssh.rs                      # SSH sessions (PTY ⇄ ipc::Channel), jump hosts, host-key TOFU
         ├── sftp.rs                     # SFTP on a dedicated blocking connection per terminal
         ├── local_pty.rs                # Local shells via portable-pty
-        ├── tunnel.rs                   # Port forwarding (local + dynamic SOCKS5), AI SSH proxy tunnel
+        ├── tunnel.rs                   # Port forwarding (local + remote reverse + dynamic SOCKS5), AI SSH proxy tunnel
         ├── snapshot.rs                 # cwd / last-command snapshots → vault, resume on reconnect
         ├── ai_client.rs                # AI HTTP relay: key/proxy pools, auth injection, failover, cancel
         ├── pairing.rs                  # Direct device-to-device pairing over the LAN
@@ -65,6 +65,17 @@ nexusterminal/
 
 * The master key is derived with **Argon2id** and handed to SQLCipher as a raw hex key
   (`PRAGMA key = "x'…'"`), so SQLCipher's internal PBKDF2 is bypassed.
+* **OS keychain (optional, opt-in):** the master password can be stored in the platform
+  credential store (macOS Keychain via Touch ID / Face ID, Windows Credential Manager via
+  Windows Hello, Linux Secret Service via `org.freedesktop.Secret`) via the `keyring`
+  crate, gated behind an explicit "Remember in OS keychain" checkbox. Storage, retrieval
+  and deletion are explicit commands (`os_keychain_store/unlock/delete`); we never write
+  to the keychain without user action. Critically, we do **not** probe the keychain on
+  startup (on macOS, any read triggers a Touch ID dialog) — the frontend tracks opt-in
+  with a localStorage flag and only calls `os_keychain_unlock` when the user clicks a
+  visible "Unlock with Touch ID" button. If the OS keychain is unavailable (headless
+  Linux, sandboxed builds) commands return an error and the UI falls back to password
+  entry.
 * Host passwords and private keys are read by Rust only; the UI refers to hosts by UUID.
 * **AI keys and proxy credentials never reach the webview** (see §5). `ai_configs_list` returns
   masked values, `ai_config_save` never writes secrets, and secrets are changed only through

@@ -63,8 +63,13 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
         await bridge.stopTunnel(t.id);
         toast(`Tunnel "${t.label}" stopped`);
       } else {
-        await bridge.startTunnel(t.id);
-        toast(`Tunnel "${t.label}" started on port ${t.localPort}`);
+        const info = await bridge.startTunnel(t.id);
+        if (t.forwardType === 'remote') {
+          const boundPort = info.boundPort || t.remotePort;
+          toast(`Reverse tunnel "${t.label}" active — ${t.remoteHost || '0.0.0.0'}:${boundPort} → ${t.localHost}:${t.localPort}`);
+        } else {
+          toast(`Tunnel "${t.label}" started on port ${t.localPort}`);
+        }
       }
       const updated = await bridge.activeTunnels();
       setActiveList(updated);
@@ -84,9 +89,23 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
       toast('Please select an SSH host');
       return;
     }
-    if (!editing.localPort || editing.localPort <= 0) {
-      toast('Please specify a valid local port');
-      return;
+    if (editing.forwardType === 'remote') {
+      if (!editing.localPort || editing.localPort <= 0) {
+        toast('Please specify a valid local target port');
+        return;
+      }
+    } else {
+      if (!editing.localPort || editing.localPort <= 0) {
+        toast('Please specify a valid local port');
+        return;
+      }
+    }
+    if ((editing.forwardType === 'local' || editing.forwardType === 'remote') && (!editing.remotePort && editing.remotePort !== 0)) {
+      // Allow 0 for remote forwards as "allocate ephemeral port"
+      if (editing.forwardType !== 'remote') {
+        toast('Please specify a valid target port');
+        return;
+      }
     }
     try {
       await onSave(editing);
@@ -115,7 +134,7 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
       <div className="flex items-center justify-between px-4 pb-3 pt-4">
         <div>
           <h2 className="text-sm font-semibold text-white">Port Forwarding</h2>
-          <p className="text-[11px] text-slate-500">Local & SOCKS5 dynamic SSH tunnels</p>
+          <p className="text-[11px] text-slate-500">Local, Remote (reverse) & SOCKS5 dynamic SSH tunnels</p>
         </div>
         <button
           onClick={() =>
@@ -171,7 +190,7 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
 
           <div>
             <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Forward Type</label>
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
+            <div className="grid grid-cols-3 gap-1.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => setEditing({ ...editing, forwardType: 'local' })}
@@ -182,7 +201,19 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
                     : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/5'
                 )}
               >
-                Local Forward (Direct)
+                Local
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing({ ...editing, forwardType: 'remote', localHost: editing.localHost || '127.0.0.1', localPort: editing.localPort || 8080, remoteHost: editing.remoteHost || '0.0.0.0', remotePort: editing.remotePort || 8080 })}
+                className={cn(
+                  'rounded border py-1.5 text-center transition',
+                  editing.forwardType === 'remote'
+                    ? 'border-violet-400/50 bg-violet-400/20 font-medium text-violet-200'
+                    : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/5'
+                )}
+              >
+                Remote
               </button>
               <button
                 type="button"
@@ -190,13 +221,24 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
                 className={cn(
                   'rounded border py-1.5 text-center transition',
                   editing.forwardType === 'dynamic'
-                    ? 'border-cyan-400/50 bg-cyan-400/20 font-medium text-cyan-200'
+                    ? 'border-fuchsia-400/50 bg-fuchsia-400/20 font-medium text-fuchsia-200'
                     : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/5'
                 )}
               >
-                Dynamic (SOCKS5 Proxy)
+                SOCKS5
               </button>
             </div>
+            {editing.forwardType === 'remote' && (
+              <div className="mt-1.5 rounded-md bg-violet-500/[0.06] px-2 py-1.5 text-[10px] leading-snug text-violet-300/80 ring-1 ring-violet-500/20">
+                Reverse tunnel: the SSH server will listen on <b>{editing.remoteHost || '0.0.0.0'}:{editing.remotePort || '?'}</b> and forward connections back to <b>{editing.localHost || '127.0.0.1'}:{editing.localPort || '?'}</b> on this machine. Use port <b>0</b> to let the server allocate an ephemeral port.
+              </div>
+            )}
+            {editing.forwardType === 'local' && (
+              <div className="mt-1.5 text-[10px] text-slate-500">Forward local port to a destination reachable from the SSH server.</div>
+            )}
+            {editing.forwardType === 'dynamic' && (
+              <div className="mt-1.5 text-[10px] text-slate-500">Run a SOCKS5 proxy locally; point apps at it to route traffic through the SSH host.</div>
+            )}
           </div>
 
           <div>
@@ -214,49 +256,90 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Bind Host</label>
-              <input
-                className={inputClass}
-                placeholder="127.0.0.1"
-                value={editing.localHost}
-                onChange={(e) => setEditing({ ...editing, localHost: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Port *</label>
-              <input
-                type="number"
-                className={inputClass}
-                placeholder="8080"
-                value={editing.localPort || ''}
-                onChange={(e) => setEditing({ ...editing, localPort: Number(e.target.value) })}
-              />
-            </div>
-          </div>
-
-          {editing.forwardType === 'local' && (
+          {/* Local bind address (forwards that listen on OUR machine: local + dynamic) */}
+          {(editing.forwardType === 'local' || editing.forwardType === 'dynamic') && (
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Target Host</label>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Bind Host</label>
                 <input
                   className={inputClass}
-                  placeholder="localhost"
+                  placeholder="127.0.0.1"
+                  value={editing.localHost}
+                  onChange={(e) => setEditing({ ...editing, localHost: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Port *</label>
+                <input
+                  type="number"
+                  className={inputClass}
+                  placeholder="8080"
+                  value={editing.localPort || ''}
+                  onChange={(e) => setEditing({ ...editing, localPort: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Forwards that have a "far side" address (local + remote) */}
+          {(editing.forwardType === 'local' || editing.forwardType === 'remote') && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">
+                  {editing.forwardType === 'local' ? 'Target Host' : 'Remote Bind Host'}
+                </label>
+                <input
+                  className={inputClass}
+                  placeholder={editing.forwardType === 'local' ? 'localhost' : '0.0.0.0'}
                   value={editing.remoteHost}
                   onChange={(e) => setEditing({ ...editing, remoteHost: e.target.value })}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Target Port</label>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">
+                  {editing.forwardType === 'local' ? 'Target Port' : 'Remote Listen Port'}
+                </label>
                 <input
                   type="number"
                   className={inputClass}
-                  placeholder="80"
+                  placeholder={editing.forwardType === 'local' ? '80' : '8080'}
                   value={editing.remotePort || ''}
                   onChange={(e) => setEditing({ ...editing, remotePort: Number(e.target.value) })}
                 />
               </div>
+            </div>
+          )}
+
+          {/* Remote forwards need a LOCAL target (where to forward connections TO) */}
+          {editing.forwardType === 'remote' && (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Target Host</label>
+                <input
+                  className={inputClass}
+                  placeholder="127.0.0.1"
+                  value={editing.localHost}
+                  onChange={(e) => setEditing({ ...editing, localHost: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Local Target Port *</label>
+                <input
+                  type="number"
+                  className={inputClass}
+                  placeholder="8080"
+                  value={editing.localPort || ''}
+                  onChange={(e) => setEditing({ ...editing, localPort: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Dynamic SOCKS5: no remote side, but show a local port field */}
+          {editing.forwardType === 'dynamic' && (
+            <div className="text-[10px] text-slate-500">
+              Local SOCKS5 server will listen on <b>{editing.localHost || '127.0.0.1'}:{editing.localPort || '?'}</b>.
+              Configure your browser/tool to use it as a SOCKS5 proxy.
             </div>
           )}
 
@@ -283,7 +366,7 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
           <div className="py-12 text-center text-xs text-slate-500">
             <Network className="mx-auto mb-2 h-8 w-8 opacity-30 text-cyan-300" />
             No port forwards configured.
-            <div className="mt-1 text-[11px] text-slate-600">Route local traffic through remote servers easily.</div>
+            <div className="mt-1 text-[11px] text-slate-600">Forward ports, expose local services (reverse), or run a SOCKS5 proxy through a host.</div>
           </div>
         )}
 
@@ -326,10 +409,12 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
                         'rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wider',
                         t.forwardType === 'dynamic'
                           ? 'bg-fuchsia-500/15 text-fuchsia-300'
-                          : 'bg-cyan-500/15 text-cyan-300'
+                          : t.forwardType === 'remote'
+                            ? 'bg-violet-500/15 text-violet-300'
+                            : 'bg-cyan-500/15 text-cyan-300'
                       )}
                     >
-                      {t.forwardType === 'dynamic' ? 'SOCKS5' : 'Direct'}
+                      {t.forwardType === 'dynamic' ? 'SOCKS5' : t.forwardType === 'remote' ? 'Remote' : 'Local'}
                     </span>
                     {isRunning && (
                       <span className="flex items-center gap-1 text-[10px] text-emerald-400">
@@ -340,9 +425,22 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
                   </div>
 
                   <div className="flex items-center gap-1 truncate font-mono text-[11px] text-slate-400">
-                    <span>{t.localHost}:{t.localPort}</span>
-                    <ArrowLeftRight className="h-2.5 w-2.5 text-slate-600" />
-                    <span>{t.forwardType === 'dynamic' ? 'Proxy' : `${t.remoteHost}:${t.remotePort}`}</span>
+                    {t.forwardType === 'remote' ? (
+                      <>
+                        <span className="text-violet-300/80">{t.remoteHost}:{t.remotePort || '?'}</span>
+                        <span className="text-slate-600">→</span>
+                        <span>{t.localHost}:{t.localPort}</span>
+                        {active?.boundPort && t.remotePort === 0 && (
+                          <span className="ml-1 text-[9px] text-amber-300/80">(bound {active.boundPort})</span>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <span>{t.localHost}:{t.localPort}</span>
+                        <ArrowLeftRight className="h-2.5 w-2.5 text-slate-600" />
+                        <span>{t.forwardType === 'dynamic' ? 'SOCKS5 proxy' : `${t.remoteHost}:${t.remotePort}`}</span>
+                      </>
+                    )}
                   </div>
                 </div>
 

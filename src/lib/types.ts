@@ -14,6 +14,15 @@ export interface SerialPortInfo {
   description?: string | null;
 }
 
+export interface SerialOpenOptions {
+  portName: string;
+  baudRate: number;
+  dataBits?: number;
+  parity?: 'none' | 'odd' | 'even' | 'mark' | 'space';
+  stopBits?: 1 | 2;
+  flowControl?: 'none' | 'software' | 'hardware';
+}
+
 export interface PairedDevice {
   id: string;
   deviceName: string;
@@ -139,12 +148,19 @@ export interface BridgeError {
 
 export type PaneStatus = 'connecting' | 'connected' | 'disconnected' | 'hostkey' | 'error';
 
+export type PaneKind = 'ssh' | 'local' | 'serial';
+
 export interface Pane {
   id: string;
   hostId: string;
+  /** Session kind. Defaults to 'local' when isLocal is true and no kind is set;
+   *  'serial' connects through the native serial-port backend, not a PTY. */
+  kind?: PaneKind;
   isLocal?: boolean;
   resume?: boolean;
   customShell?: string;
+  /** Serial connection parameters — only valid when kind === 'serial'. */
+  serialOptions?: SerialOpenOptions;
 }
 
 export type Layout = 'single' | 'vertical' | 'horizontal' | 'grid';
@@ -228,6 +244,9 @@ export interface ActiveTunnelInfo {
   bytesUp: number;
   bytesDown: number;
   error?: string | null;
+  /** For remote forwards, the port the SSH server actually bound (may differ from the
+   *  configured port when the server allocates an ephemeral port, e.g. requested port 0). */
+  boundPort?: number;
 }
 
 export type AiBalanceStrategy = 'round_robin' | 'p2c' | 'random';

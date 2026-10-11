@@ -3,6 +3,7 @@
 mod error;
 mod local_pty;
 mod pairing;
+mod serial;
 mod sftp;
 mod snapshot;
 mod ssh;
@@ -40,6 +41,7 @@ pub fn run() {
             app.manage(sync::SyncEngine::default());
             app.manage(local_pty::LocalPtyManager::default());
             app.manage(tunnel::TunnelManager::default());
+            app.manage(serial::SerialManager::default());
             app.manage(pairing::PairingManager::default());
 
             // Background snapshot flusher: persists dirty session state every 10 s.
@@ -63,9 +65,13 @@ pub fn run() {
             vault::vault_list,
             vault::vault_save,
             vault::vault_delete,
-            vault::serial_list_ports,
+            serial::serial_list_ports,
             vault::team_vault_export,
             vault::team_vault_import,
+            // os keychain (biometric unlock)
+            vault::os_keychain_unlock,
+            vault::os_keychain_store,
+            vault::os_keychain_delete,
             // ai configs & multi-provider settings
             vault::ai_configs_list,
             vault::ai_config_save,
@@ -136,6 +142,10 @@ pub fn run() {
             local_pty::local_pty_write,
             local_pty::local_pty_resize,
             local_pty::local_pty_close,
+            // native serial port
+            serial::serial_open,
+            serial::serial_write,
+            serial::serial_close,
             // sftp
             sftp::sftp_list,
             sftp::sftp_download,
