@@ -5,3 +5,4 @@ src-tauri/target/
 .DS_Store
 *.log
 opencode/
+PATCHES/

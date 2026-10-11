@@ -143,7 +143,8 @@ export function TerminalPane({
   const [matchRegex, setMatchRegex] = useState(false);
   const [matchWholeWord, setMatchWholeWord] = useState(false);
 
-  const isLocal = pane.isLocal || host.id === '__local__' || host.id.startsWith('local');
+  const isSerial = pane.kind === 'serial';
+  const isLocal = (!isSerial) && (pane.isLocal || host.id === '__local__' || host.id.startsWith('local'));
 
   const update = useCallback(
     (patch: Parameters<typeof registry.patch>[1]) => {
@@ -276,7 +277,9 @@ export function TerminalPane({
     const sid = sessionRef.current;
     if (!s || !s.suffix || !sid) return;
 
-    if (isLocal) {
+    if (isSerial) {
+      bridge.writeSerial(sid, s.suffix);
+    } else if (isLocal) {
       bridge.writeLocalPty(sid, s.suffix);
     } else {
       bridge.write(sid, s.suffix);
@@ -285,7 +288,7 @@ export function TerminalPane({
     setSuggestion(null);
     setGhostPos(null);
     termRef.current?.focus();
-  }, [isLocal]);
+  }, [isSerial, isLocal]);
 
   const updateGhostPos = useCallback(() => {
     const term = termRef.current;
@@ -357,13 +360,14 @@ export function TerminalPane({
     (text: string) => {
       const sid = sessionRef.current;
       if (sid && text) {
-        if (isLocal) bridge.writeLocalPty(sid, text);
+        if (isSerial) bridge.writeSerial(sid, text);
+        else if (isLocal) bridge.writeLocalPty(sid, text);
         else bridge.write(sid, text);
         termRef.current?.focus();
         scheduleResync();
       }
     },
-    [isLocal, scheduleResync]
+    [isSerial, isLocal, scheduleResync]
   );
 
   const handleSelectCommand = useCallback(
@@ -371,7 +375,8 @@ export function TerminalPane({
       const sid = sessionRef.current;
       if (sid && cmd) {
         const payload = executeImmediately ? cmd + '\n' : cmd;
-        if (isLocal) bridge.writeLocalPty(sid, payload);
+        if (isSerial) bridge.writeSerial(sid, payload);
+        else if (isLocal) bridge.writeLocalPty(sid, payload);
         else bridge.write(sid, payload);
         termRef.current?.focus();
         if (executeImmediately) {
@@ -383,7 +388,7 @@ export function TerminalPane({
         }
       }
     },
-    [isLocal, scheduleResync]
+    [isSerial, isLocal, scheduleResync]
   );
 
   const connect = useCallback(
@@ -396,6 +401,59 @@ export function TerminalPane({
       setError(null);
       setCountdown(null);
       update({ status: 'connecting' });
+
+      // Native Serial Port connection
+      if (isSerial) {
+        const opts = pane.serialOptions!;
+        const summary = `${opts.dataBits}/${(opts.parity ?? 'N')[0].toUpperCase()}/${opts.stopBits}`;
+        term.write(`
+[90m→ Opening ${opts.portName} @ ${opts.baudRate} baud ${summary} (${opts.flowControl})…[0m
+`);
+        try {
+          const sid = await bridge.openSerial(opts, (ev) => {
+            if (dead()) return;
+            switch (ev.type) {
+              case 'output':
+                term.write(ev.data);
+                break;
+              case 'cwd':
+                setCwd(ev.path);
+                update({ cwd: ev.path });
+                break;
+              case 'connected':
+                term.write(`[32m✔ Serial port ${opts.portName} open[0m
+`);
+                break;
+              case 'disconnected':
+                sessionRef.current = null;
+                term.write(`
+[90m[Serial port closed: ${ev.reason}][0m
+`);
+                setStatus('disconnected');
+                update({ status: 'disconnected', sessionId: null });
+                break;
+            }
+          });
+          if (dead()) {
+            bridge.closeSerial(sid);
+            return;
+          }
+          sessionRef.current = sid;
+          retryRef.current = 0;
+          setStatus('connected');
+          update({ status: 'connected', sessionId: sid });
+          // Serial ports have no terminal resize — skip resize()
+        } catch (e) {
+          if (dead()) return;
+          const msg = isBridgeError(e) ? e.message : String(e);
+          setError(msg);
+          setStatus('error');
+          update({ status: 'error' });
+          term.write(`[31m✖ Serial error: ${msg}[0m
+`);
+        }
+        return;
+      }
 
       // Local PTY shell connection
       if (isLocal) {
@@ -615,7 +673,7 @@ export function TerminalPane({
     // Keep PTY dimensions in sync on any terminal resize event
     term.onResize(({ cols, rows }) => {
       const sid = sessionRef.current;
-      if (sid) {
+      if (sid && !isSerial) {
         if (isLocal) bridge.resizeLocalPty(sid, cols, rows);
         else bridge.resize(sid, cols, rows);
       }
@@ -693,7 +751,9 @@ export function TerminalPane({
     term.onData((data) => {
       const sid = sessionRef.current;
       if (!sid) return;
-      if (isLocal) {
+      if (isSerial) {
+        bridge.writeSerial(sid, data);
+      } else if (isLocal) {
         bridge.writeLocalPty(sid, data);
       } else {
         bridge.write(sid, data);
@@ -781,7 +841,8 @@ export function TerminalPane({
       term,
       send: (d) => {
         if (sessionRef.current) {
-          if (isLocal) bridge.writeLocalPty(sessionRef.current, d);
+          if (isSerial) bridge.writeSerial(sessionRef.current, d);
+          else if (isLocal) bridge.writeLocalPty(sessionRef.current, d);
           else bridge.write(sessionRef.current, d);
           term.focus();
         }
@@ -792,7 +853,7 @@ export function TerminalPane({
       try {
         fit.fit();
         updateGhostPos();
-        if (sessionRef.current) {
+        if (sessionRef.current && !isSerial) {
           if (isLocal) bridge.resizeLocalPty(sessionRef.current, term.cols, term.rows);
           else bridge.resize(sessionRef.current, term.cols, term.rows);
         }
@@ -811,7 +872,8 @@ export function TerminalPane({
       dRender.dispose();
       dScroll.dispose();
       if (sessionRef.current) {
-        if (isLocal) bridge.closeLocalPty(sessionRef.current);
+        if (isSerial) bridge.closeSerial(sessionRef.current);
+        else if (isLocal) bridge.closeLocalPty(sessionRef.current);
         else bridge.disconnect(sessionRef.current);
       }
       sessionRef.current = null;
@@ -903,7 +965,8 @@ export function TerminalPane({
           if (text) {
             const sid = sessionRef.current;
             if (sid) {
-              if (isLocal) bridge.writeLocalPty(sid, text);
+              if (isSerial) bridge.writeSerial(sid, text);
+              else if (isLocal) bridge.writeLocalPty(sid, text);
               else bridge.write(sid, text);
               onData?.(text);
             }
@@ -928,7 +991,12 @@ export function TerminalPane({
       {showHeader && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
           <span className={cn('h-1.5 w-1.5 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
-          {isLocal ? (
+          {isSerial ? (
+            <span className="flex items-center gap-1 font-medium text-amber-300">
+              <Unplug className="h-3.5 w-3.5" />
+              <span>{host.label}</span>
+            </span>
+          ) : isLocal ? (
             <span className="flex items-center gap-1 font-medium text-cyan-300">
               <TerminalIcon className="h-3.5 w-3.5" />
               <span>Local Terminal</span>
@@ -940,7 +1008,7 @@ export function TerminalPane({
           )}
           <span className="flex min-w-0 items-center gap-1 truncate font-mono text-slate-500">
             <FolderOpen className="h-3 w-3 shrink-0" />
-            {cwd}
+            {isSerial ? cwd : cwd}
           </span>
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -1106,7 +1174,7 @@ export function TerminalPane({
           )}
         >
           <Loader2 className="h-3 w-3 animate-spin text-cyan-300" />
-          {isLocal ? 'Initializing shell…' : 'Handshaking…'}
+          {isSerial ? 'Opening serial port…' : isLocal ? 'Initializing shell…' : 'Handshaking…'}
         </div>
       )}
 

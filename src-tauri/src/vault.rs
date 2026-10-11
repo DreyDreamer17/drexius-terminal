@@ -18,6 +18,19 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+/// Service name used when talking to the OS keychain (macOS Keychain, Windows
+/// Credential Manager, Linux Secret Service via dbus). Grouped under the
+/// NexusTerminal app identifier so entries are easy to audit/clean up.
+const KEYCHAIN_SERVICE: &str = "dev.nexusterminal.app";
+/// Username under which the master password is stored. We use a fixed,
+/// well-known entry so we can query "is there a stored password?" quickly.
+const KEYCHAIN_USER: &str = "vault-master-password";
+
+fn keychain_entry() -> AppResult<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
+        .map_err(|e| AppError::Other(format!("OS keychain unavailable: {e}")))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultRecord {
@@ -605,6 +618,80 @@ pub fn vault_unlock(master_password: String, vault: State<'_, Vault>) -> AppResu
 #[tauri::command]
 pub fn vault_lock(vault: State<'_, Vault>) {
     vault.lock()
+}
+
+// ── OS Keychain (biometric / Touch ID / Windows Hello integration) ──
+//
+// Stores the master password in the user's OS-provided credential store so
+// that subsequent unlocks can happen via OS biometrics (Touch ID, Face ID,
+// Windows Hello) without retyping. We deliberately treat the OS keychain as
+// an *optional convenience*, never a requirement: if it's unavailable (e.g.
+// headless Linux without a Secret Service daemon), commands return a
+// structured error and the UI falls back to the password field. Storing,
+// retrieving and deleting are all explicit user-initiated actions — we
+// never silently read from the keychain without the user clicking a
+// "Biometric unlock" button, because on macOS any read triggers a Touch ID
+// prompt. The frontend tracks opt-in state itself (a simple localStorage
+// flag); we don't provide a "probe" backend command because probing would
+// itself trigger a biometric prompt on some platforms.
+
+#[tauri::command(async)]
+pub fn os_keychain_unlock(vault: State<'_, Vault>) -> AppResult<()> {
+    // Read the master password from the OS keychain and unlock the vault.
+    // On macOS this triggers a Touch ID / Apple Watch prompt via the
+    // Security framework; on Windows it opens a Windows Hello consent
+    // dialog if the credential is protected. The user has explicitly
+    // tapped the biometric-unlock button before this is called.
+    let pw = match keychain_entry()?.get_password() {
+        Ok(p) => Zeroizing::new(p),
+        Err(keyring::Error::NoEntry) => {
+            return Err(AppError::Other(
+                "No master password stored in OS keychain".into(),
+            ))
+        }
+        Err(keyring::Error::NoStorageAccess(e)) => {
+            return Err(AppError::Other(format!(
+                "OS keychain unavailable: {e}"
+            )))
+        }
+        Err(keyring::Error::PlatformFailure(e)) => {
+            return Err(AppError::Other(format!(
+                "Biometric prompt failed: {e}"
+            )))
+        }
+        Err(e) => {
+            return Err(AppError::Other(format!(
+                "OS keychain denied access: {e}"
+            )))
+        }
+    };
+    vault.unlock(&pw)
+}
+
+#[tauri::command]
+pub fn os_keychain_store(master_password: String) -> AppResult<()> {
+    // Persist the master password in the OS keychain. Called after a
+    // successful manual unlock when the user has opted in via a checkbox.
+    // set_password is idempotent — repeated calls overwrite the existing
+    // entry, which is what we want if the master password is ever rotated.
+    let pw = Zeroizing::new(master_password);
+    keychain_entry()?
+        .set_password(&pw)
+        .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
+}
+
+#[tauri::command]
+pub fn os_keychain_delete() -> AppResult<()> {
+    // Remove any stored master password from the OS keychain. Called when
+    // the user turns off the "Remember me" toggle or explicitly wants to
+    // clear the credential. Succeeds silently if no entry exists.
+    match keychain_entry()?.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(AppError::Other(format!(
+            "Failed to delete from OS keychain: {e}"
+        ))),
+    }
 }
 
 // ── Hosts ──
@@ -1618,56 +1705,6 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
         c.execute("DELETE FROM vaults WHERE id=?1", [&id])?;
         Ok(())
     })
-}
-
-// ── Hardware Serial Port Listing ──
-
-#[tauri::command]
-pub fn serial_list_ports() -> Vec<SerialPortInfo> {
-    let mut ports = Vec::new();
-    
-    // Check /dev/serial/by-id/ on Linux
-    if let Ok(entries) = std::fs::read_dir("/dev/serial/by-id") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Ok(target) = std::fs::canonicalize(&path) {
-                let name = target.to_string_lossy().to_string();
-                let desc = entry.file_name().to_string_lossy().to_string();
-                ports.push(SerialPortInfo {
-                    port_name: name,
-                    description: Some(desc),
-                });
-            }
-        }
-    }
-    
-    // Common Linux/POSIX TTY devices
-    let glob_patterns = [
-        "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2", "/dev/ttyUSB3",
-        "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2",
-        "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2",
-    ];
-    for p in glob_patterns {
-        if std::path::Path::new(p).exists() && !ports.iter().any(|x| x.port_name == p) {
-            ports.push(SerialPortInfo {
-                port_name: p.to_string(),
-                description: None,
-            });
-        }
-    }
-    
-    if ports.is_empty() {
-        ports.push(SerialPortInfo {
-            port_name: "/dev/ttyUSB0".to_string(),
-            description: Some("USB-to-Serial UART Adapter".to_string()),
-        });
-        ports.push(SerialPortInfo {
-            port_name: "/dev/ttyACM0".to_string(),
-            description: Some("CDC ACM USB Serial Device".to_string()),
-        });
-    }
-    
-    ports
 }
 
 // ── Zero-Knowledge Team Sharing (Encrypted .nxvault Bundles) ──

@@ -28,7 +28,6 @@ import {
   QrCode,
   FolderInput,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
 import { THEMES } from './lib/themes';
@@ -210,31 +209,39 @@ export default function App() {
     setNewConnNonce((n) => n + 1);
   }, []);
 
-  const handleConnectSerial = useCallback((port: string, baud: number) => {
-    const shortName = port.split('/').pop() || port;
+  const handleConnectSerial = useCallback((opts: { portName: string; baudRate: number; dataBits: number; parity: string; stopBits: number; flowControl: string }) => {
+    const shortName = opts.portName.split('/').pop()?.split('\\').pop() || opts.portName;
+    const idSafe = opts.portName.replace(/[^a-zA-Z0-9]/g, '_');
     const serialHost: Host = {
-      id: `serial_${port.replace(/[^a-zA-Z0-9]/g, '_')}`,
+      id: `serial_${idSafe}`,
       label: `Serial ${shortName}`,
-      hostname: port,
-      port: baud,
+      hostname: opts.portName,
+      port: opts.baudRate,
       username: 'serial',
       authMethod: 'agent',
-      tags: ['serial', `${baud}`],
+      tags: ['serial', `${opts.baudRate}`],
       hasSecret: true,
       os: 'linux',
       color: '#f59e0b',
       vaultId: activeVaultId === 'all' ? 'personal' : activeVaultId,
     };
-    const shellCmd = `picocom -b ${baud} ${port} 2>/dev/null || minicom -D ${port} -b ${baud} 2>/dev/null || tio -b ${baud} ${port} 2>/dev/null || (echo "Configuring ${port} at ${baud} baud..." && stty -F ${port} ${baud} raw -echo && cat ${port})`;
     const pane: Pane = {
       id: uid(),
       hostId: serialHost.id,
-      isLocal: true,
-      customShell: shellCmd,
+      kind: 'serial',
+      serialOptions: {
+        portName: opts.portName,
+        baudRate: opts.baudRate,
+        dataBits: opts.dataBits,
+        parity: opts.parity as 'none' | 'odd' | 'even',
+        stopBits: opts.stopBits === 2 ? 2 : 1,
+        flowControl: opts.flowControl as 'none' | 'software' | 'hardware',
+      },
     };
+    const summary = `${opts.dataBits}/${opts.parity[0].toUpperCase()}/${opts.stopBits}`;
     const tab: Tab = {
       id: uid(),
-      title: `⚡ ${shortName} (${baud})`,
+      title: `⚡ ${shortName} (${opts.baudRate} ${summary})`,
       color: '#f59e0b',
       panes: [pane],
       layout: 'single',
@@ -247,7 +254,7 @@ export default function App() {
     setPanel(null);
     setShowAI(false);
     setNewConnNonce((n) => n + 1);
-    toast(`Opened Serial terminal on ${port} @ ${baud} baud`);
+    toast(`Opened serial ${opts.portName} @ ${opts.baudRate} baud ${summary}`);
   }, [activeVaultId, toast]);
 
   const handleCreateVault = useCallback(async (v: Vault) => {
@@ -358,7 +365,9 @@ export default function App() {
         if (p.id === sourcePaneId) continue;
         const reg = registry.get(p.id);
         if (reg?.sessionId) {
-          if (p.isLocal) {
+          if (p.kind === 'serial') {
+            bridge.writeSerial(reg.sessionId, data);
+          } else if (p.isLocal) {
             bridge.writeLocalPty(reg.sessionId, data);
           } else {
             bridge.write(reg.sessionId, data);
@@ -995,6 +1004,7 @@ export default function App() {
       )}
       {showSerial && (
         <SerialModal
+          theme={theme}
           onClose={() => setShowSerial(false)}
           onConnect={handleConnectSerial}
         />
@@ -1079,11 +1089,39 @@ function SyncModal({
   toast: (m: string) => void;
 }) {
   const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
+  const [token, setToken] = useState(() => localStorage.getItem('nx.sync.token') ?? '');
+  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (isTauri) {
+      bridge.syncStatus().then(setStatus).catch(() => {});
+    }
+  }, []);
+
   const save = async () => {
     localStorage.setItem('nx.sync.relay', url);
-    if (isTauri) await invoke('sync_configure', { relayUrl: url || null }).catch(() => {});
+    localStorage.setItem('nx.sync.token', token);
+    if (isTauri) await bridge.syncConfigure(url || null, token || undefined).catch(() => {});
     toast(url ? 'Relay configured — data leaves this device only as ciphertext' : 'Sync disabled');
     onClose();
+  };
+  const doSync = async () => {
+    setBusy(true);
+    try {
+      if (isTauri) {
+        await bridge.syncConfigure(url || null, token || undefined);
+      }
+      const out = await bridge.syncNow();
+      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId });
+      toast('Sync complete');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
+      toast(`Sync failed: ${msg}`);
+    } finally {
+      setBusy(false);
+    }
   };
   const steps = [
     ['K_root', 'Argon2id(master password, salt)'],
@@ -1092,6 +1130,7 @@ function SyncModal({
     ['Blind', 'blob id = HMAC(K_index, table:id)'],
     ['Merge', 'Hybrid logical clocks · last-writer-wins'],
   ];
+  const lastSyncStr = status?.lastSync ? new Date(status.lastSync * 1000).toLocaleString() : 'never';
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
       <div onMouseDown={(e) => e.stopPropagation()} className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e131d] p-6 shadow-2xl">
@@ -1128,12 +1167,32 @@ function SyncModal({
             </li>
           ))}
         </ol>
-        <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL (WebDAV / S3 / self-hosted)</label>
+
+        <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:border-cyan-400/40 focus:outline-none" />
-        <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with blinded IDs. New devices pair via an X25519 QR handshake.</p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-lg px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Close</button>
-          <button onClick={save} className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-4 py-2 text-xs font-semibold text-black">Save</button>
+        <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">Device token (optional bearer auth)</label>
+        <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="••••••••" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:border-cyan-400/40 focus:outline-none" />
+        <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with HMAC-blinded IDs. Hosts, keys, snippets and tunnels sync E2EE.</p>
+
+        {status && (
+          <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">
+            device <span className="text-cyan-300">{status.deviceId}</span> · last sync <span className="text-emerald-300">{lastSyncStr}</span>
+            {status.lastError && <div className="mt-1 text-rose-300">error: {status.lastError}</div>}
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-between gap-2">
+          <button
+            onClick={doSync}
+            disabled={!url || busy}
+            className="rounded-lg bg-emerald-500/20 border border-emerald-400/30 px-4 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-40"
+          >
+            {busy ? 'Syncing…' : 'Sync now'}
+          </button>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="rounded-lg px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Close</button>
+            <button onClick={save} className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-4 py-2 text-xs font-semibold text-black">Save</button>
+          </div>
         </div>
       </div>
     </div>

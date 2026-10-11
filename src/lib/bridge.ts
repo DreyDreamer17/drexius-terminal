@@ -29,6 +29,7 @@ import type {
   PairingHostInfo,
   PairingJoinResult,
   ParsedSshHost,
+  SerialOpenOptions,
   SerialPortInfo,
   SessionEvent,
   Snapshot,
@@ -222,6 +223,39 @@ export const bridge = {
   async lock(): Promise<void> {
     if (isTauri) return invoke('vault_lock');
     demo = null; demoKey = null;
+  },
+
+  // ── OS Keychain (biometric unlock) ──
+  //
+  // We do NOT probe the OS keychain on startup — on macOS that would pop a
+  // Touch ID dialog before the user has clicked anything. Instead, the
+  // frontend persists an opt-in flag in localStorage after a successful
+  // store and clears it after delete; the biometric button only appears
+  // when that flag is true. If the OS-side entry was deleted out-of-band
+  // (e.g. via Keychain Access), osKeychainUnlock will return NoEntry and
+  // we surface the error + fall back to password entry.
+  osKeychainEnabled(): boolean {
+    if (!isTauri) return false;
+    try { return localStorage.getItem('nx.os_keychain') === '1'; } catch { return false; }
+  },
+
+  async osKeychainUnlock(): Promise<void> {
+    if (!isTauri) throw new Error('OS keychain is only available in the desktop app');
+    return invoke('os_keychain_unlock');
+  },
+
+  async osKeychainStore(masterPassword: string): Promise<void> {
+    if (!isTauri) return;
+    try {
+      await invoke('os_keychain_store', { masterPassword });
+      localStorage.setItem('nx.os_keychain', '1');
+    } catch { /* non-fatal — the checkbox will show unticked next launch */ }
+  },
+
+  async osKeychainDelete(): Promise<void> {
+    if (!isTauri) return;
+    try { await invoke('os_keychain_delete'); } catch { /* non-fatal */ }
+    localStorage.removeItem('nx.os_keychain');
   },
 
   // ── Hosts ──
@@ -720,6 +754,51 @@ export const bridge = {
       { portName: '/dev/ttyUSB0', description: 'FTDI USB Serial Interface (UART)' },
       { portName: '/dev/ttyACM0', description: 'Arduino / Embedded Serial Device' },
     ];
+  },
+
+  async openSerial(
+    opts: SerialOpenOptions,
+    onEvent: (e: SessionEvent) => void,
+  ): Promise<string> {
+    if (isTauri) {
+      const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
+      channel.onmessage = (msg) => {
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
+        }
+      };
+      return invoke<string>('serial_open', { req: opts, onEvent: channel });
+    }
+    // No sandbox serial — fall through to an error.
+    throw new Error('Native serial ports are only available in the desktop app');
+  },
+
+  async writeSerial(sessionId: string, data: string): Promise<void> {
+    if (isTauri) return invoke('serial_write', { sessionId, data });
+  },
+
+  async closeSerial(sessionId: string): Promise<void> {
+    if (isTauri) {
+      await invoke('serial_close', { sessionId }).catch(() => {});
+      return;
+    }
+  },
+
+  // ── Zero-knowledge Sync ──
+  async syncStatus(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null }> {
+    if (isTauri) return invoke('sync_status');
+    return { enabled: false, relayUrl: null, deviceId: 'demo', lastSync: null, cursor: 0, lastError: null };
+  },
+  async syncConfigure(relayUrl: string | null, deviceToken?: string): Promise<void> {
+    if (isTauri) return invoke('sync_configure', { relayUrl, deviceToken: deviceToken ?? null });
+  },
+  async syncNow(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null }> {
+    if (isTauri) return invoke('sync_now');
+    throw new Error('Sync is only available in the desktop app');
   },
 
   // ── Zero-Knowledge Team Sharing ──

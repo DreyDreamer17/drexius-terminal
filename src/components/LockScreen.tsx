@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Lock, Loader2, ShieldCheck, Cpu, Cloud, Eye, EyeOff } from 'lucide-react';
+import { Lock, Loader2, ShieldCheck, Cpu, Cloud, Eye, EyeOff, Fingerprint, Check } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 
 export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
@@ -9,17 +9,83 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [hasStored, setHasStored] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+  // "Remember in OS keychain" — visible on desktop only, defaults to off for
+  // fresh vault creation; when unlocking an existing vault we default to
+  // whatever the current storage state is (checked if already stored).
+  const [remember, setRemember] = useState(false);
 
-  useEffect(() => { bridge.vaultStatus().then((s) => setInitialized(s.initialized)); }, []);
+  useEffect(() => {
+    (async () => {
+      const s = await bridge.vaultStatus();
+      setInitialized(s.initialized);
+      // On desktop, show the biometric button only if the user has previously
+      // opted in (tracked in localStorage). We never probe the OS keychain
+      // here — that would trigger a Touch ID/Windows Hello prompt on mount.
+      if (isTauri) {
+        setHasStored(bridge.osKeychainEnabled());
+        setRemember(bridge.osKeychainEnabled());
+      }
+    })();
+  }, []);
+
+  const doUnlock = async (password: string, isNewVault: boolean) => {
+    setBusy(true); setErr(null);
+    try {
+      await bridge.unlock(password);
+      // Post-unlock keychain sync:
+      //   - New vault creation → store if the user ticked the box
+      //   - Existing vault  → store if ticked, delete if unticked (so the
+      //     checkbox faithfully reflects what's in the OS keychain)
+      if (isTauri) {
+        if (remember) {
+          await bridge.osKeychainStore(password);
+          setHasStored(true);
+        } else if (!isNewVault) {
+          // Only delete on existing-vault unlocks; on creation, there can't
+          // be a previous entry so this is a no-op that we skip to avoid a
+          // needless D-Bus / Security-framework round-trip.
+          await bridge.osKeychainDelete();
+          setHasStored(false);
+        }
+      }
+      onUnlocked();
+    } catch (er) {
+      setErr(isBridgeError(er) ? er.message : String(er));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!initialized && pw !== pw2) { setErr('Passwords do not match'); return; }
+    const isNew = initialized === false;
+    if (isNew && pw !== pw2) { setErr('Passwords do not match'); return; }
     if (pw.length < 4) { setErr('Use at least 4 characters (12+ recommended)'); return; }
-    setBusy(true); setErr(null);
-    try { await bridge.unlock(pw); onUnlocked(); }
-    catch (er) { setErr(isBridgeError(er) ? er.message : String(er)); }
-    finally { setBusy(false); }
+    await doUnlock(pw, isNew);
+  };
+
+  const biometricUnlock = async () => {
+    setBioBusy(true); setErr(null);
+    try {
+      await bridge.osKeychainUnlock();
+      onUnlocked();
+    } catch (er) {
+      const msg = isBridgeError(er) ? er.message : String(er);
+      // If the entry is gone (NoEntry) or access was denied permanently,
+      // clear the local opt-in flag so the button hides and the user falls
+      // back to manual password entry. We don't probe again — that would
+      // re-trigger a biometric prompt.
+      setErr(msg);
+      if (/no master password stored|not found|no entry/i.test(msg)) {
+        setHasStored(false);
+        setRemember(false);
+        localStorage.removeItem('nx.os_keychain');
+      }
+    } finally {
+      setBioBusy(false);
+    }
   };
 
   const features = [
@@ -55,7 +121,31 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
           <h2 className="mt-4 text-center text-xl font-semibold text-white">{initialized === false ? 'Create your vault' : 'Unlock vault'}</h2>
           <p className="mt-1 text-center text-xs text-slate-500">{initialized === false ? 'Choose a master password. It cannot be recovered.' : 'Enter your master password to decrypt your hosts.'}</p>
 
-          <div className="mt-6 space-y-3">
+          {/* Biometric unlock shortcut — only on desktop when a stored password exists */}
+          {isTauri && initialized === true && hasStored && (
+            <button
+              type="button"
+              onClick={biometricUnlock}
+              disabled={bioBusy || busy}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 py-2.5 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20 disabled:opacity-50"
+            >
+              {bioBusy ? (
+                <><Loader2 className="h-4 w-4 animate-spin" />Waiting for biometrics…</>
+              ) : (
+                <><Fingerprint className="h-4 w-4" />Unlock with Touch ID / Windows Hello</>
+              )}
+            </button>
+          )}
+
+          {isTauri && initialized === true && hasStored && (
+            <div className="mt-3 flex items-center gap-2">
+              <div className="h-px flex-1 bg-white/10" />
+              <span className="text-[10px] uppercase tracking-wider text-slate-600">or enter password</span>
+              <div className="h-px flex-1 bg-white/10" />
+            </div>
+          )}
+
+          <div className="mt-5 space-y-3">
             <div className="relative">
               <input autoFocus type={show ? 'text' : 'password'} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Master password"
                 className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-4 focus:ring-cyan-400/10" />
@@ -65,16 +155,46 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
               <input type={show ? 'text' : 'password'} value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="Confirm master password"
                 className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-4 focus:ring-cyan-400/10" />
             )}
+
+            {/* Remember in OS keychain opt-in (desktop only) */}
+            {isTauri && (
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-white/10">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={remember}
+                  onClick={() => setRemember((r) => !r)}
+                  className={
+                    'mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition ' +
+                    (remember
+                      ? 'border-emerald-400/60 bg-emerald-400/30 text-emerald-200'
+                      : 'border-white/20 bg-white/5 text-transparent hover:border-white/40')
+                  }
+                >
+                  {remember && <Check className="h-3 w-3" strokeWidth={3} />}
+                </button>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
+                    <Fingerprint className="h-3.5 w-3.5 text-emerald-300" />
+                    Remember in OS keychain
+                  </div>
+                  <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
+                    Store an encrypted copy of the master password in macOS Keychain, Windows Credential Manager, or Linux Secret Service. Lets you unlock with Touch ID / Face ID / Windows Hello next time.
+                  </div>
+                </div>
+              </label>
+            )}
+
             {err && <p className="text-xs text-rose-400">{err}</p>}
             <button disabled={busy || initialized === null} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 via-sky-400 to-fuchsia-400 py-3 text-sm font-semibold text-black shadow-[0_10px_40px_-10px_rgba(34,211,238,0.6)] transition hover:brightness-110 disabled:opacity-50">
-              {busy ? <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</> : initialized === false ? 'Create vault' : 'Unlock'}
+              {busy ? <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</> : initialized === false ? 'Create vault' : hasStored ? 'Unlock with password' : 'Unlock'}
             </button>
           </div>
 
           <div className="mt-6 rounded-xl border border-white/5 bg-black/20 p-3 text-[11px] leading-relaxed text-slate-500">
             {isTauri
-              ? <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2.</>
-              : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections.
+              ? <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
+              : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
                 {initialized && <button type="button" onClick={async () => { if (confirm('Erase the sandbox vault?')) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 text-cyan-400 hover:underline">Reset sandbox vault</button>}</>}
           </div>
         </form>
