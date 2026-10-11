@@ -2513,17 +2513,22 @@ function renderInline(text: string): React.ReactNode {
     }
     const linkMatch = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (linkMatch) {
-      return (
-        <a
-          key={idx}
-          href={linkMatch[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition"
-        >
-          {linkMatch[1]}
-        </a>
-      );
+      const rawUrl = linkMatch[2].trim();
+      const isSafe = /^https?:\/\//i.test(rawUrl) || /^mailto:/i.test(rawUrl);
+      if (isSafe) {
+        return (
+          <a
+            key={idx}
+            href={rawUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition"
+          >
+            {linkMatch[1]}
+          </a>
+        );
+      }
+      return <span key={idx} className="text-slate-300">{linkMatch[1]}</span>;
     }
 
     return part;

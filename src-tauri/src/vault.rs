@@ -15,6 +15,7 @@ use chacha20poly1305::{
 use rand::RngCore;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -1873,16 +1874,55 @@ pub fn team_vault_import(
             params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
         )?;
 
+        let mut host_id_map: HashMap<String, String> = HashMap::new();
+
         for h in &payload.hosts {
+            // Check if this host id already exists in a different vault or has an attached secret
+            let is_collision = c.query_row(
+                "SELECT vault_id FROM hosts WHERE id = ?1",
+                [&h.id],
+                |r| r.get::<_, String>(0),
+            ).optional()?;
+
+            let has_secret: bool = c.query_row(
+                "SELECT 1 FROM secrets WHERE host_id = ?1",
+                [&h.id],
+                |_| Ok(true),
+            ).optional()?.unwrap_or(false);
+
+            let host_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                host_id_map.insert(h.id.clone(), new_id.clone());
+                new_id
+            } else {
+                h.id.clone()
+            };
+
+            // Imported hosts should only bind to keychains that exist within this team vault
+            let safe_keychain_id = if let Some(ref kid) = h.keychain_id {
+                let exists: bool = c.query_row(
+                    "SELECT 1 FROM keychain WHERE id = ?1 AND vault_id = ?2",
+                    params![kid, payload.vault.id],
+                    |_| Ok(true),
+                ).optional()?.unwrap_or(false);
+                if exists { Some(kid.clone()) } else { None }
+            } else {
+                None
+            };
+
+            let jump_id = h.jump_host_id.as_ref().map(|jid| {
+                host_id_map.get(jid).cloned().unwrap_or_else(|| jid.clone())
+            });
+
             c.execute(
                 "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
                      grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
                 params![
-                    h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
+                    host_id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
                     h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
-                    h.color, h.os, h.keychain_id, h.jump_host_id, payload.vault.id,
+                    h.color, h.os, safe_keychain_id, jump_id, payload.vault.id,
                     h.startup_command,
                     now()
                 ],
@@ -1890,21 +1930,44 @@ pub fn team_vault_import(
         }
 
         for s in &payload.snippets {
+            let snip_collision = c.query_row(
+                "SELECT vault_id FROM snippets WHERE id = ?1",
+                [&s.id],
+                |r| r.get::<_, String>(0),
+            ).optional()?;
+            let snip_id = if snip_collision.is_some() && snip_collision.as_deref() != Some(&payload.vault.id) {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                s.id.clone()
+            };
+
             c.execute(
                 "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![s.id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
+                params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
             )?;
         }
 
         for t in &payload.tunnels {
+            let tun_collision = c.query_row(
+                "SELECT vault_id FROM tunnels WHERE id = ?1",
+                [&t.id],
+                |r| r.get::<_, String>(0),
+            ).optional()?;
+            let tun_id = if tun_collision.is_some() && tun_collision.as_deref() != Some(&payload.vault.id) {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                t.id.clone()
+            };
+            let mapped_host_id = host_id_map.get(&t.host_id).cloned().unwrap_or_else(|| t.host_id.clone());
+
             c.execute(
                 "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
                      remote_host=?7, remote_port=?8, vault_id=?9, updated_at=?10",
                 params![
-                    t.id, t.label, t.host_id, t.forward_type, t.local_host, t.local_port,
+                    tun_id, t.label, mapped_host_id, t.forward_type, t.local_host, t.local_port,
                     t.remote_host, t.remote_port, payload.vault.id, now()
                 ],
             )?;

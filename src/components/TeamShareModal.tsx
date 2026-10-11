@@ -140,7 +140,7 @@ export function TeamShareModal({
       const bundle = JSON.parse(importJson.trim()) as EncryptedTeamVaultBundle;
       const vaultName = await bridge.importTeamVault(bundle, importPassphrase.trim());
       await onRefresh();
-      toast(`Successfully imported "${vaultName}" and its credentials!`);
+      toast(`Successfully imported "${vaultName}" and configurations!`);
       onClose();
     } catch (err: unknown) {
       toast(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
