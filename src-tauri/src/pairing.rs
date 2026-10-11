@@ -153,7 +153,7 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
         // Hosts with secrets
         let mut st_h = c.prepare(
             "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags,
-                    h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
+                    h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
                     s.password, s.private_key, s.passphrase
              FROM hosts h
              LEFT JOIN secrets s ON s.host_id = h.id",
@@ -176,11 +176,12 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
                     keychain_id: r.get(10)?,
                     jump_host_id: r.get(11)?,
                     vault_id: r.get(12)?,
+                    startup_command: r.get(13)?,
                     has_secret: false,
                 };
-                let pwd: Option<String> = r.get(13)?;
-                let key: Option<String> = r.get(14)?;
-                let pass: Option<String> = r.get(15)?;
+                let pwd: Option<String> = r.get(14)?;
+                let key: Option<String> = r.get(15)?;
+                let pass: Option<String> = r.get(16)?;
                 let secret = if pwd.is_some() || key.is_some() || pass.is_some() {
                     Some(HostSecret {
                         password: pwd,
@@ -303,14 +304,16 @@ fn restore_full_vault(
         // 2. Hosts & Secrets
         for (h, sec) in &archive.hosts {
             c.execute(
-                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?14",
+                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
                 params![
                     h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
                     h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
-                    h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id.as_deref().unwrap_or("personal"), now
+                    h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id.as_deref().unwrap_or("personal"),
+                    h.startup_command,
+                    now
                 ],
             )?;
             if let Some(s) = sec {

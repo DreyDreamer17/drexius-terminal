@@ -20,13 +20,66 @@ import {
   ChevronUp,
   ChevronDown,
   Terminal as TerminalIcon,
+  Clipboard,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
 import { registry } from '../lib/sessions';
+import { ClipboardModal } from './ClipboardModal';
+import { CommandSearchModal } from './CommandSearchModal';
 import type { NexusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus } from '../lib/types';
 import { cn } from '../utils/cn';
+
+const COMMON_SHELL_COMMANDS = [
+  'pm2 status',
+  'pm2 logs',
+  'pm2 restart all',
+  'pm2 stop all',
+  'pm2 list',
+  'pm2 monit',
+  'speedtest',
+  'git status',
+  'git pull',
+  'git push',
+  'git log --oneline -n 10',
+  'git diff',
+  'git checkout -b ',
+  'git checkout ',
+  'git branch -a',
+  'git commit -m "',
+  'docker ps -a',
+  'docker compose up -d',
+  'docker compose down',
+  'docker compose logs -f --tail=100',
+  'docker exec -it ',
+  'docker images',
+  'systemctl status ',
+  'systemctl restart ',
+  'journalctl -u ',
+  'journalctl -xe',
+  'kubectl get pods -A',
+  'kubectl logs -f ',
+  'kubectl describe pod ',
+  'npm run dev',
+  'npm run build',
+  'npm test',
+  'cargo check',
+  'cargo build --release',
+  'cargo test',
+  'cargo run',
+  'htop',
+  'df -h',
+  'free -h',
+  'netstat -tulpn',
+  'ss -tulpn',
+  'tar -czvf ',
+  'tar -xzvf ',
+  'chmod +x ',
+  'find . -name "',
+  'grep -rnw . -e "',
+  'curl -fsSL ',
+];
 
 interface Props {
   pane: Pane;
@@ -40,6 +93,7 @@ interface Props {
   onClose: () => void;
   onChange: () => void;
   onData?: (data: string) => void;
+  toast?: (msg: string) => void;
 }
 
 export function TerminalPane({
@@ -54,8 +108,11 @@ export function TerminalPane({
   onClose,
   onChange,
   onData,
+  toast = () => {},
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [ghostPos, setGhostPos] = useState<{ x: number; y: number; cellHeight: number } | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -64,6 +121,14 @@ export function TerminalPane({
   const lineRef = useRef('');
   const retryRef = useRef(0);
   const genRef = useRef(0);
+
+  // Command & Clipboard history + Autosuggestion states
+  const historyCacheRef = useRef<string[]>([]);
+  const [showCmdSearch, setShowCmdSearch] = useState(false);
+  const [showClipboard, setShowClipboard] = useState(false);
+  const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
+  const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
+  suggestionRef.current = suggestion;
 
   const [status, setStatus] = useState<PaneStatus>('connecting');
   const [cwd, setCwd] = useState('~');
@@ -104,6 +169,221 @@ export function TerminalPane({
       }
     },
     [matchRegex, matchWholeWord, matchCase]
+  );
+
+  const getCurrentCommandLine = useCallback((): string => {
+    const term = termRef.current;
+    if (!term) return lineRef.current;
+
+    try {
+      const buffer = term.buffer.active;
+      if (buffer.type === 'alternate') return '';
+
+      const lineIndex = buffer.cursorY + buffer.baseY;
+      const lineObj = buffer.getLine(lineIndex);
+      if (!lineObj) return lineRef.current;
+
+      const upToCursor = lineObj.translateToString(false, 0, buffer.cursorX);
+
+      // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
+      const userHost = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s*)(.*)$/);
+      if (userHost && userHost[1] !== undefined) {
+        return userHost[1];
+      }
+
+      // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
+      const bracketed = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s*)(.*)$/);
+      if (bracketed && bracketed[1] !== undefined) {
+        return bracketed[1];
+      }
+
+      // 3. Modern prompt glyphs: ❯, ➜, λ, » (Starship, Pure, Oh-My-Zsh)
+      const glyph = upToCursor.match(/^.*?[❯➜λ»]\s*(.*)$/);
+      if (glyph && glyph[1] !== undefined) {
+        return glyph[1];
+      }
+
+      // 4. Simple prompt: "$ ", "# ", "> ", "% " at prompt start
+      const simple = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/: ]*?[\$#%>]\s+)(.*)$/);
+      if (simple && simple[1] !== undefined) {
+        return simple[1];
+      }
+    } catch {
+      /* fallback */
+    }
+
+    return lineRef.current;
+  }, []);
+
+  // Set when the line was changed by something we can't see in keystrokes
+  // (Tab completion, history navigation, paste, cursor movement...).
+  const dirtyRef = useRef(false);
+  const resyncTimerRef = useRef<number | null>(null);
+
+  const updateSuggestion = useCallback((overrideText?: string) => {
+    // The keystroke-tracked line is the source of truth. The screen buffer lags
+    // behind keystrokes (server echo), so it must never overwrite it while typing.
+    const prefix = (overrideText !== undefined ? overrideText : lineRef.current) || '';
+
+    if (prefix.trim().length < 2) {
+      setSuggestion(null);
+      setGhostPos(null);
+      return;
+    }
+    const prefixLower = prefix.toLowerCase();
+
+    // 1. Gather all candidate commands from history and common shell commands
+    const historyMatches = historyCacheRef.current.filter(
+      (cmd) => cmd.toLowerCase().startsWith(prefixLower) && cmd.length > prefix.length
+    );
+    const commonMatches = COMMON_SHELL_COMMANDS.filter(
+      (cmd) => cmd.toLowerCase().startsWith(prefixLower) && cmd.length > prefix.length
+    );
+
+    const candidates = [...historyMatches, ...commonMatches];
+    if (candidates.length === 0) {
+      setSuggestion(null);
+      setGhostPos(null);
+      return;
+    }
+
+    // 2. Most recent history match wins, then built-in common commands.
+    const bestMatch = candidates[0];
+
+    setSuggestion({
+      full: bestMatch,
+      suffix: bestMatch.slice(prefix.length),
+    });
+  }, []);
+
+  // After Tab / history navigation / paste / cursor movement, the real line only
+  // exists on screen. Wait for the server echo to land, then re-read it once.
+  const scheduleResync = useCallback(() => {
+    dirtyRef.current = true;
+    setSuggestion(null);
+    setGhostPos(null);
+    if (resyncTimerRef.current !== null) window.clearTimeout(resyncTimerRef.current);
+    resyncTimerRef.current = window.setTimeout(() => {
+      resyncTimerRef.current = null;
+      lineRef.current = getCurrentCommandLine();
+      dirtyRef.current = false;
+      updateSuggestion(lineRef.current);
+    }, 120);
+  }, [getCurrentCommandLine, updateSuggestion]);
+
+  const acceptSuggestion = useCallback(() => {
+    const s = suggestionRef.current;
+    const sid = sessionRef.current;
+    if (!s || !s.suffix || !sid) return;
+
+    if (isLocal) {
+      bridge.writeLocalPty(sid, s.suffix);
+    } else {
+      bridge.write(sid, s.suffix);
+    }
+    lineRef.current += s.suffix;
+    setSuggestion(null);
+    setGhostPos(null);
+    termRef.current?.focus();
+  }, [isLocal]);
+
+  const updateGhostPos = useCallback(() => {
+    const term = termRef.current;
+    const container = containerRef.current;
+    const el = elRef.current;
+    if (!term || !container || !el) {
+      setGhostPos(null);
+      return;
+    }
+
+    // Don't show in alternate screen buffer (e.g. vim, htop, nano)
+    if (term.buffer.active.type === 'alternate') {
+      setGhostPos(null);
+      return;
+    }
+
+    // Don't show if user scrolled up into history
+    if (term.buffer.active.viewportY !== term.buffer.active.baseY) {
+      setGhostPos(null);
+      return;
+    }
+
+    const screen = el.querySelector('.xterm-screen') as HTMLElement | null;
+    const core = (term as any)._core;
+    const dims = core?._renderService?.dimensions;
+
+    const cellWidth =
+      dims?.css?.cell?.width ||
+      dims?.actualCellWidth ||
+      (screen && term.cols ? screen.clientWidth / term.cols : 9);
+    const cellHeight =
+      dims?.css?.cell?.height ||
+      dims?.actualCellHeight ||
+      (screen && term.rows ? screen.clientHeight / term.rows : 17);
+
+    const containerRect = container.getBoundingClientRect();
+    const screenRect = screen ? screen.getBoundingClientRect() : containerRect;
+
+    const cursorX = term.buffer.active.cursorX;
+    const cursorY = term.buffer.active.cursorY;
+
+    if (cursorY < 0 || cursorY >= term.rows || cursorX >= term.cols) {
+      setGhostPos(null);
+      return;
+    }
+
+    const x = Math.round(screenRect.left - containerRect.left + cursorX * cellWidth);
+    const y = Math.round(screenRect.top - containerRect.top + cursorY * cellHeight);
+
+    setGhostPos({
+      x,
+      y,
+      cellHeight,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (suggestion) {
+      updateGhostPos();
+      const raf = requestAnimationFrame(updateGhostPos);
+      return () => cancelAnimationFrame(raf);
+    } else {
+      setGhostPos(null);
+    }
+  }, [suggestion, updateGhostPos]);
+
+
+  const handlePasteClipboard = useCallback(
+    (text: string) => {
+      const sid = sessionRef.current;
+      if (sid && text) {
+        if (isLocal) bridge.writeLocalPty(sid, text);
+        else bridge.write(sid, text);
+        termRef.current?.focus();
+        scheduleResync();
+      }
+    },
+    [isLocal, scheduleResync]
+  );
+
+  const handleSelectCommand = useCallback(
+    (cmd: string, executeImmediately = false) => {
+      const sid = sessionRef.current;
+      if (sid && cmd) {
+        const payload = executeImmediately ? cmd + '\n' : cmd;
+        if (isLocal) bridge.writeLocalPty(sid, payload);
+        else bridge.write(sid, payload);
+        termRef.current?.focus();
+        if (executeImmediately) {
+          lineRef.current = '';
+          setSuggestion(null);
+          setGhostPos(null);
+        } else {
+          scheduleResync();
+        }
+      }
+    },
+    [isLocal, scheduleResync]
   );
 
   const connect = useCallback(
@@ -152,6 +432,14 @@ export function TerminalPane({
           update({ status: 'connected', sessionId: sid });
           if (term.cols && term.rows) {
             bridge.resizeLocalPty(sid, term.cols, term.rows);
+          }
+          if (host.startupCommand && host.startupCommand.trim()) {
+            const startup = host.startupCommand.trim() + '\n';
+            setTimeout(() => {
+              if (sessionRef.current === sid) {
+                bridge.writeLocalPty(sid, startup);
+              }
+            }, 350);
           }
         } catch (e) {
           if (dead()) return;
@@ -214,6 +502,14 @@ export function TerminalPane({
         update({ status: 'connected', sessionId: sid });
         if (term.cols && term.rows) {
           bridge.resize(sid, term.cols, term.rows);
+        }
+        if (host.startupCommand && host.startupCommand.trim()) {
+          const startup = host.startupCommand.trim() + '\n';
+          setTimeout(() => {
+            if (sessionRef.current === sid) {
+              bridge.write(sid, startup);
+            }
+          }, 450);
         }
       } catch (e) {
         if (dead()) return;
@@ -336,6 +632,64 @@ export function TerminalPane({
       return true;
     });
 
+    // Preload recent command history for instant autosuggestions
+    bridge.listCommandHistory(200).then((items) => {
+      const raw = items.map((i) => i.command.trim()).filter(Boolean);
+      // Deduplicate and filter out incomplete mid-word truncated prefixes
+      const cleaned: string[] = [];
+      for (const cmd of raw) {
+        const hasFuller =
+          raw.some((other) => other.length > cmd.length && other.startsWith(cmd) && !other.slice(cmd.length).startsWith(' ')) ||
+          COMMON_SHELL_COMMANDS.some((other) => other.length > cmd.length && other.startsWith(cmd) && !other.slice(cmd.length).startsWith(' '));
+        if (!hasFuller && !cleaned.includes(cmd)) {
+          cleaned.push(cmd);
+        }
+      }
+      historyCacheRef.current = cleaned;
+    }).catch(() => {});
+
+    // Track cursor and viewport changes to update ghost text alignment
+    const dCursor = term.onCursorMove(updateGhostPos);
+    const dRender = term.onRender(updateGhostPos);
+    const dScroll = term.onScroll(updateGhostPos);
+
+    term.attachCustomKeyEventHandler((e) => {
+      // Ctrl+R -> Command History Reverse Search
+      if (e.ctrlKey && e.key.toLowerCase() === 'r' && e.type === 'keydown') {
+        setShowCmdSearch(true);
+        return false;
+      }
+
+      // Ctrl+Shift+V or Cmd+Shift+V -> Clipboard History
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v' && e.type === 'keydown') {
+        setShowClipboard(true);
+        return false;
+      }
+
+
+      // ArrowRight or Tab -> Accept autosuggestion
+      if (suggestionRef.current && (e.key === 'ArrowRight' || e.key === 'Tab') && e.type === 'keydown') {
+        acceptSuggestion();
+        return false;
+      }
+
+      // Escape -> Dismiss suggestion
+      if (e.key === 'Escape' && suggestionRef.current && e.type === 'keydown') {
+        setSuggestion(null);
+        setGhostPos(null);
+        return false;
+      }
+
+      // Arrow navigation -> Dismiss suggestion so shell history navigation is clean
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft') && suggestionRef.current && e.type === 'keydown') {
+        setSuggestion(null);
+        setGhostPos(null);
+        return true;
+      }
+
+      return true;
+    });
+
     term.onData((data) => {
       const sid = sessionRef.current;
       if (!sid) return;
@@ -343,29 +697,76 @@ export function TerminalPane({
         bridge.writeLocalPty(sid, data);
       } else {
         bridge.write(sid, data);
-        // Track submitted lines for snapshot "last command"
-        for (const ch of data) {
-          if (ch === '\r') {
-            const cmd = lineRef.current.trim();
-            if (cmd) {
-              update({ lastCommand: cmd });
+      }
+
+      // Escape sequences (arrows, Home/End, Delete, bracketed paste...) change the
+      // line in ways we can't track from keystrokes -> re-read it from the screen.
+      if (data.startsWith('\x1b')) {
+        scheduleResync();
+        onData?.(data);
+        return;
+      }
+
+      // Track submitted lines for snapshot, command history, and autosuggestion
+      for (const ch of data) {
+        if (ch === '\r' || ch === '\n') {
+          // Keystrokes are the truth. Only fall back to the screen if the line was
+          // modified by Tab / history navigation and hasn't been re-synced yet.
+          const cmd = (dirtyRef.current ? getCurrentCommandLine() || lineRef.current : lineRef.current).trim();
+          if (resyncTimerRef.current !== null) {
+            window.clearTimeout(resyncTimerRef.current);
+            resyncTimerRef.current = null;
+          }
+          dirtyRef.current = false;
+          if (cmd) {
+            update({ lastCommand: cmd });
+            if (!isLocal) {
               bridge.recordSnapshot(host.id, sid, { lastCommand: cmd });
             }
-            lineRef.current = '';
-          } else if (ch === '\x7f') lineRef.current = lineRef.current.slice(0, -1);
-          else if (ch === '\x03') lineRef.current = '';
-          else if (ch >= ' ' && !data.startsWith('\x1b')) lineRef.current += ch;
+            bridge.addCommandHistory({
+              hostId: isLocal ? null : host.id,
+              hostLabel: isLocal ? 'Local Terminal' : host.label,
+              command: cmd,
+              cwd: cwd || '~',
+            }).catch(() => {});
+
+            const idx = historyCacheRef.current.indexOf(cmd);
+            if (idx !== -1) historyCacheRef.current.splice(idx, 1);
+            historyCacheRef.current.unshift(cmd);
+          }
+          lineRef.current = '';
+          setSuggestion(null);
+          setGhostPos(null);
+        } else if (ch === '\t') {
+          scheduleResync();
+        } else if (ch === '\x7f' || ch === '\x08') {
+          lineRef.current = lineRef.current.slice(0, -1);
+          updateSuggestion(lineRef.current);
+        } else if (ch === '\x03' || ch === '\x15' || ch === '\x0c') {
+          lineRef.current = '';
+          dirtyRef.current = false;
+          setSuggestion(null);
+          setGhostPos(null);
+        } else if (ch === '\x17') {
+          const parts = lineRef.current.trimEnd().split(/\s+/);
+          parts.pop();
+          lineRef.current = parts.join(' ');
+          updateSuggestion(lineRef.current);
+        } else if (ch >= ' ') {
+          lineRef.current += ch;
+          updateSuggestion(lineRef.current);
         }
       }
       onData?.(data);
     });
 
-    // Copy on selection (Termius convenience)
+    // Copy on selection (Termius convenience & Clipboard history)
     term.onSelectionChange(() => {
       if (term.hasSelection()) {
         const sel = term.getSelection();
-        if (sel && sel.length > 0) {
+        if (sel && sel.trim().length > 0) {
           navigator.clipboard.writeText(sel).catch(() => {});
+          bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
         }
       }
     });
@@ -390,6 +791,7 @@ export function TerminalPane({
     const ro = new ResizeObserver(() => {
       try {
         fit.fit();
+        updateGhostPos();
         if (sessionRef.current) {
           if (isLocal) bridge.resizeLocalPty(sessionRef.current, term.cols, term.rows);
           else bridge.resize(sessionRef.current, term.cols, term.rows);
@@ -405,6 +807,9 @@ export function TerminalPane({
     return () => {
       genRef.current += 1;
       ro.disconnect();
+      dCursor.dispose();
+      dRender.dispose();
+      dScroll.dispose();
       if (sessionRef.current) {
         if (isLocal) bridge.closeLocalPty(sessionRef.current);
         else bridge.disconnect(sessionRef.current);
@@ -551,6 +956,21 @@ export function TerminalPane({
             >
               <Search className="h-3 w-3" />
             </button>
+            <button
+              title="Command History & Reverse Search (Ctrl+R)"
+              onClick={() => setShowCmdSearch(true)}
+              className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-emerald-300 transition"
+            >
+              <History className="h-3 w-3" />
+            </button>
+            <button
+              title="Clipboard History (⌘⇧V / Ctrl+Shift+V)"
+              onClick={() => setShowClipboard(true)}
+              className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-cyan-300 transition"
+            >
+              <Clipboard className="h-3 w-3" />
+            </button>
+
             {!isTauri && status === 'connected' && !isLocal && (
               <button
                 title="Simulate network drop (tests snapshot resume)"
@@ -652,8 +1072,30 @@ export function TerminalPane({
         </div>
       )}
 
-      <div className={cn('relative min-h-0 flex-1', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
+      <div ref={containerRef} className={cn('relative min-h-0 flex-1', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
         <div ref={elRef} className="h-full w-full" />
+
+        {/* Real-time Inline Ghost Text Autosuggestion (Fish / Zsh / Copilot style) */}
+        {suggestion && ghostPos && (
+          <div
+            style={{
+              position: 'absolute',
+              left: `${ghostPos.x}px`,
+              top: `${ghostPos.y}px`,
+              height: `${ghostPos.cellHeight}px`,
+              lineHeight: `${ghostPos.cellHeight}px`,
+              fontFamily:
+                '"JetBrainsMono Nerd Font", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
+              fontSize: `${fontSize}px`,
+              pointerEvents: 'none',
+              zIndex: 20,
+              whiteSpace: 'pre',
+            }}
+            className="select-none text-slate-400/50"
+          >
+            {suggestion.suffix.replace(/ /g, '\u00A0')}
+          </div>
+        )}
       </div>
 
       {status === 'connecting' && (
@@ -735,6 +1177,40 @@ export function TerminalPane({
             </button>
           )}
         </div>
+      )}
+
+
+      {/* Ctrl+R Command Search Modal */}
+      {showCmdSearch && (
+        <CommandSearchModal
+          initialHostLabel={isLocal ? 'Local Terminal' : host.label}
+          onClose={() => {
+            setShowCmdSearch(false);
+            termRef.current?.focus();
+          }}
+          onSelect={handleSelectCommand}
+          onSaveSnippet={(cmd) => {
+            bridge.saveSnippet({
+              id: crypto.randomUUID(),
+              name: cmd.slice(0, 32),
+              command: cmd,
+              tags: [isLocal ? 'local' : host.label],
+            }).then(() => toast('Saved to snippets')).catch(() => {});
+          }}
+          toast={toast}
+        />
+      )}
+
+      {/* ⌘⇧V / Ctrl+Shift+V Clipboard History Modal */}
+      {showClipboard && (
+        <ClipboardModal
+          onClose={() => {
+            setShowClipboard(false);
+            termRef.current?.focus();
+          }}
+          onPaste={handlePasteClipboard}
+          toast={toast}
+        />
       )}
     </div>
   );

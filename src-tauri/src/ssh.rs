@@ -419,16 +419,21 @@ fn write_all_nb(ch: &mut Channel, mut data: &[u8]) -> std::io::Result<()> {
         match ch.write(data) {
             Ok(0) => return Err(ErrorKind::WriteZero.into()),
             Ok(n) => data = &data[n..],
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
                 if Instant::now() > deadline {
                     return Err(ErrorKind::TimedOut.into());
                 }
-                thread::sleep(Duration::from_millis(2));
+                thread::sleep(Duration::from_millis(1));
             }
             Err(e) => return Err(e),
         }
     }
-    ch.flush()
+    // CRITICAL: Do NOT call ch.flush() here!
+    // In ssh2-rs, Channel::flush() calls libssh2_channel_flush_ex(), which flushes (discards)
+    // the CHANNEL READ BUFFER. Calling it on rapid keystrokes/backspaces discards in-flight
+    // inbound packets from the server, corrupting the packet decryption state machine and
+    // triggering "transport read" (LIBSSH2_ERROR_SOCKET_RECV) disconnections.
+    Ok(())
 }
 
 fn io_loop(
@@ -491,7 +496,7 @@ fn io_loop(
                     return ("frontend detached".into(), true);
                 }
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {}
             Err(e) => return (format!("connection lost: {e}"), true),
         }
 

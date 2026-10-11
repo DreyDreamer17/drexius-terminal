@@ -12,6 +12,8 @@ import type {
   ActiveTunnelInfo,
   AiProviderConfig,
   BridgeError,
+  ClipboardItem,
+  CommandHistoryItem,
   ConnectionLog,
   DetectedLocalKey,
   EncryptedTeamVaultBundle,
@@ -26,6 +28,7 @@ import type {
   PairedDevice,
   PairingHostInfo,
   PairingJoinResult,
+  ParsedSshHost,
   SerialPortInfo,
   SessionEvent,
   Snapshot,
@@ -254,6 +257,41 @@ export const bridge = {
     await persistDemo();
   },
 
+  // ── SSH Config Importer ──
+  async detectSshConfig(): Promise<string | null> {
+    if (isTauri) return invoke('ssh_config_detect');
+    return '~/.ssh/config (demo)';
+  },
+
+  async previewSshConfig(path?: string, content?: string): Promise<ParsedSshHost[]> {
+    if (isTauri) return invoke('ssh_config_preview', { path: path || null, content: content || null });
+    return [
+      { id: 'h-demo-1', label: 'prod-api-01', hostname: '10.0.4.10', port: 22, username: 'ubuntu', identityFile: '~/.ssh/id_rsa', group: 'SSH Config' },
+      { id: 'h-demo-2', label: 'staging-db', hostname: '10.1.2.30', port: 22, username: 'deploy', identityFile: '~/.ssh/id_ed25519', group: 'SSH Config' },
+      { id: 'h-demo-3', label: 'edge-gateway', hostname: 'edge.acme.io', port: 2222, username: 'root', group: 'SSH Config' },
+    ];
+  },
+
+  async importSshConfig(hosts: ParsedSshHost[], vaultId: string): Promise<number> {
+    if (isTauri) return invoke('ssh_config_import', { hosts, vaultId });
+    const s = need();
+    for (const h of hosts) {
+      s.hosts.push({
+        id: h.id || uid(),
+        label: h.label,
+        hostname: h.hostname,
+        port: h.port,
+        username: h.username,
+        authMethod: h.identityFile ? 'key' : 'agent',
+        tags: ['ssh-config'],
+        hasSecret: false,
+        vaultId: vaultId || 'personal',
+      });
+    }
+    await persistDemo();
+    return hosts.length;
+  },
+
   // ── Snippets ──
   async listSnippets(): Promise<Snippet[]> {
     if (isTauri) return invoke('snippets_list');
@@ -408,6 +446,24 @@ export const bridge = {
     a.download = entry.name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  },
+
+  async sftpReadText(sessionId: string, path: string): Promise<string> {
+    if (isTauri) {
+      return invoke('sftp_read_text', { sessionId, path });
+    }
+    const s = demoSessions.get(sessionId);
+    if (!s) throw new Error('Session not found');
+    return vfs.read(s.host, path) || '';
+  },
+
+  async sftpWriteText(sessionId: string, path: string, content: string): Promise<void> {
+    if (isTauri) {
+      return invoke('sftp_write_text', { sessionId, path, content });
+    }
+    const s = demoSessions.get(sessionId);
+    if (!s) throw new Error('Session not found');
+    vfs.write(s.host, path, content);
   },
 
   // ── Keychain (Reusable Identities) ──
@@ -954,5 +1010,151 @@ export const bridge = {
       }
     }
     throw new Error('OpenCode streaming is only supported in the desktop app.');
+  },
+
+  // ── Command History ──
+  async addCommandHistory(item: { hostId?: string | null; hostLabel: string; command: string; cwd?: string | null }): Promise<CommandHistoryItem> {
+    if (isTauri) {
+      return invoke('command_history_add', {
+        hostId: item.hostId ?? null,
+        hostLabel: item.hostLabel,
+        command: item.command,
+        cwd: item.cwd ?? null,
+      });
+    }
+    const memItem: CommandHistoryItem = {
+      id: uid(),
+      hostId: item.hostId,
+      hostLabel: item.hostLabel,
+      command: item.command,
+      cwd: item.cwd,
+      executedAt: Date.now(),
+      starred: false,
+    };
+    try {
+      const list = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      list.unshift(memItem);
+      localStorage.setItem('nx.cmd_history', JSON.stringify(list.slice(0, 300)));
+    } catch {}
+    return memItem;
+  },
+
+  async listCommandHistory(limit = 200, search?: string): Promise<CommandHistoryItem[]> {
+    if (isTauri) {
+      return invoke('command_history_list', { limit, search: search ?? null });
+    }
+    try {
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      if (search) {
+        const q = search.toLowerCase();
+        list = list.filter((i) => i.command.toLowerCase().includes(q) || i.hostLabel.toLowerCase().includes(q));
+      }
+      return list.slice(0, limit);
+    } catch {
+      return [];
+    }
+  },
+
+  async toggleStarCommandHistory(id: string): Promise<boolean> {
+    if (isTauri) return invoke('command_history_toggle_star', { id });
+    try {
+      const list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      const item = list.find((i) => i.id === id);
+      if (item) {
+        item.starred = !item.starred;
+        localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+        return item.starred;
+      }
+    } catch {}
+    return false;
+  },
+
+  async deleteCommandHistory(id: string): Promise<void> {
+    if (isTauri) return invoke('command_history_delete', { id });
+    try {
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      list = list.filter((i) => i.id !== id);
+      localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+    } catch {}
+  },
+
+  async clearCommandHistory(): Promise<void> {
+    if (isTauri) return invoke('command_history_clear');
+    try {
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      list = list.filter((i) => i.starred);
+      localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+    } catch {}
+  },
+
+  // ── Clipboard History ──
+  async addClipboardHistory(content: string, source?: string): Promise<ClipboardItem> {
+    if (isTauri) {
+      return invoke('clipboard_history_add', { content, source: source ?? null });
+    }
+    const memItem: ClipboardItem = {
+      id: uid(),
+      content,
+      charCount: content.length,
+      lineCount: content.split('\n').length,
+      source: source ?? null,
+      copiedAt: Date.now(),
+      pinned: false,
+    };
+    try {
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      list = list.filter((c) => c.content !== content);
+      list.unshift(memItem);
+      localStorage.setItem('nx.clip_history', JSON.stringify(list.slice(0, 100)));
+    } catch {}
+    return memItem;
+  },
+
+  async listClipboardHistory(limit = 100, search?: string): Promise<ClipboardItem[]> {
+    if (isTauri) {
+      return invoke('clipboard_history_list', { limit, search: search ?? null });
+    }
+    try {
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      if (search) {
+        const q = search.toLowerCase();
+        list = list.filter((c) => c.content.toLowerCase().includes(q));
+      }
+      return list.slice(0, limit);
+    } catch {
+      return [];
+    }
+  },
+
+  async togglePinClipboard(id: string): Promise<boolean> {
+    if (isTauri) return invoke('clipboard_history_toggle_pin', { id });
+    try {
+      const list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      const item = list.find((i) => i.id === id);
+      if (item) {
+        item.pinned = !item.pinned;
+        localStorage.setItem('nx.clip_history', JSON.stringify(list));
+        return item.pinned;
+      }
+    } catch {}
+    return false;
+  },
+
+  async deleteClipboardHistory(id: string): Promise<void> {
+    if (isTauri) return invoke('clipboard_history_delete', { id });
+    try {
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      list = list.filter((i) => i.id !== id);
+      localStorage.setItem('nx.clip_history', JSON.stringify(list));
+    } catch {}
+  },
+
+  async clearClipboardHistory(): Promise<void> {
+    if (isTauri) return invoke('clipboard_history_clear');
+    try {
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      list = list.filter((i) => i.pinned);
+      localStorage.setItem('nx.clip_history', JSON.stringify(list));
+    } catch {}
   },
 };

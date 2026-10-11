@@ -52,6 +52,7 @@ export function HostModal({
       color: COLORS[0],
       hasSecret: false,
       vaultId: defaultVaultId && defaultVaultId !== 'all' ? defaultVaultId : 'personal',
+      startupCommand: '',
     }
   );
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
@@ -74,7 +75,12 @@ export function HostModal({
   const submit = async () => {
     if (!valid) return;
     const finalLabel = h.label.trim() || h.hostname;
-    const finalHost = { ...h, label: finalLabel, tags: tags.split(',').map((t) => t.trim()).filter(Boolean) };
+    const finalHost = {
+      ...h,
+      label: finalLabel,
+      tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
+      startupCommand: h.startupCommand?.trim() || null,
+    };
     const secretChanged = !h.keychainId && ((h.authMethod === 'password' && password) || (h.authMethod === 'key' && privateKey));
     const secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
 
@@ -340,6 +346,18 @@ export function HostModal({
                 )}
               </>
             )}
+          </div>
+          <div>
+            <label className={label}>Startup Command (Executed on connect)</label>
+            <input
+              className={cn(input, 'font-mono text-xs')}
+              value={h.startupCommand ?? ''}
+              onChange={(e) => set('startupCommand', e.target.value)}
+              placeholder="tmux attach || tmux new, cd /var/www, etc."
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Shell command sent automatically to the terminal immediately after connecting.
+            </p>
           </div>
           <div><label className={label}>Tags</label><input className={input} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="api, eu-west" /></div>
         </div>

@@ -173,3 +173,45 @@ pub fn sftp_rename(session_id: String, from: String, to: String, mgr: State<'_, 
         .rename(Path::new(&from), Path::new(&to), None)
         .map_err(AppError::from)
 }
+
+#[tauri::command(async)]
+pub fn sftp_read_text(
+    session_id: String,
+    path: String,
+    mgr: State<'_, SftpManager>,
+    ssh: State<'_, SshManager>,
+    vault: State<'_, Vault>,
+) -> AppResult<String> {
+    let conn = mgr.get(&session_id, &ssh, &vault)?;
+    let c = conn.lock();
+    let mut file = c.sftp.open(Path::new(&path))?;
+    let stat = file.stat()?;
+    if let Some(sz) = stat.size {
+        if sz > 5 * 1024 * 1024 {
+            return Err(AppError::Other("File is too large to open in editor (maximum 5 MB)".into()));
+        }
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|e| AppError::Other(format!("File is not valid UTF-8 text: {e}")))?;
+    Ok(text)
+}
+
+#[tauri::command(async)]
+pub fn sftp_write_text(
+    session_id: String,
+    path: String,
+    content: String,
+    mgr: State<'_, SftpManager>,
+    ssh: State<'_, SshManager>,
+    vault: State<'_, Vault>,
+) -> AppResult<()> {
+    let conn = mgr.get(&session_id, &ssh, &vault)?;
+    let c = conn.lock();
+    let mut file = c.sftp.create(Path::new(&path))?;
+    file.write_all(content.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+

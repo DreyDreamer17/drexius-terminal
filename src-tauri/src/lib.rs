@@ -11,6 +11,7 @@ mod tunnel;
 mod vault;
 mod ai_client;
 mod opencode;
+mod ssh_config;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -96,6 +97,18 @@ pub fn run() {
             vault::logs_list,
             vault::log_toggle_saved,
             vault::logs_clear,
+            // command history
+            vault::command_history_add,
+            vault::command_history_list,
+            vault::command_history_toggle_star,
+            vault::command_history_delete,
+            vault::command_history_clear,
+            // clipboard history
+            vault::clipboard_history_add,
+            vault::clipboard_history_list,
+            vault::clipboard_history_toggle_pin,
+            vault::clipboard_history_delete,
+            vault::clipboard_history_clear,
             // known hosts
             vault::known_hosts_list,
             vault::known_host_delete,
@@ -130,6 +143,12 @@ pub fn run() {
             sftp::sftp_mkdir,
             sftp::sftp_remove,
             sftp::sftp_rename,
+            sftp::sftp_read_text,
+            sftp::sftp_write_text,
+            // ssh config importer
+            ssh_config::ssh_config_detect,
+            ssh_config::ssh_config_preview,
+            ssh_config::ssh_config_import,
             // snapshots
             snapshot::snapshot_get,
             snapshot::snapshot_list,

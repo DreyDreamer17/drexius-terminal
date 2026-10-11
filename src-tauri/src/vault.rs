@@ -146,6 +146,8 @@ pub struct HostProfile {
     pub jump_host_id: Option<String>,
     #[serde(default)]
     pub vault_id: Option<String>,
+    #[serde(default)]
+    pub startup_command: Option<String>,
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
@@ -267,7 +269,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS hosts (
     id TEXT PRIMARY KEY, label TEXT NOT NULL, hostname TEXT NOT NULL, port INTEGER NOT NULL,
     username TEXT NOT NULL, auth_method TEXT NOT NULL, grp TEXT, tags TEXT NOT NULL DEFAULT '[]',
-    color TEXT, os TEXT, keychain_id TEXT, jump_host_id TEXT, updated_at INTEGER NOT NULL
+    color TEXT, os TEXT, keychain_id TEXT, jump_host_id TEXT, vault_id TEXT, startup_command TEXT, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS secrets (
     host_id TEXT PRIMARY KEY REFERENCES hosts(id) ON DELETE CASCADE,
@@ -308,6 +310,14 @@ CREATE TABLE IF NOT EXISTS sync_log (
 CREATE TABLE IF NOT EXISTS paired_devices (
     id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL,
     ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS command_history (
+    id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL,
+    cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS clipboard_history (
+    id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL,
+    line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
 );
 "#;
 
@@ -363,6 +373,7 @@ impl Vault {
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
         let _ = conn.execute("ALTER TABLE hosts ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN startup_command TEXT", []);
         let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
@@ -374,6 +385,8 @@ impl Vault {
         let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_proxy INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_host_id TEXT", []);
         let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []);
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS command_history (id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0)", []);
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS clipboard_history (id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL, line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)", []);
         // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
         let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
@@ -418,7 +431,7 @@ impl Vault {
         self.with(|c| {
             let host_res = c
                 .query_row(
-                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
+                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
                             s.password, s.private_key, s.passphrase,
                             k.auth_method, k.password, k.private_key, k.passphrase, k.username
                      FROM hosts h
@@ -428,24 +441,24 @@ impl Vault {
                     [id],
                     |r| {
                         let mut profile = row_to_host(r)?;
-                        let k_auth: Option<String> = r.get(16)?;
+                        let k_auth: Option<String> = r.get(17)?;
                         let (auth_method, password, private_key, passphrase, username) = if let Some(ka) = k_auth {
                             // Sourced from Keychain
-                            let k_user: Option<String> = r.get(20)?;
+                            let k_user: Option<String> = r.get(21)?;
                             (
                                 AuthMethod::parse(&ka),
-                                r.get(17)?,
                                 r.get(18)?,
                                 r.get(19)?,
+                                r.get(20)?,
                                 k_user.unwrap_or(profile.username.clone()),
                             )
                         } else {
                             // Sourced from Host Secret
                             (
                                 profile.auth_method,
-                                r.get(13)?,
                                 r.get(14)?,
                                 r.get(15)?,
+                                r.get(16)?,
                                 profile.username.clone(),
                             )
                         };
@@ -569,6 +582,7 @@ fn row_to_host(r: &rusqlite::Row) -> rusqlite::Result<HostProfile> {
         keychain_id: r.get::<_, Option<String>>(10).unwrap_or(None),
         jump_host_id: r.get::<_, Option<String>>(11).unwrap_or(None),
         vault_id: r.get::<_, Option<String>>(12).unwrap_or(None),
+        startup_command: r.get::<_, Option<String>>(13).unwrap_or(None),
         has_secret: false,
     })
 }
@@ -599,12 +613,12 @@ pub fn vault_lock(vault: State<'_, Vault>) {
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL) FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id ORDER BY h.grp, h.label",
         )?;
         let rows = st.query_map([], |r| {
             let mut h = row_to_host(r)?;
-            h.has_secret = r.get(13)?;
+            h.has_secret = r.get(14)?;
             Ok(h)
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -619,16 +633,18 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?14",
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
             params![
                 profile.id, profile.label, profile.hostname, profile.port, profile.username,
                 profile.auth_method.as_str(), profile.group,
                 serde_json::to_string(&profile.tags).unwrap_or_else(|_| "[]".into()),
                 profile.color, profile.os, profile.keychain_id, profile.jump_host_id,
-                profile.vault_id.unwrap_or_else(|| "personal".into()), now()
+                profile.vault_id.unwrap_or_else(|| "personal".into()),
+                profile.startup_command,
+                now()
             ],
         )?;
         if let Some(s) = &secret {
@@ -1104,6 +1120,302 @@ pub fn logs_clear(vault: State<'_, Vault>) -> AppResult<()> {
     })
 }
 
+// ── Command History ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandHistoryItem {
+    pub id: String,
+    pub host_id: Option<String>,
+    pub host_label: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub executed_at: i64,
+    pub starred: bool,
+}
+
+#[tauri::command]
+pub fn command_history_add(
+    host_id: Option<String>,
+    host_label: String,
+    command: String,
+    cwd: Option<String>,
+    vault: State<'_, Vault>,
+) -> AppResult<CommandHistoryItem> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("Empty command".into()));
+    }
+    let item = CommandHistoryItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        host_id,
+        host_label,
+        command: trimmed.to_string(),
+        cwd,
+        executed_at: now(),
+        starred: false,
+    };
+    vault.with(|c| {
+        c.execute(
+            "INSERT INTO command_history (id, host_id, host_label, command, cwd, executed_at, starred)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                item.id,
+                item.host_id,
+                item.host_label,
+                item.command,
+                item.cwd,
+                item.executed_at,
+                if item.starred { 1 } else { 0 }
+            ],
+        )?;
+        Ok(())
+    })?;
+    Ok(item)
+}
+
+#[tauri::command]
+pub fn command_history_list(
+    limit: Option<usize>,
+    search: Option<String>,
+    vault: State<'_, Vault>,
+) -> AppResult<Vec<CommandHistoryItem>> {
+    vault.with(|c| {
+        let max_rows = limit.unwrap_or(200);
+        if let Some(ref q) = search {
+            let pattern = format!("%{}%", q);
+            let mut st = c.prepare(
+                "SELECT id, host_id, host_label, command, cwd, executed_at, starred
+                 FROM command_history
+                 WHERE command LIKE ?1 OR host_label LIKE ?1
+                 ORDER BY executed_at DESC LIMIT ?2",
+            )?;
+            let mapped = st.query_map(params![pattern, max_rows], |r| {
+                let starred_int: i64 = r.get(6)?;
+                Ok(CommandHistoryItem {
+                    id: r.get(0)?,
+                    host_id: r.get(1)?,
+                    host_label: r.get(2)?,
+                    command: r.get(3)?,
+                    cwd: r.get(4)?,
+                    executed_at: r.get(5)?,
+                    starred: starred_int != 0,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(mapped)
+        } else {
+            let mut st = c.prepare(
+                "SELECT id, host_id, host_label, command, cwd, executed_at, starred
+                 FROM command_history
+                 ORDER BY executed_at DESC LIMIT ?1",
+            )?;
+            let mapped = st.query_map(params![max_rows], |r| {
+                let starred_int: i64 = r.get(6)?;
+                Ok(CommandHistoryItem {
+                    id: r.get(0)?,
+                    host_id: r.get(1)?,
+                    host_label: r.get(2)?,
+                    command: r.get(3)?,
+                    cwd: r.get(4)?,
+                    executed_at: r.get(5)?,
+                    starred: starred_int != 0,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(mapped)
+        }
+    })
+}
+
+#[tauri::command]
+pub fn command_history_toggle_star(id: String, vault: State<'_, Vault>) -> AppResult<bool> {
+    vault.with(|c| {
+        c.execute(
+            "UPDATE command_history SET starred = CASE WHEN starred=1 THEN 0 ELSE 1 END WHERE id=?1",
+            [&id],
+        )?;
+        let starred: i64 = c.query_row("SELECT starred FROM command_history WHERE id=?1", [&id], |r| r.get(0))?;
+        Ok(starred != 0)
+    })
+}
+
+#[tauri::command]
+pub fn command_history_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        c.execute("DELETE FROM command_history WHERE id=?1", [&id])?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn command_history_clear(vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        c.execute("DELETE FROM command_history WHERE starred = 0", [])?;
+        Ok(())
+    })
+}
+
+// ── Clipboard History ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardItem {
+    pub id: String,
+    pub content: String,
+    pub char_count: usize,
+    pub line_count: usize,
+    pub source: Option<String>,
+    pub copied_at: i64,
+    pub pinned: bool,
+}
+
+#[tauri::command]
+pub fn clipboard_history_add(
+    content: String,
+    source: Option<String>,
+    vault: State<'_, Vault>,
+) -> AppResult<ClipboardItem> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Other("Empty clipboard content".into()));
+    }
+    let char_count = content.chars().count();
+    let line_count = content.lines().count().max(1);
+
+    vault.with(|c| {
+        let existing_id: Option<String> = c
+            .query_row("SELECT id FROM clipboard_history WHERE content=?1", [&content], |r| r.get(0))
+            .optional()?;
+
+        if let Some(eid) = existing_id {
+            c.execute(
+                "UPDATE clipboard_history SET copied_at=?1, source=?2 WHERE id=?3",
+                params![now(), source, eid],
+            )?;
+            return Ok(ClipboardItem {
+                id: eid,
+                content,
+                char_count,
+                line_count,
+                source,
+                copied_at: now(),
+                pinned: false,
+            });
+        }
+
+        let item = ClipboardItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            content: content.clone(),
+            char_count,
+            line_count,
+            source: source.clone(),
+            copied_at: now(),
+            pinned: false,
+        };
+
+        c.execute(
+            "INSERT INTO clipboard_history (id, content, char_count, line_count, source, copied_at, pinned)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+            params![
+                item.id,
+                item.content,
+                item.char_count as i64,
+                item.line_count as i64,
+                item.source,
+                item.copied_at
+            ],
+        )?;
+
+        let _ = c.execute(
+            "DELETE FROM clipboard_history WHERE pinned = 0 AND id NOT IN (
+                SELECT id FROM clipboard_history ORDER BY copied_at DESC LIMIT 100
+             )",
+            [],
+        );
+
+        Ok(item)
+    })
+}
+
+#[tauri::command]
+pub fn clipboard_history_list(
+    limit: Option<usize>,
+    search: Option<String>,
+    vault: State<'_, Vault>,
+) -> AppResult<Vec<ClipboardItem>> {
+    vault.with(|c| {
+        let max_rows = limit.unwrap_or(100);
+        if let Some(ref q) = search {
+            let pattern = format!("%{}%", q);
+            let mut st = c.prepare(
+                "SELECT id, content, char_count, line_count, source, copied_at, pinned
+                 FROM clipboard_history
+                 WHERE content LIKE ?1
+                 ORDER BY pinned DESC, copied_at DESC LIMIT ?2",
+            )?;
+            let mapped = st.query_map(params![pattern, max_rows], |r| {
+                let pinned_int: i64 = r.get(6)?;
+                Ok(ClipboardItem {
+                    id: r.get(0)?,
+                    content: r.get(1)?,
+                    char_count: r.get::<_, i64>(2)? as usize,
+                    line_count: r.get::<_, i64>(3)? as usize,
+                    source: r.get(4)?,
+                    copied_at: r.get(5)?,
+                    pinned: pinned_int != 0,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(mapped)
+        } else {
+            let mut st = c.prepare(
+                "SELECT id, content, char_count, line_count, source, copied_at, pinned
+                 FROM clipboard_history
+                 ORDER BY pinned DESC, copied_at DESC LIMIT ?1",
+            )?;
+            let mapped = st.query_map(params![max_rows], |r| {
+                let pinned_int: i64 = r.get(6)?;
+                Ok(ClipboardItem {
+                    id: r.get(0)?,
+                    content: r.get(1)?,
+                    char_count: r.get::<_, i64>(2)? as usize,
+                    line_count: r.get::<_, i64>(3)? as usize,
+                    source: r.get(4)?,
+                    copied_at: r.get(5)?,
+                    pinned: pinned_int != 0,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
+            Ok(mapped)
+        }
+    })
+}
+
+#[tauri::command]
+pub fn clipboard_history_toggle_pin(id: String, vault: State<'_, Vault>) -> AppResult<bool> {
+    vault.with(|c| {
+        c.execute(
+            "UPDATE clipboard_history SET pinned = CASE WHEN pinned=1 THEN 0 ELSE 1 END WHERE id=?1",
+            [&id],
+        )?;
+        let pinned: i64 = c.query_row("SELECT pinned FROM clipboard_history WHERE id=?1", [&id], |r| r.get(0))?;
+        Ok(pinned != 0)
+    })
+}
+
+#[tauri::command]
+pub fn clipboard_history_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        c.execute("DELETE FROM clipboard_history WHERE id=?1", [&id])?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn clipboard_history_clear(vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        c.execute("DELETE FROM clipboard_history WHERE pinned = 0", [])?;
+        Ok(())
+    })
+}
+
 // ── Known Hosts ──
 
 #[tauri::command]
@@ -1394,14 +1706,14 @@ pub fn team_vault_export(
         });
 
         let mut st_hosts = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id,
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL)
              FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id
              WHERE h.vault_id = ?1",
         )?;
         let hosts = st_hosts.query_map([&vault_id], |r| {
             let mut h = row_to_host(r)?;
-            h.has_secret = r.get(13)?;
+            h.has_secret = r.get(14)?;
             Ok(h)
         })?.collect::<Result<Vec<_>, _>>()?;
 
@@ -1526,14 +1838,16 @@ pub fn team_vault_import(
 
         for h in &payload.hosts {
             c.execute(
-                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?14",
+                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
                 params![
                     h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
                     h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
-                    h.color, h.os, h.keychain_id, h.jump_host_id, payload.vault.id, now()
+                    h.color, h.os, h.keychain_id, h.jump_host_id, payload.vault.id,
+                    h.startup_command,
+                    now()
                 ],
             )?;
         }
