@@ -67,9 +67,16 @@ pub fn run() {
             // ai configs & multi-provider settings
             vault::ai_configs_list,
             vault::ai_config_save,
+            vault::ai_keys_add,
+            vault::ai_key_remove,
+            vault::ai_keys_clear,
+            vault::ai_proxies_add,
+            vault::ai_proxy_remove,
+            vault::ai_proxies_clear,
             vault::ai_active_provider_get,
             vault::ai_active_provider_set,
             ai_client::ai_stream_proxy,
+            ai_client::ai_stream_cancel,
             ai_client::ai_fetch_proxy,
             // hosts
             vault::hosts_list,
@@ -136,6 +143,10 @@ pub fn run() {
             pairing::pairing_list_devices,
             pairing::pairing_revoke_device,
             pairing::pairing_get_local_info,
+            // local filesystem operations for agent
+            local_pty::local_read_file,
+            local_pty::local_write_file,
+            local_pty::local_edit_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NexusTerminal");

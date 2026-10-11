@@ -75,6 +75,46 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
   const [showAI, setShowAI] = useState(true);
+  const [aiWidth, setAiWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('nx.ai.panel_width');
+      if (saved) {
+        const n = parseInt(saved, 10);
+        if (Number.isFinite(n) && n >= 320 && n <= 1200) return n;
+      }
+    } catch {}
+    return 420;
+  });
+  const [isResizingAi, setIsResizingAi] = useState(false);
+  const aiWidthRef = useRef(aiWidth);
+  aiWidthRef.current = aiWidth;
+
+  const startAiResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingAi(true);
+
+    const startX = e.clientX;
+    const startW = aiWidthRef.current;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const maxAllowed = Math.max(380, window.innerWidth - 300);
+      const newWidth = Math.max(320, Math.min(maxAllowed, startW - deltaX));
+      setAiWidth(newWidth);
+    };
+
+    const onMouseUp = () => {
+      setIsResizingAi(false);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      try {
+        localStorage.setItem('nx.ai.panel_width', String(aiWidthRef.current));
+      } catch {}
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, []);
   const [showSftp, setShowSftp] = useState(false);
   const [themeId, setThemeId] = useState(() => localStorage.getItem('nx.theme') ?? 'nexus');
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('nx.font') ?? 13));
@@ -594,7 +634,7 @@ export default function App() {
         {panel && (
           <>
             <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-            <aside className="fixed bottom-0 top-10 z-40 w-[320px] border-r border-white/10 bg-[#0b0f17] shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 48 }}>
+            <aside className="fixed bottom-0 top-10 z-40 w-[320px] border-r border-white/10 bg-transparent shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 48 }}>
               {panel === 'hosts' && (
                 <HostSidebar
                   hosts={hosts}
@@ -708,11 +748,35 @@ export default function App() {
         )}
       </main>
 
+      {/* Draggable Resizer Edge for AI Assistant */}
       {showAI && (
-        <aside className="w-[340px] shrink-0 border-l border-white/5 bg-[#0b0f17]">
-          <AIPanel activePaneId={activePaneId} toast={toast} />
-        </aside>
+        <div
+          onMouseDown={startAiResize}
+          className={cn(
+            "group relative z-30 w-1 shrink-0 cursor-col-resize select-none bg-transparent hover:bg-cyan-400/50 transition-colors",
+            isResizingAi && "bg-cyan-400/80"
+          )}
+          title="Drag to resize AI Assistant (Double-click to reset)"
+          onDoubleClick={() => {
+            setAiWidth(420);
+            localStorage.setItem('nx.ai.panel_width', '420');
+          }}
+        >
+          {/* Expanded transparent hit area so mouse easily catches the edge */}
+          <div className="absolute inset-y-0 -left-1.5 -right-1.5" />
+        </div>
       )}
+
+      {isResizingAi && (
+        <div className="fixed inset-0 z-50 cursor-col-resize select-none pointer-events-auto" />
+      )}
+
+      <aside
+        style={{ width: `${aiWidth}px` }}
+        className={cn("shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", !showAI && "hidden")}
+      >
+        <AIPanel activePaneId={activePaneId} toast={toast} onClose={() => setShowAI(false)} theme={theme} />
+      </aside>
       </div>
 
       {/* Quick Connect Floating Palette */}

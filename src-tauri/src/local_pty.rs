@@ -164,6 +164,99 @@ pub fn local_pty_close(session_id: String, mgr: State<'_, LocalPtyManager>) -> A
     mgr.send(&session_id, PtyCmd::Close)
 }
 
+#[tauri::command]
+pub fn local_read_file(path: String, offset: Option<usize>, limit: Option<usize>) -> Result<String, String> {
+    let clean = path.trim().trim_matches('\'').trim_matches('"');
+    let expanded = if clean.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(&clean[2..]).to_string_lossy().to_string()
+        } else {
+            clean.to_string()
+        }
+    } else {
+        clean.to_string()
+    };
+
+    let content = std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("Failed to read {}: {}", expanded, e))?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let start = offset.unwrap_or(1).saturating_sub(1);
+    let count = limit.unwrap_or(2000);
+
+    let selected = lines.iter().skip(start).take(count);
+    let mut out = String::new();
+    for (i, line) in selected.enumerate() {
+        use std::fmt::Write;
+        let _ = writeln!(out, "{:>4} | {}", start + i + 1, line);
+    }
+    if out.is_empty() {
+        out = "(File is empty)".to_string();
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn local_write_file(path: String, content: String) -> Result<(), String> {
+    let clean = path.trim().trim_matches('\'').trim_matches('"');
+    let expanded = if clean.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(&clean[2..]).to_string_lossy().to_string()
+        } else {
+            clean.to_string()
+        }
+    } else {
+        clean.to_string()
+    };
+
+    if let Some(parent) = std::path::Path::new(&expanded).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&expanded, content).map_err(|e| format!("Failed to write {}: {}", expanded, e))
+}
+
+#[tauri::command]
+pub fn local_edit_file(
+    path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+) -> Result<(), String> {
+    let clean = path.trim().trim_matches('\'').trim_matches('"');
+    let expanded = if clean.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            home.join(&clean[2..]).to_string_lossy().to_string()
+        } else {
+            clean.to_string()
+        }
+    } else {
+        clean.to_string()
+    };
+
+    let content = std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("Failed to read {}: {}", expanded, e))?;
+
+    if !content.contains(&old_string) {
+        return Err(format!("oldString not found in {}", expanded));
+    }
+
+    let occurrences = content.matches(&old_string).count();
+    if occurrences > 1 && !replace_all.unwrap_or(false) {
+        return Err(format!(
+            "oldString occurs {} times in {}. Include more context or set replaceAll: true",
+            occurrences, expanded
+        ));
+    }
+
+    let new_content = if replace_all.unwrap_or(false) {
+        content.replace(&old_string, &new_string)
+    } else {
+        content.replacen(&old_string, &new_string, 1)
+    };
+
+    std::fs::write(&expanded, new_content).map_err(|e| format!("Failed to write {}: {}", expanded, e))
+}
+
 fn pty_io_loop(
     master: Box<dyn MasterPty + Send>,
     rx: Receiver<PtyCmd>,

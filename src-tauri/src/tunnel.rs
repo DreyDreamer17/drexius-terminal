@@ -203,12 +203,10 @@ pub fn ai_tunnel_start(
     let (host, secret) = vault.host_with_secret(&host_id)?;
     let (session, _) = open_authenticated(&host, &secret, &vault)?;
 
-    // Bind to 127.0.0.1 on port 10885 (or dynamic port if 10885 is occupied)
-    let listener = match TcpListener::bind("127.0.0.1:10885") {
-        Ok(l) => l,
-        Err(_) => TcpListener::bind("127.0.0.1:0")
-            .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?,
-    };
+    // Bind loopback on an OS-assigned port (not a fixed, guessable one).
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?;
+
     let local_port = listener.local_addr().map_err(|e| AppError::Io(e))?.port();
     listener
         .set_nonblocking(true)

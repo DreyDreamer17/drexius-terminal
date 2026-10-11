@@ -1448,7 +1448,8 @@ pub fn team_vault_export(
             })
         })?.collect::<Result<Vec<_>, _>>()?;
 
-        let ai_configs = query_all_ai_configs(c)?;
+        // Personal AI provider keys / proxy credentials are never shared with a team.
+        let ai_configs: Vec<AiProviderConfig> = Vec::new();
 
         Ok(TeamVaultPayload {
             vault: v_record,
@@ -1558,23 +1559,8 @@ pub fn team_vault_import(
             )?;
         }
 
-        for ai in &payload.ai_configs {
-            let keys_json = serde_json::to_string(&ai.api_keys).unwrap_or_else(|_| "[]".into());
-            let cache_json = serde_json::to_string(&ai.models_cache).unwrap_or_else(|_| "[]".into());
-            let proxies_json = serde_json::to_string(&ai.proxy_urls).unwrap_or_else(|_| "[]".into());
-            c.execute(
-                "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                 ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
-                params![
-                    ai.provider_id, ai.name, ai.base_url, keys_json,
-                    ai.selected_model, cache_json, ai.balance_strategy,
-                    if ai.enabled { 1 } else { 0 }, now(),
-                    if ai.use_proxies { 1 } else { 0 }, proxies_json, ai.proxy_strategy,
-                    if ai.auto_ssh_proxy { 1 } else { 0 }, ai.auto_ssh_host_id
-                ],
-            )?;
-        }
+        // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's
+        // API keys, and importing must never overwrite this user's own AI settings.
 
         Ok(payload.vault.id)
     })
@@ -1612,29 +1598,163 @@ pub(crate) fn query_all_ai_configs(c: &rusqlite::Connection) -> AppResult<Vec<Ai
 
 #[tauri::command]
 pub fn ai_configs_list(vault: tauri::State<'_, Vault>) -> AppResult<Vec<AiProviderConfig>> {
-    vault.with(|c| query_all_ai_configs(c))
+    // Secrets never leave the backend: the UI only receives masked keys / proxy URLs.
+    vault.with(|c| Ok(query_all_ai_configs(c)?.into_iter().map(mask_ai_config).collect()))
 }
 
+/// Replaces API keys and proxy URLs with masked display strings (same length/order, so the UI
+/// can still show counts and remove by index).
+pub(crate) fn mask_ai_config(mut cfg: AiProviderConfig) -> AiProviderConfig {
+    cfg.api_keys = cfg.api_keys.iter().map(|k| crate::ai_client::mask_secret(k)).collect();
+    cfg.proxy_urls = cfg.proxy_urls.iter().map(|p| crate::ai_client::mask_proxy(p)).collect();
+    cfg
+}
+
+/// Saves non-secret provider settings. API keys and proxy URLs are deliberately NOT written here
+/// (the UI only holds masked copies); use the `ai_keys_*` / `ai_proxies_*` commands instead.
 #[tauri::command]
 pub fn ai_config_save(config: AiProviderConfig, vault: tauri::State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
-        let keys_json = serde_json::to_string(&config.api_keys).unwrap_or_else(|_| "[]".into());
-        let cache_json = serde_json::to_string(&config.models_cache).unwrap_or_else(|_| "[]".into());
-        let proxies_json = serde_json::to_string(&config.proxy_urls).unwrap_or_else(|_| "[]".into());
-        c.execute(
-            "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-             ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
-            params![
-                config.provider_id, config.name, config.base_url, keys_json,
-                config.selected_model, cache_json, config.balance_strategy,
-                if config.enabled { 1 } else { 0 }, now(),
-                if config.use_proxies { 1 } else { 0 }, proxies_json, config.proxy_strategy,
-                if config.auto_ssh_proxy { 1 } else { 0 }, config.auto_ssh_host_id
-            ],
-        )?;
+        upsert_ai_config_without_secrets(c, &config)?;
         Ok(())
     })
+}
+
+fn upsert_ai_config_without_secrets(c: &Connection, config: &AiProviderConfig) -> AppResult<()> {
+    // Keys are bound to the endpoint they were added for. If the provider is repointed at a
+    // different origin, drop its keys so they can never be sent to a new host unnoticed.
+    let old_base: Option<String> = c
+        .query_row(
+            "SELECT base_url FROM ai_configs WHERE provider_id = ?1",
+            [&config.provider_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(old) = old_base {
+        let origin = |s: &str| {
+            reqwest::Url::parse(s.trim())
+                .ok()
+                .map(|u| (u.scheme().to_string(), u.host_str().map(str::to_ascii_lowercase), u.port_or_known_default()))
+        };
+        if origin(&old) != origin(&config.base_url) {
+            c.execute("UPDATE ai_configs SET api_keys = '[]' WHERE provider_id = ?1", [&config.provider_id])?;
+        }
+    }
+
+    let cache_json = serde_json::to_string(&config.models_cache).unwrap_or_else(|_| "[]".into());
+    c.execute(
+        "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
+         VALUES(?1, ?2, ?3, '[]', ?4, ?5, ?6, ?7, ?8, ?9, '[]', ?10, ?11, ?12)
+         ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, selected_model=?4, models_cache=?5, balance_strategy=?6, enabled=?7, updated_at=?8, use_proxies=?9, proxy_strategy=?10, auto_ssh_proxy=?11, auto_ssh_host_id=?12",
+        params![
+            config.provider_id, config.name, config.base_url,
+            config.selected_model, cache_json, config.balance_strategy,
+            if config.enabled { 1 } else { 0 }, now(),
+            if config.use_proxies { 1 } else { 0 }, config.proxy_strategy,
+            if config.auto_ssh_proxy { 1 } else { 0 }, config.auto_ssh_host_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Edits one secret list column (`api_keys` or `proxy_urls`) in place and returns the updated,
+/// masked config. `col` is only ever one of two internal constants.
+fn edit_ai_secret_list(
+    c: &Connection,
+    provider_id: &str,
+    col: &'static str,
+    f: impl FnOnce(&mut Vec<String>),
+) -> AppResult<AiProviderConfig> {
+    debug_assert!(col == "api_keys" || col == "proxy_urls");
+    let raw: Option<String> = c
+        .query_row(
+            &format!("SELECT {col} FROM ai_configs WHERE provider_id = ?1"),
+            [provider_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let mut list: Vec<String> = raw
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    f(&mut list);
+    let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+    c.execute(
+        &format!("UPDATE ai_configs SET {col} = ?1, updated_at = ?2 WHERE provider_id = ?3"),
+        params![json, now(), provider_id],
+    )?;
+    query_all_ai_configs(c)?
+        .into_iter()
+        .find(|x| x.provider_id == provider_id)
+        .map(mask_ai_config)
+        .ok_or_else(|| AppError::Other(format!("AI provider '{provider_id}' not found")))
+}
+
+fn add_unique(list: &mut Vec<String>, items: Vec<String>) {
+    for it in items {
+        let it = it.trim().to_string();
+        if !it.is_empty() && !list.contains(&it) {
+            list.push(it);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn ai_keys_add(
+    config: AiProviderConfig,
+    keys: Vec<String>,
+    vault: tauri::State<'_, Vault>,
+) -> AppResult<AiProviderConfig> {
+    vault.with(|c| {
+        upsert_ai_config_without_secrets(c, &config)?;
+        edit_ai_secret_list(c, &config.provider_id, "api_keys", |l| add_unique(l, keys))
+    })
+}
+
+#[tauri::command]
+pub fn ai_key_remove(provider_id: String, index: usize, vault: tauri::State<'_, Vault>) -> AppResult<AiProviderConfig> {
+    vault.with(|c| {
+        edit_ai_secret_list(c, &provider_id, "api_keys", |l| {
+            if index < l.len() {
+                l.remove(index);
+            }
+        })
+    })
+}
+
+#[tauri::command]
+pub fn ai_keys_clear(provider_id: String, vault: tauri::State<'_, Vault>) -> AppResult<AiProviderConfig> {
+    vault.with(|c| edit_ai_secret_list(c, &provider_id, "api_keys", |l| l.clear()))
+}
+
+#[tauri::command]
+pub fn ai_proxies_add(
+    config: AiProviderConfig,
+    proxies: Vec<String>,
+    vault: tauri::State<'_, Vault>,
+) -> AppResult<AiProviderConfig> {
+    vault.with(|c| {
+        upsert_ai_config_without_secrets(c, &config)?;
+        edit_ai_secret_list(c, &config.provider_id, "proxy_urls", |l| add_unique(l, proxies))
+    })
+}
+
+#[tauri::command]
+pub fn ai_proxy_remove(provider_id: String, index: usize, vault: tauri::State<'_, Vault>) -> AppResult<AiProviderConfig> {
+    vault.with(|c| {
+        edit_ai_secret_list(c, &provider_id, "proxy_urls", |l| {
+            if index < l.len() {
+                l.remove(index);
+            }
+        })
+    })
+}
+
+#[tauri::command]
+pub fn ai_proxies_clear(provider_id: String, vault: tauri::State<'_, Vault>) -> AppResult<AiProviderConfig> {
+    vault.with(|c| edit_ai_secret_list(c, &provider_id, "proxy_urls", |l| l.clear()))
 }
 
 #[tauri::command]
