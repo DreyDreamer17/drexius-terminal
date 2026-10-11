@@ -209,6 +209,17 @@ struct OpencodeWorkflowPayload {
     output: String,
 }
 
+fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
     let tool_name = part.tool.as_deref().unwrap_or("tool");
     let state = part.state.as_ref()?;
@@ -266,7 +277,7 @@ fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
     };
 
     let output = if raw_output.len() > 8000 {
-        format!("{}\n\n... [output truncated at 8000 characters] ...", &raw_output[..8000])
+        format!("{}\n\n... [output truncated at 8000 bytes] ...", safe_truncate_str(&raw_output, 8000))
     } else {
         raw_output
     };

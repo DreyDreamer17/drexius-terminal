@@ -428,7 +428,11 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
         "keychain" => {
             conn.execute(
                 "INSERT INTO keychain (id,label,username,auth_method,password,private_key,passphrase,vault_id,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
-                 ON CONFLICT(id) DO UPDATE SET label=excluded.label,username=excluded.username,auth_method=excluded.auth_method,password=excluded.password,private_key=excluded.private_key,passphrase=excluded.passphrase,vault_id=excluded.vault_id,updated_at=excluded.updated_at",
+                 ON CONFLICT(id) DO UPDATE SET label=excluded.label,username=excluded.username,auth_method=excluded.auth_method,
+                     password=COALESCE(excluded.password, keychain.password),
+                     private_key=COALESCE(excluded.private_key, keychain.private_key),
+                     passphrase=COALESCE(excluded.passphrase, keychain.passphrase),
+                     vault_id=excluded.vault_id,updated_at=excluded.updated_at",
                 rusqlite::params![
                     obj.get("id").and_then(|v|v.as_str()),
                     obj.get("label").and_then(|v|v.as_str()),
@@ -557,44 +561,24 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     let root = vault.root_key()?;
     let keys = SyncKeys::derive(&root)?;
 
-    // 1. Collect all local records (outside async context since rusqlite is !Send-safe to share).
-    let local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
-
     let relay = HttpRelay::new(relay_url.clone(), token);
 
-    // 2. Push each local record (idempotent PUTs).
-    let mut pushed = 0usize;
-    let mut pulled = 0usize;
-    let mut max_cursor: u64 = 0;
-    for rec in &local_records {
-        let blob_id = keys.blind_id(&rec.table, &rec.id);
-        let blob = keys.seal(rec)?;
-        match relay.put(&blob_id, blob).await {
-            Ok(()) => pushed += 1,
-            Err(e) => {
-                let mut s = engine.status.lock();
-                s.last_error = Some(format!("push failed for {}/{}: {e}", rec.table, rec.id));
-                return Err(e);
-            }
-        }
-    }
-
-    // 3. Pull all remote blobs we know (via changes_since) — decrypt & merge.
+    // 1. Pull remote blobs first (decrypt & merge into local vault)
     let cursor = { engine.status.lock().cursor };
     let changes = relay.changes_since(cursor).await.unwrap_or_default();
-    // If the relay doesn't implement /changes, we conservatively re-pull every
-    // local record's blind id (covers the case where another device edited the
-    // same record id we already know about). Discovering brand-new ids requires
-    // a working /changes endpoint.
+
+    // To discover known record ids if /changes is not implemented by relay
+    let initial_local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
     let mut ids_to_fetch: Vec<(String, u64)> = changes;
     if ids_to_fetch.is_empty() {
-        for rec in &local_records {
+        for rec in &initial_local_records {
             ids_to_fetch.push((keys.blind_id(&rec.table, &rec.id), 0));
         }
     }
 
-    // Download blobs outside the DB lock (relay.get is await).
     let mut remote_blobs: HashMap<String, (SyncRecord, u64)> = HashMap::new();
+    let mut remote_hlcs: HashMap<(String, String), String> = HashMap::new();
+    let mut max_cursor: u64 = 0;
     for (blob_id, cur) in ids_to_fetch {
         max_cursor = max_cursor.max(cur);
         let bytes = match relay.get(&blob_id).await {
@@ -602,14 +586,14 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
             _ => continue,
         };
         if let Ok(rec) = keys.open(&blob_id, &bytes) {
+            remote_hlcs.insert((rec.table.clone(), rec.id.clone()), rec.hlc.clone());
             remote_blobs.insert(blob_id, (rec, cur));
         }
     }
 
+    let mut pulled = 0usize;
     vault.with(|conn| -> AppResult<()> {
         for (_blob_id, (remote, _cur)) in remote_blobs {
-            // Compare with local HLC by looking up the same row: simple
-            // approach is "remote wins if newer than local updated_at".
             let local_ts: Option<i64> = match remote.table.as_str() {
                 "hosts" | "snippets" | "keychain" | "tunnels" => conn
                     .query_row(
@@ -631,6 +615,29 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
         }
         Ok(())
     })?;
+
+    // 2. Collect local records AFTER merge and push ONLY records that are locally newer than the relay
+    let post_merge_local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
+    let mut pushed = 0usize;
+    for rec in &post_merge_local_records {
+        // If the relay already has this record with equal or newer HLC, skip pushing to avoid clobbering
+        if let Some(r_hlc) = remote_hlcs.get(&(rec.table.clone(), rec.id.clone())) {
+            if !hlc_wins(&rec.hlc, r_hlc) {
+                continue;
+            }
+        }
+
+        let blob_id = keys.blind_id(&rec.table, &rec.id);
+        let blob = keys.seal(rec)?;
+        match relay.put(&blob_id, blob).await {
+            Ok(()) => pushed += 1,
+            Err(e) => {
+                let mut s = engine.status.lock();
+                s.last_error = Some(format!("push failed for {}/{}: {e}", rec.table, rec.id));
+                return Err(e);
+            }
+        }
+    }
 
     let mut s = engine.status.lock();
     s.last_sync = Some(chrono::Utc::now().timestamp());
