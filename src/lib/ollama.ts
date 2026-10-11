@@ -56,7 +56,7 @@ export const RETIRED_MODELS = new Set<string>([
 export interface ProviderSpec {
   id: string;
   name: string;
-  type: 'ollama' | 'openai' | 'anthropic' | 'gemini';
+  type: 'ollama' | 'openai' | 'anthropic' | 'gemini' | 'opencode';
   defaultBaseUrl: string;
   defaultModel: string;
   supportsKeyPool: boolean;
@@ -65,6 +65,28 @@ export interface ProviderSpec {
 }
 
 export const KNOWN_PROVIDERS: ProviderSpec[] = [
+  {
+    id: 'opencode',
+    name: 'OpenCode (Free Models)',
+    type: 'opencode',
+    defaultBaseUrl: 'local',
+    defaultModel: 'opencode/nemotron-3-ultra-free',
+    supportsKeyPool: false,
+    docUrl: 'https://opencode.ai',
+    popularModels: [
+      'opencode/nemotron-3-ultra-free',
+      'opencode/nemotron-3.5-lightning-free',
+      'opencode/ling-3.1-flash-free',
+      'opencode/ling-3.0-flash-fin-free',
+      'opencode/big-pickle',
+      'opencode/exo-free',
+      'opencode/longcat-2.5-preview-free',
+      'opencode/mimo-v2.6-flash-free',
+      'opencode/muse-spark-1.3-contributor-free',
+      'opencode/space-bunny-free',
+      'opencode/step-5-preview-free',
+    ],
+  },
   {
     id: 'ollama',
     name: 'Ollama (Local / VPS)',
@@ -489,6 +511,32 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
       ? selectProxyFromPool(config.providerId, config.proxyUrls, config.proxyStrategy ?? 'random')?.proxy
       : undefined;
 
+  if (type === 'opencode' || config.providerId === 'opencode') {
+    try {
+      const status = await bridge.detectOpencode();
+      if (status.installed && status.models && status.models.length > 0) {
+        return status.models;
+      }
+    } catch {
+      // Fallback below
+    }
+    return config.modelsCache && config.modelsCache.length > 0
+      ? config.modelsCache
+      : providerSpec?.popularModels ?? [
+          'opencode/nemotron-3-ultra-free',
+          'opencode/nemotron-3.5-lightning-free',
+          'opencode/ling-3.1-flash-free',
+          'opencode/ling-3.0-flash-fin-free',
+          'opencode/big-pickle',
+          'opencode/exo-free',
+          'opencode/longcat-2.5-preview-free',
+          'opencode/mimo-v2.6-flash-free',
+          'opencode/muse-spark-1.3-contributor-free',
+          'opencode/space-bunny-free',
+          'opencode/step-5-preview-free',
+        ];
+  }
+
   if (type === 'ollama') {
     if (isTauri || activeProxy) {
       const resp = await bridge.fetchAiProxy({
@@ -701,7 +749,8 @@ export async function chatStreamMultiProvider(
   config: AiProviderConfig,
   messages: ChatMsg[],
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cwd?: string
 ): Promise<void> {
   const providerSpec = KNOWN_PROVIDERS.find((p) => p.id === config.providerId);
   const type = providerSpec?.type ?? 'openai';
@@ -710,8 +759,12 @@ export async function chatStreamMultiProvider(
   const proxies = config.proxyUrls ?? [];
   const useProxies = Boolean(config.useProxies && proxies.length > 0);
 
-  if (type !== 'ollama' && keys.length === 0) {
+  if (type !== 'ollama' && type !== 'opencode' && keys.length === 0) {
     throw new Error(`No API keys configured for ${config.name || config.providerId}. Please add an API key in AI Settings.`);
+  }
+
+  if (type === 'opencode' || config.providerId === 'opencode') {
+    return streamOpencodeRunner(config, messages, callbacks, signal, cwd);
   }
 
   // Desktop app: the backend owns key/proxy selection, auth injection and failover.
@@ -880,6 +933,48 @@ async function chatStreamViaVault(
     return streamAnthropic(cleanBase, config.selectedModel, '', messages, callbacks.onToken, signal, override, route);
   }
   return streamOpenAi(config, cleanBase, '', messages, callbacks.onToken, signal, override, route);
+}
+
+export function formatMessagesForOpencode(messages: ChatMsg[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') {
+      parts.push(`[System Instructions]\n${m.content}`);
+    } else if (m.role === 'user') {
+      parts.push(`[User]\n${m.content}`);
+    } else if (m.role === 'assistant') {
+      parts.push(`[Assistant]\n${m.content}`);
+    }
+  }
+  return parts.join('\n\n');
+}
+
+async function streamOpencodeRunner(
+  config: AiProviderConfig,
+  messages: ChatMsg[],
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+  cwd?: string
+): Promise<void> {
+  const prompt = formatMessagesForOpencode(messages);
+  const model = config.selectedModel || 'opencode/nemotron-3-ultra-free';
+  await bridge.streamOpencode(
+    {
+      prompt,
+      model,
+      cwd,
+    },
+    callbacks.onToken,
+    signal,
+    {
+      onMeta: (keyMask) => {
+        callbacks.onKeyUsed?.(keyMask || 'Free (Local OpenCode)', config.name || 'OpenCode');
+      },
+      onFailover: (reason, next) => {
+        callbacks.onFailover?.(reason, next);
+      },
+    }
+  );
 }
 
 /** Matches an HTTP 429 status as formatted by this module (not any stray "429" in a message). */
@@ -1253,60 +1348,6 @@ Rules:
 - Never suggest destructive commands without a clear warning line starting with "⚠️".
 - Prefer safe, read-only diagnostics first. Quote paths. Use set -euo pipefail for scripts.
 - You are given the recent terminal output and the current working directory as context.`;
-
-export const SYSTEM_PROMPT_AGENT = `You are Nexus, an autonomous senior coding and SRE agent running inside NexusTerminal. Help the user accomplish their goals using the tools you have available.
-
-# Harness & Execution Rules (OpenCode Agent Loop)
-- Prefer dedicated tools over shell commands; fall back to bash only when a tool cannot do what you need (e.g. running tests, builds, git, process management).
-- When reading or inspecting a file, ALWAYS use the \`read\` tool. NEVER run \`cat\`, \`head\`, \`tail\`, or \`less\` in bash.
-- Use \`edit\` for targeted changes to existing files by replacing exact text.
-- Use \`write\` to create new files or completely overwrite existing files.
-- Only emit tool calls for immediate actions you need right now. Wait for the tool result before taking the next step.
-- DO NOT guess what the output will be.
-- DO NOT re-emit or repeat a command or tool call if you have already received its output in the conversation history. Analyze the output and move forward with the next action or conclude.
-- DO NOT output hypothetical future commands or a script/list of commands to run later. Every action you want to take must be emitted as a single tool call for immediate execution.
-- When tool results are returned to you, analyze the output and decide on the single next action.
-- Never run destructive commands without a clear explanation and warning.
-- Do not chain commands with noisy separators like echo "=====" or printf '---'.
-
-# Tool Calling Format
-To call a tool, you MUST output a tool call block using this exact format:
-\`\`\`tool_call
-{"name": "<tool_name>", "arguments": { ... }}
-\`\`\`
-
-Available Tools:
-1. read:
-   Read the contents of a file or directory. Lines are returned numbered as (<line> | <content>).
-   \`\`\`tool_call
-   {"name": "read", "arguments": {"path": "src/main.js"}}
-   \`\`\`
-   Optional line range for large files:
-   \`\`\`tool_call
-   {"name": "read", "arguments": {"path": "src/main.js", "offset": 1, "limit": 200}}
-   \`\`\`
-
-2. edit:
-   Perform targeted changes to an existing file by replacing oldString with newString.
-   \`\`\`tool_call
-   {"name": "edit", "arguments": {"path": "src/app.py", "oldString": "def old_fn():", "newString": "def new_fn():"}}
-   \`\`\`
-
-3. write:
-   Create a new file or completely replace its content.
-   \`\`\`tool_call
-   {"name": "write", "arguments": {"path": "config.json", "content": "{\\n  \\"setting\\": true\\n}"}}
-   \`\`\`
-
-4. bash:
-   Execute a terminal shell command (running tests, builds, git, package managers, system diagnostics).
-   \`\`\`tool_call
-   {"name": "bash", "arguments": {"command": "git status"}}
-   \`\`\`
-
-# Communication
-- Keep responses clear, concise, and focused on the immediate task.
-- Responses are rendered as GitHub-flavored Markdown.`;
 
 export const SYSTEM_PROMPT = SYSTEM_PROMPT_CHAT;
 

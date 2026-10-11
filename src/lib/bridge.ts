@@ -883,9 +883,9 @@ export const bridge = {
     return true;
   },
 
-  async localReadFile(path: string, offset?: number, limit?: number): Promise<string> {
+  async localReadFile(path: string, offset?: number, limit?: number, raw?: boolean): Promise<string> {
     if (isTauri) {
-      return await invoke<string>('local_read_file', { path, offset, limit });
+      return await invoke<string>('local_read_file', { path, offset, limit, raw });
     }
     return `[Demo mode: localReadFile not available in browser]`;
   },
@@ -900,5 +900,59 @@ export const bridge = {
     if (isTauri) {
       return await invoke<void>('local_edit_file', { path, oldString, newString, replaceAll });
     }
+  },
+
+  async detectOpencode(): Promise<{ installed: boolean; binaryPath?: string; models: string[] }> {
+    if (isTauri) {
+      try {
+        return await invoke<{ installed: boolean; binaryPath?: string; models: string[] }>('opencode_detect');
+      } catch (err: unknown) {
+        console.warn('detectOpencode error:', err);
+        return { installed: false, models: [] };
+      }
+    }
+    return { installed: false, models: [] };
+  },
+
+  async streamOpencode(
+    options: {
+      prompt: string;
+      model: string;
+      cwd?: string;
+      streamId?: string;
+    },
+    onToken: (text: string) => void,
+    signal?: AbortSignal,
+    events?: AiStreamEvents
+  ): Promise<void> {
+    if (isTauri) {
+      if (signal?.aborted) return;
+      const streamId = options.streamId || crypto.randomUUID();
+      const channel = new Channel<AiStreamMsg>();
+      channel.onmessage = (msg) => {
+        if (msg.type === 'data') onToken(msg.text);
+        else if (msg.type === 'meta') events?.onMeta?.(msg.keyMask, msg.proxyMask);
+        else if (msg.type === 'failover') events?.onFailover?.(msg.reason, msg.next);
+      };
+      const onAbort = () => {
+        invoke('opencode_stream_cancel', { streamId }).catch(() => {});
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        await invoke('opencode_stream', {
+          prompt: options.prompt,
+          model: options.model,
+          cwd: options.cwd ?? null,
+          streamId,
+          channel,
+        });
+        return;
+      } catch (err: unknown) {
+        throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+      }
+    }
+    throw new Error('OpenCode streaming is only supported in the desktop app.');
   },
 };
