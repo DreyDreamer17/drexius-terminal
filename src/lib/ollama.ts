@@ -16,7 +16,7 @@
  */
 
 import type { AiBalanceStrategy, AiProviderConfig } from './types';
-import { bridge, isTauri } from './bridge';
+import { bridge, isTauri, type AiStreamEvents } from './bridge';
 
 export interface ChatMsg {
   role: 'system' | 'user' | 'assistant';
@@ -24,6 +24,34 @@ export interface ChatMsg {
 }
 
 export const DEFAULT_ENDPOINT = 'http://localhost:11434';
+
+/**
+ * In the desktop app, API keys and pooled proxies never leave the Rust backend: a route just
+ * names the provider, and the backend selects a key/proxy, injects auth and handles failover.
+ */
+export interface VaultRoute {
+  providerId: string;
+  events?: AiStreamEvents;
+}
+
+/** Only the local SSH SOCKS tunnel is passed from the UI; pooled proxies are chosen by the backend. */
+function sshProxyOverride(config: AiProviderConfig): string | undefined {
+  const p = config.proxyUrls?.[0];
+  return config.autoSshProxy && p && /^socks5:\/\/127\.0\.0\.1:\d+$/.test(p) ? p : undefined;
+}
+
+/** Model ids that providers have retired; saved configs pointing at them are migrated on load. */
+export const RETIRED_MODELS = new Set<string>([
+  'deepseek-chat',
+  'deepseek-reasoner',
+  'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-20241022',
+  'claude-3-opus-20240229',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-thinking-exp',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+]);
 
 export interface ProviderSpec {
   id: string;
@@ -52,16 +80,16 @@ export const KNOWN_PROVIDERS: ProviderSpec[] = [
     name: 'Google Gemini',
     type: 'gemini',
     defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.0-flash',
+    defaultModel: 'gemini-3.7-flash',
     supportsKeyPool: true,
     docUrl: 'https://aistudio.google.com/apikey',
     popularModels: [
-      'gemini-2.0-flash',
+      'gemini-3.7-flash',
+      'gemini-3.8-flash',
+      'gemini-3.8-flash-lite',
+      'gemini-3.1-pro',
       'gemini-2.5-flash',
       'gemini-2.5-pro',
-      'gemini-2.0-flash-thinking-exp',
-      'gemini-1.5-flash',
-      'gemini-1.5-pro',
     ],
   },
   {
@@ -69,30 +97,30 @@ export const KNOWN_PROVIDERS: ProviderSpec[] = [
     name: 'DeepSeek',
     type: 'openai',
     defaultBaseUrl: 'https://api.deepseek.com',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-flash',
     supportsKeyPool: true,
     docUrl: 'https://platform.deepseek.com',
-    popularModels: ['deepseek-chat', 'deepseek-reasoner'],
+    popularModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   },
   {
     id: 'openai',
     name: 'OpenAI',
     type: 'openai',
     defaultBaseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o-mini',
+    defaultModel: 'gpt-5-mini',
     supportsKeyPool: true,
     docUrl: 'https://platform.openai.com',
-    popularModels: ['gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini', 'gpt-4-turbo'],
+    popularModels: ['gpt-5', 'gpt-5-mini', 'gpt-4o', 'gpt-4o-mini', 'o3-mini'],
   },
   {
     id: 'anthropic',
     name: 'Anthropic Claude',
     type: 'anthropic',
     defaultBaseUrl: 'https://api.anthropic.com',
-    defaultModel: 'claude-3-5-sonnet-20241022',
+    defaultModel: 'claude-sonnet-5-5',
     supportsKeyPool: true,
     docUrl: 'https://console.anthropic.com',
-    popularModels: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+    popularModels: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
   },
   {
     id: 'groq',
@@ -102,17 +130,17 @@ export const KNOWN_PROVIDERS: ProviderSpec[] = [
     defaultModel: 'llama-3.3-70b-versatile',
     supportsKeyPool: true,
     docUrl: 'https://console.groq.com',
-    popularModels: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'],
+    popularModels: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gpt-oss-120b'],
   },
   {
     id: 'openrouter',
     name: 'OpenRouter',
     type: 'openai',
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'deepseek/deepseek-r1',
+    defaultModel: 'deepseek/deepseek-v4-flash',
     supportsKeyPool: true,
     docUrl: 'https://openrouter.ai',
-    popularModels: ['deepseek/deepseek-r1', 'deepseek/deepseek-chat', 'anthropic/claude-3.5-sonnet', 'openai/gpt-4o-mini', 'meta-llama/llama-3.3-70b-instruct'],
+    popularModels: ['deepseek/deepseek-v4-flash', 'anthropic/claude-sonnet-5-5', 'openai/gpt-5-mini', 'meta-llama/llama-3.3-70b-instruct'],
   },
   {
     id: 'custom',
@@ -447,11 +475,17 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
   const cleanBase = config.baseUrl.replace(/\/+$/, '');
 
   // Choose key
-  const apiKey = specificKey || (config.apiKeys.length > 0 ? selectKeyFromPool(config.providerId, config.apiKeys, 'random')?.key : '');
+  // In Tauri the UI only holds MASKED keys; the backend injects the real pooled key. A key the
+  // user is testing right now (specificKey) is still sent explicitly.
+  const apiKey =
+    specificKey ||
+    (!isTauri && config.apiKeys.length > 0 ? selectKeyFromPool(config.providerId, config.apiKeys, 'random')?.key : '') ||
+    '';
 
   // Choose proxy if proxy routing is enabled
-  const activeProxy =
-    config.useProxies && config.proxyUrls && config.proxyUrls.length > 0
+  const activeProxy = isTauri
+    ? sshProxyOverride(config)
+    : config.useProxies && config.proxyUrls && config.proxyUrls.length > 0
       ? selectProxyFromPool(config.providerId, config.proxyUrls, config.proxyStrategy ?? 'random')?.proxy
       : undefined;
 
@@ -462,6 +496,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
         method: 'GET',
         headers: {},
         proxyUrl: activeProxy,
+        providerId: config.providerId,
+        auth: 'none',
       });
       if (resp.status !== 200) throw new Error(`Ollama returned HTTP ${resp.status}`);
       const j = JSON.parse(resp.body);
@@ -487,6 +523,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
           method: 'GET',
           headers,
           proxyUrl: activeProxy,
+          providerId: config.providerId,
+          auth: 'anthropic',
         });
         if (resp.status === 200) {
           const j = JSON.parse(resp.body);
@@ -513,7 +551,7 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
     }
     return config.modelsCache && config.modelsCache.length > 0
       ? config.modelsCache
-      : providerSpec?.popularModels ?? ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'];
+      : providerSpec?.popularModels ?? ['claude-sonnet-5-5', 'claude-haiku-5-5'];
   }
 
   if (type === 'gemini' || config.providerId === 'gemini') {
@@ -537,6 +575,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
           method: 'GET',
           headers,
           proxyUrl: activeProxy,
+          providerId: config.providerId,
+          auth: 'gemini',
         });
         if (resp.status === 200) {
           const j = JSON.parse(resp.body);
@@ -564,7 +604,7 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
     }
     return config.modelsCache && config.modelsCache.length > 0
       ? config.modelsCache
-      : providerSpec?.popularModels ?? ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+      : providerSpec?.popularModels ?? ['gemini-3.7-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'];
   }
 
   // OpenAI-compatible format (OpenAI, DeepSeek, Groq, OpenRouter, Custom)
@@ -583,6 +623,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
         method: 'GET',
         headers,
         proxyUrl: activeProxy,
+        providerId: config.providerId,
+        auth: 'bearer',
       });
       if (resp.status === 200) {
         const j = JSON.parse(resp.body);
@@ -597,6 +639,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
           method: 'GET',
           headers,
           proxyUrl: activeProxy,
+          providerId: config.providerId,
+          auth: 'bearer',
         });
         if (resp2.status === 200) {
           const j2 = JSON.parse(resp2.body);
@@ -668,6 +712,11 @@ export async function chatStreamMultiProvider(
 
   if (type !== 'ollama' && keys.length === 0) {
     throw new Error(`No API keys configured for ${config.name || config.providerId}. Please add an API key in AI Settings.`);
+  }
+
+  // Desktop app: the backend owns key/proxy selection, auth injection and failover.
+  if (isTauri) {
+    return chatStreamViaVault(config, type, cleanBase, messages, callbacks, signal);
   }
 
   const maxKeyAttempts = keys.length > 1 ? Math.min(keys.length, 3) : 1;
@@ -745,8 +794,8 @@ export async function chatStreamMultiProvider(
       // Check if it's a proxy network failure
       const isProxyError =
         activeProxy &&
-        (/proxy connection failed|stream read error|proxy|connectex|econnrefused|timed? ?out|tunnel/i.test(errMsg) &&
-          !errMsg.includes('429'));
+        (/proxy (connect|error|auth)|proxy connection failed|stream read error|error trying to connect|connectex|econnrefused|connection (reset|refused|closed)|timed? ?out|socks|tunnel/i.test(errMsg) &&
+          !HTTP_429_RE.test(errMsg));
 
       if (isProxyError && proxyStat && activeProxy) {
         proxyStat.cooldownUntil = Date.now() + 60_000;
@@ -760,7 +809,7 @@ export async function chatStreamMultiProvider(
       }
 
       // Rate limit HTTP 429 handling: failover to another key
-      const isRateLimit = errMsg.includes('429') || /rate limit|quota|too many requests/i.test(errMsg);
+      const isRateLimit = HTTP_429_RE.test(errMsg) || /rate limit|quota|too many requests/i.test(errMsg);
       if (isRateLimit) {
         if (stats && apiKey) {
           stats.rateLimitCooldownUntil = Date.now() + 60_000; // 60s cooldown
@@ -804,6 +853,38 @@ export async function chatStreamMultiProvider(
   if (lastError) throw lastError;
 }
 
+async function chatStreamViaVault(
+  config: AiProviderConfig,
+  type: ProviderSpec['type'],
+  cleanBase: string,
+  messages: ChatMsg[],
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal
+): Promise<void> {
+  const route: VaultRoute = {
+    providerId: config.providerId,
+    events: {
+      onMeta: (keyMask, proxyMask) => {
+        if (keyMask) callbacks.onKeyUsed?.(keyMask, config.name || config.providerId);
+        if (proxyMask) callbacks.onProxyUsed?.(proxyMask);
+      },
+      onFailover: (reason, next) => callbacks.onFailover?.(reason, next),
+    },
+  };
+  const override = sshProxyOverride(config);
+
+  if (type === 'ollama') {
+    return streamOllama(cleanBase, config.selectedModel, messages, callbacks.onToken, signal, override, route);
+  }
+  if (type === 'anthropic') {
+    return streamAnthropic(cleanBase, config.selectedModel, '', messages, callbacks.onToken, signal, override, route);
+  }
+  return streamOpenAi(config, cleanBase, '', messages, callbacks.onToken, signal, override, route);
+}
+
+/** Matches an HTTP 429 status as formatted by this module (not any stray "429" in a message). */
+const HTTP_429_RE = /\bHTTP 429\b/;
+
 export function formatApiError(status: number, rawText: string, providerName: string): string {
   try {
     const parsed = JSON.parse(rawText);
@@ -832,7 +913,8 @@ async function streamOllama(
   messages: ChatMsg[],
   onToken: (t: string) => void,
   signal?: AbortSignal,
-  proxyUrl?: string
+  proxyUrl?: string,
+  route?: VaultRoute
 ) {
   const payload = JSON.stringify({ model, messages, stream: true, options: { temperature: 0.2 } });
   let buf = '';
@@ -864,8 +946,12 @@ async function streamOllama(
           headers: { 'Content-Type': 'application/json' },
           body: payload,
           proxyUrl,
+          providerId: route?.providerId,
+          auth: 'none',
         },
-        handleChunk
+        handleChunk,
+        signal,
+        route?.events
       );
       return;
     } catch (err: unknown) {
@@ -904,7 +990,8 @@ async function streamAnthropic(
   messages: ChatMsg[],
   onToken: (t: string) => void,
   signal?: AbortSignal,
-  proxyUrl?: string
+  proxyUrl?: string,
+  route?: VaultRoute
 ) {
   // Separate system prompt from messages for Anthropic
   const systemMsgs = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
@@ -966,8 +1053,12 @@ async function streamAnthropic(
           headers,
           body: payload,
           proxyUrl,
+          providerId: route?.providerId,
+          auth: 'anthropic',
         },
-        handleChunk
+        handleChunk,
+        signal,
+        route?.events
       );
       return;
     } catch (err: unknown) {
@@ -1008,7 +1099,8 @@ async function streamOpenAi(
   messages: ChatMsg[],
   onToken: (t: string) => void,
   signal?: AbortSignal,
-  proxyUrl?: string
+  proxyUrl?: string,
+  route?: VaultRoute
 ) {
   let endpoint = baseUrl;
   if (config.providerId === 'gemini') {
@@ -1101,8 +1193,12 @@ async function streamOpenAi(
           headers,
           body: payload,
           proxyUrl,
+          providerId: route?.providerId,
+          auth: config.providerId === 'gemini' ? 'gemini' : 'bearer',
         },
-        handleChunk
+        handleChunk,
+        signal,
+        route?.events
       );
       return;
     } catch (err: unknown) {
@@ -1149,25 +1245,86 @@ export async function chatStream(
 
 // ─────────────────────── SRE System Prompt & Risk Scoring ───────────────────────
 
-export const SYSTEM_PROMPT = `You are Nexus, a senior SRE assistant embedded inside an SSH terminal client.
+export const SYSTEM_PROMPT_CHAT = `You are Nexus, a senior SRE assistant embedded inside an SSH terminal client.
 Rules:
 - Be concise. Prefer bullet points.
 - When suggesting commands, put each runnable command in its own \`\`\`bash fenced block.
+- Do NOT output raw tool call tokens like <|tool_call_start|> or <tool_call>. Format all runnable commands in \`\`\`bash code blocks.
 - Never suggest destructive commands without a clear warning line starting with "⚠️".
 - Prefer safe, read-only diagnostics first. Quote paths. Use set -euo pipefail for scripts.
 - You are given the recent terminal output and the current working directory as context.`;
 
+export const SYSTEM_PROMPT_AGENT = `You are Nexus, an autonomous senior coding and SRE agent running inside NexusTerminal. Help the user accomplish their goals using the tools you have available.
+
+# Harness & Execution Rules (OpenCode Agent Loop)
+- Prefer dedicated tools over shell commands; fall back to bash only when a tool cannot do what you need (e.g. running tests, builds, git, process management).
+- When reading or inspecting a file, ALWAYS use the \`read\` tool. NEVER run \`cat\`, \`head\`, \`tail\`, or \`less\` in bash.
+- Use \`edit\` for targeted changes to existing files by replacing exact text.
+- Use \`write\` to create new files or completely overwrite existing files.
+- Only emit tool calls for immediate actions you need right now. Wait for the tool result before taking the next step.
+- DO NOT guess what the output will be.
+- DO NOT re-emit or repeat a command or tool call if you have already received its output in the conversation history. Analyze the output and move forward with the next action or conclude.
+- DO NOT output hypothetical future commands or a script/list of commands to run later. Every action you want to take must be emitted as a single tool call for immediate execution.
+- When tool results are returned to you, analyze the output and decide on the single next action.
+- Never run destructive commands without a clear explanation and warning.
+- Do not chain commands with noisy separators like echo "=====" or printf '---'.
+
+# Tool Calling Format
+To call a tool, you MUST output a tool call block using this exact format:
+\`\`\`tool_call
+{"name": "<tool_name>", "arguments": { ... }}
+\`\`\`
+
+Available Tools:
+1. read:
+   Read the contents of a file or directory. Lines are returned numbered as (<line> | <content>).
+   \`\`\`tool_call
+   {"name": "read", "arguments": {"path": "src/main.js"}}
+   \`\`\`
+   Optional line range for large files:
+   \`\`\`tool_call
+   {"name": "read", "arguments": {"path": "src/main.js", "offset": 1, "limit": 200}}
+   \`\`\`
+
+2. edit:
+   Perform targeted changes to an existing file by replacing oldString with newString.
+   \`\`\`tool_call
+   {"name": "edit", "arguments": {"path": "src/app.py", "oldString": "def old_fn():", "newString": "def new_fn():"}}
+   \`\`\`
+
+3. write:
+   Create a new file or completely replace its content.
+   \`\`\`tool_call
+   {"name": "write", "arguments": {"path": "config.json", "content": "{\\n  \\"setting\\": true\\n}"}}
+   \`\`\`
+
+4. bash:
+   Execute a terminal shell command (running tests, builds, git, package managers, system diagnostics).
+   \`\`\`tool_call
+   {"name": "bash", "arguments": {"command": "git status"}}
+   \`\`\`
+
+# Communication
+- Keep responses clear, concise, and focused on the immediate task.
+- Responses are rendered as GitHub-flavored Markdown.`;
+
+export const SYSTEM_PROMPT = SYSTEM_PROMPT_CHAT;
+
 export type Risk = { level: 'safe' | 'caution' | 'danger'; reasons: string[] };
 
 const DANGER: [RegExp, string][] = [
-  [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\b/i, 'recursive force delete'],
+  [/\brm\b(?=[^;&|\n]*\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?:\s|$))(?=[^;&|\n]*\s(?:-[a-zA-Z]*[fF][a-zA-Z]*|--force)(?:\s|$))/, 'recursive force delete'],
+  [/--no-preserve-root/, 'deletes the filesystem root'],
+  [/\b(shred|wipefs)\b/, 'irreversibly destroys data'],
   [/\bmkfs(\.\w+)?\b/, 'formats a filesystem'],
   [/\bdd\s+.*of=\/dev\//, 'raw write to block device'],
   [/:\(\)\s*\{\s*:\|:&\s*\};:/, 'fork bomb'],
   [/\bchmod\s+(-R\s+)?777\b/, 'world-writable permissions'],
   [/>\s*\/dev\/sd[a-z]/, 'overwrites a disk'],
   [/\b(shutdown|reboot|halt|poweroff)\b/, 'stops the machine'],
-  [/curl[^|]*\|\s*(sudo\s+)?(ba)?sh/, 'pipes remote script to shell'],
+  [/\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b/, 'pipes remote script to shell'],
+  [/\b(ba|z|da)?sh\s+<\(\s*(curl|wget)\b/, 'runs a downloaded script'],
+  [/\$\(\s*(curl|wget)\b/, 'executes downloaded content'],
   [/\bDROP\s+(TABLE|DATABASE)\b/i, 'drops database objects'],
 ];
 

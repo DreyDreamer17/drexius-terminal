@@ -144,6 +144,45 @@ interface DemoSession { shell: DemoShell; host: Host; emit: (e: SessionEvent) =>
 const demoSessions = new Map<string, DemoSession>();
 
 // ─────────────────────────────── API ───────────────────────────────────
+export type AiAuthKind = 'none' | 'bearer' | 'anthropic' | 'gemini';
+
+export interface AiProxyRequest {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  /** Explicit proxy override (local SSH SOCKS tunnel). Pooled proxies are chosen by the backend. */
+  proxyUrl?: string;
+  /** Provider whose vault-held keys/proxies the backend should use. */
+  providerId?: string;
+  /** How the backend injects the pooled key. */
+  auth?: AiAuthKind;
+}
+
+export interface AiStreamEvents {
+  onMeta?: (keyMask: string | null, proxyMask: string | null) => void;
+  onFailover?: (reason: string, next: string) => void;
+}
+
+type AiStreamMsg =
+  | { type: 'data'; text: string }
+  | { type: 'meta'; keyMask: string | null; proxyMask: string | null }
+  | { type: 'failover'; reason: string; next: string };
+
+async function demoEditAiList(
+  config: AiProviderConfig,
+  field: 'apiKeys' | 'proxyUrls',
+  fn: (list: string[]) => string[]
+): Promise<AiProviderConfig> {
+  const s = need();
+  if (!s.aiConfigs) s.aiConfigs = {};
+  const cur = s.aiConfigs[config.providerId] ?? { ...config, apiKeys: [], proxyUrls: [] };
+  const next = { ...cur, [field]: fn([...(cur[field] ?? [])]) } as AiProviderConfig;
+  s.aiConfigs[config.providerId] = next;
+  await persistDemo();
+  return next;
+}
+
 export const bridge = {
   // ── Vault ──
   async vaultStatus(): Promise<{ initialized: boolean; unlocked: boolean }> {
@@ -726,31 +765,69 @@ export const bridge = {
     await persistDemo();
   },
 
+  // ── Secret-safe AI key / proxy list editing ──
+  // In Tauri the vault owns the real values and the UI only ever holds masked copies, so lists
+  // are edited through dedicated backend commands. (Demo mode keeps plain values in its sandbox.)
+  async addAiKeys(config: AiProviderConfig, keys: string[]): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_keys_add', { config, keys });
+    return demoEditAiList(config, 'apiKeys', (l) => Array.from(new Set([...l, ...keys.map((k) => k.trim()).filter(Boolean)])));
+  },
+  async removeAiKey(providerId: string, index: number): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_key_remove', { providerId, index });
+    return demoEditAiList({ providerId } as AiProviderConfig, 'apiKeys', (l) => l.filter((_, i) => i !== index));
+  },
+  async clearAiKeys(providerId: string): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_keys_clear', { providerId });
+    return demoEditAiList({ providerId } as AiProviderConfig, 'apiKeys', () => []);
+  },
+  async addAiProxies(config: AiProviderConfig, proxies: string[]): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_proxies_add', { config, proxies });
+    return demoEditAiList(config, 'proxyUrls', (l) => Array.from(new Set([...l, ...proxies.map((p) => p.trim()).filter(Boolean)])));
+  },
+  async removeAiProxy(providerId: string, index: number): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_proxy_remove', { providerId, index });
+    return demoEditAiList({ providerId } as AiProviderConfig, 'proxyUrls', (l) => l.filter((_, i) => i !== index));
+  },
+  async clearAiProxies(providerId: string): Promise<AiProviderConfig> {
+    if (isTauri) return invoke('ai_proxies_clear', { providerId });
+    return demoEditAiList({ providerId } as AiProviderConfig, 'proxyUrls', () => []);
+  },
+
   // ── AI Proxy & Streaming Bridge ──
   async streamAiProxy(
-    request: {
-      url: string;
-      method: string;
-      headers: Record<string, string>;
-      body?: string;
-      proxyUrl?: string;
-    },
-    onChunk: (text: string) => void
+    request: AiProxyRequest,
+    onChunk: (text: string) => void,
+    signal?: AbortSignal,
+    events?: AiStreamEvents
   ): Promise<void> {
     if (isTauri) {
-      const channel = new Channel<string>();
-      channel.onmessage = onChunk;
+      if (signal?.aborted) return;
+      const streamId = crypto.randomUUID();
+      const channel = new Channel<AiStreamMsg>();
+      channel.onmessage = (msg) => {
+        if (msg.type === 'data') onChunk(msg.text);
+        else if (msg.type === 'meta') events?.onMeta?.(msg.keyMask, msg.proxyMask);
+        else if (msg.type === 'failover') events?.onFailover?.(msg.reason, msg.next);
+      };
+      // Stop button => actually cancel the Rust-side HTTP stream (not just ignore its chunks).
+      const onAbort = () => {
+        invoke('ai_stream_cancel', { streamId }).catch(() => {});
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
       try {
-        await invoke('ai_stream_proxy', { request, channel });
+        await invoke('ai_stream_proxy', { request: { ...request, streamId }, channel });
         return;
       } catch (err: unknown) {
         throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
       }
     }
     const r = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       body: request.body,
+      signal,
     });
     if (!r.ok || !r.body) {
       const err = await r.text().catch(() => '');
@@ -765,13 +842,7 @@ export const bridge = {
     }
   },
 
-  async fetchAiProxy(request: {
-    url: string;
-    method: string;
-    headers: Record<string, string>;
-    body?: string;
-    proxyUrl?: string;
-  }): Promise<{ status: number; body: string }> {
+  async fetchAiProxy(request: AiProxyRequest): Promise<{ status: number; body: string }> {
     if (isTauri) {
       try {
         return await invoke('ai_fetch_proxy', { request });
@@ -810,5 +881,24 @@ export const bridge = {
       }
     }
     return true;
+  },
+
+  async localReadFile(path: string, offset?: number, limit?: number): Promise<string> {
+    if (isTauri) {
+      return await invoke<string>('local_read_file', { path, offset, limit });
+    }
+    return `[Demo mode: localReadFile not available in browser]`;
+  },
+
+  async localWriteFile(path: string, content: string): Promise<void> {
+    if (isTauri) {
+      return await invoke<void>('local_write_file', { path, content });
+    }
+  },
+
+  async localEditFile(path: string, oldString: string, newString: string, replaceAll?: boolean): Promise<void> {
+    if (isTauri) {
+      return await invoke<void>('local_edit_file', { path, oldString, newString, replaceAll });
+    }
   },
 };
