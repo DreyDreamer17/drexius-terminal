@@ -74,7 +74,8 @@ export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
-  const [showAI, setShowAI] = useState(true);
+  const [showAI, setShowAI] = useState(false);
+  const [newConnNonce, setNewConnNonce] = useState(0);
   const [aiWidth, setAiWidth] = useState<number>(() => {
     try {
       const saved = localStorage.getItem('nx.ai.panel_width');
@@ -184,6 +185,8 @@ export default function App() {
     setActiveTabId(tab.id);
     setQuick(false);
     setPanel(null);
+    setShowAI(false);
+    setNewConnNonce((n) => n + 1);
   }, []);
 
   const openLocalTerminal = useCallback(() => {
@@ -200,6 +203,8 @@ export default function App() {
     setActiveTabId(tab.id);
     setQuick(false);
     setPanel(null);
+    setShowAI(false);
+    setNewConnNonce((n) => n + 1);
   }, []);
 
   const handleConnectSerial = useCallback((port: string, baud: number) => {
@@ -235,7 +240,10 @@ export default function App() {
     setHosts((prev) => (prev.some((h) => h.id === serialHost.id) ? prev : [serialHost, ...prev]));
     setTabs((t) => [...t, tab]);
     setActiveTabId(tab.id);
+    setQuick(false);
     setPanel(null);
+    setShowAI(false);
+    setNewConnNonce((n) => n + 1);
     toast(`Opened Serial terminal on ${port} @ ${baud} baud`);
   }, [activeVaultId, toast]);
 
@@ -775,7 +783,13 @@ export default function App() {
         style={{ width: `${aiWidth}px` }}
         className={cn("shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", !showAI && "hidden")}
       >
-        <AIPanel activePaneId={activePaneId} toast={toast} onClose={() => setShowAI(false)} theme={theme} />
+        <AIPanel
+          activePaneId={activePaneId}
+          toast={toast}
+          onClose={() => setShowAI(false)}
+          theme={theme}
+          newConnectionNonce={newConnNonce}
+        />
       </aside>
       </div>
 

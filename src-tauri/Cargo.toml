@@ -53,7 +53,7 @@ log = "0.4"
 env_logger = "0.11"
 
 # ── Async (sync transport + AI proxy) ─────────────────────────
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
 portable-pty = "0.9.0"
 

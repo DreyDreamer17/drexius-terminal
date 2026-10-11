@@ -10,6 +10,7 @@ mod sync;
 mod tunnel;
 mod vault;
 mod ai_client;
+mod opencode;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -147,6 +148,10 @@ pub fn run() {
             local_pty::local_read_file,
             local_pty::local_write_file,
             local_pty::local_edit_file,
+            // opencode integration
+            opencode::opencode_detect,
+            opencode::opencode_stream,
+            opencode::opencode_stream_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NexusTerminal");
