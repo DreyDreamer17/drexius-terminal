@@ -27,7 +27,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::error::{AppError, AppResult};
 use crate::vault::{
-    AuthMethod, HostProfile, HostSecret, KeychainItem, PairedDevice, Snippet,
+    AiProviderConfig, AuthMethod, HostProfile, HostSecret, KeychainItem, PairedDevice, Snippet,
     TunnelConfig, Vault, VaultRecord,
 };
 
@@ -89,6 +89,8 @@ struct FullVaultArchive {
     pub keychain: Vec<(KeychainItem, Option<HostSecret>)>,
     pub snippets: Vec<Snippet>,
     pub tunnels: Vec<TunnelConfig>,
+    #[serde(default)]
+    pub ai_configs: Vec<AiProviderConfig>,
 }
 
 pub struct PairingManager {
@@ -262,6 +264,9 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // AI Configs
+        let ai_configs = crate::vault::query_all_ai_configs(c)?;
+
         Ok(FullVaultArchive {
             version: 1,
             sender_device: sender_name.to_string(),
@@ -270,6 +275,7 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             keychain,
             snippets,
             tunnels,
+            ai_configs,
         })
     })
 }
@@ -362,7 +368,26 @@ fn restore_full_vault(
             )?;
         }
 
-        // 6. Record paired device
+        // 6. AI Configs
+        for ai in &archive.ai_configs {
+            let keys_json = serde_json::to_string(&ai.api_keys).unwrap_or_else(|_| "[]".into());
+            let cache_json = serde_json::to_string(&ai.models_cache).unwrap_or_else(|_| "[]".into());
+            let proxies_json = serde_json::to_string(&ai.proxy_urls).unwrap_or_else(|_| "[]".into());
+            c.execute(
+                "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
+                params![
+                    ai.provider_id, ai.name, ai.base_url, keys_json,
+                    ai.selected_model, cache_json, ai.balance_strategy,
+                    if ai.enabled { 1 } else { 0 }, now,
+                    if ai.use_proxies { 1 } else { 0 }, proxies_json, ai.proxy_strategy,
+                    if ai.auto_ssh_proxy { 1 } else { 0 }, ai.auto_ssh_host_id
+                ],
+            )?;
+        }
+
+        // 7. Record paired device
         let dev_id = uuid::Uuid::new_v4().to_string();
         c.execute(
             "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)

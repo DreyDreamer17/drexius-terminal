@@ -31,6 +31,7 @@ struct RunningTunnel {
     bytes_up: Arc<AtomicU64>,
     bytes_down: Arc<AtomicU64>,
     _session: Session,
+    local_port: u16,
 }
 
 #[derive(Default)]
@@ -106,6 +107,29 @@ pub fn tunnel_start(
         .set_nonblocking(true)
         .map_err(|e| AppError::Io(e))?;
 
+    let local_port = tunnel.local_port;
+    spawn_tunnel_worker(
+        id.clone(),
+        format!("tunnel-{}", &id[..8.min(id.len())]),
+        listener,
+        session,
+        tunnel,
+        local_port,
+        &mgr,
+    )?;
+
+    Ok(mgr.status(&id))
+}
+
+fn spawn_tunnel_worker(
+    tunnel_id: String,
+    thread_name: String,
+    listener: TcpListener,
+    session: Session,
+    cfg: TunnelConfig,
+    local_port: u16,
+    mgr: &TunnelManager,
+) -> AppResult<()> {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let bytes_up = Arc::new(AtomicU64::new(0));
     let bytes_down = Arc::new(AtomicU64::new(0));
@@ -115,17 +139,17 @@ pub fn tunnel_start(
         bytes_up: bytes_up.clone(),
         bytes_down: bytes_down.clone(),
         _session: session.clone(),
+        local_port,
     };
 
-    mgr.running.lock().insert(id.clone(), running_tunnel);
+    mgr.running.lock().insert(tunnel_id, running_tunnel);
 
-    let stop = stop_flag.clone();
-    let up = bytes_up.clone();
-    let down = bytes_down.clone();
-    let t_cfg = tunnel.clone();
+    let stop = stop_flag;
+    let up = bytes_up;
+    let down = bytes_down;
 
     thread::Builder::new()
-        .name(format!("tunnel-{}", &id[..8.min(id.len())]))
+        .name(thread_name)
         .spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -134,9 +158,9 @@ pub fn tunnel_start(
                         let stop_c = stop.clone();
                         let up_c = up.clone();
                         let down_c = down.clone();
-                        let cfg = t_cfg.clone();
+                        let c = cfg.clone();
                         thread::spawn(move || {
-                            let _ = handle_client(stream, sess, cfg, stop_c, up_c, down_c);
+                            let _ = handle_client(stream, sess, c, stop_c, up_c, down_c);
                         });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -148,7 +172,7 @@ pub fn tunnel_start(
         })
         .map_err(|e| AppError::Io(e))?;
 
-    Ok(mgr.status(&id))
+    Ok(())
 }
 
 #[tauri::command]
@@ -160,6 +184,68 @@ pub fn tunnel_stop(id: String, mgr: State<'_, TunnelManager>) -> ActiveTunnelInf
 #[tauri::command]
 pub fn tunnel_status_all(mgr: State<'_, TunnelManager>) -> Vec<ActiveTunnelInfo> {
     mgr.all_statuses()
+}
+
+#[tauri::command(async)]
+pub fn ai_tunnel_start(
+    host_id: String,
+    mgr: State<'_, TunnelManager>,
+    vault: State<'_, Vault>,
+) -> AppResult<u16> {
+    let tunnel_id = format!("ai_auto_{}", host_id);
+    if mgr.is_running(&tunnel_id) {
+        let guard = mgr.running.lock();
+        if let Some(t) = guard.get(&tunnel_id) {
+            return Ok(t.local_port);
+        }
+    }
+
+    let (host, secret) = vault.host_with_secret(&host_id)?;
+    let (session, _) = open_authenticated(&host, &secret, &vault)?;
+
+    // Bind to 127.0.0.1 on port 10885 (or dynamic port if 10885 is occupied)
+    let listener = match TcpListener::bind("127.0.0.1:10885") {
+        Ok(l) => l,
+        Err(_) => TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?,
+    };
+    let local_port = listener.local_addr().map_err(|e| AppError::Io(e))?.port();
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| AppError::Io(e))?;
+
+    let cfg = TunnelConfig {
+        id: tunnel_id.clone(),
+        label: format!("AI Proxy ({})", host.label),
+        host_id: host_id.clone(),
+        forward_type: "dynamic".to_string(),
+        local_host: "127.0.0.1".to_string(),
+        local_port,
+        remote_host: "127.0.0.1".to_string(),
+        remote_port: 0,
+        updated_at: 0,
+        vault_id: None,
+    };
+
+    spawn_tunnel_worker(
+        tunnel_id,
+        format!("ai-tun-{}", local_port),
+        listener,
+        session,
+        cfg,
+        local_port,
+        &mgr,
+    )?;
+
+    log::info!("AI SOCKS5 tunnel active on 127.0.0.1:{} for host {}", local_port, host_id);
+    Ok(local_port)
+}
+
+#[tauri::command]
+pub fn ai_tunnel_stop(host_id: String, mgr: State<'_, TunnelManager>) -> bool {
+    let tunnel_id = format!("ai_auto_{}", host_id);
+    mgr.stop(&tunnel_id);
+    true
 }
 
 fn handle_client(
@@ -176,13 +262,14 @@ fn handle_client(
         // Simple SOCKS5 handshake & request parser
         match socks5_handshake(&mut client) {
             Ok((dest_host, dest_port)) => {
-                match sess.channel_direct_tcpip(&dest_host, dest_port, None) {
+                match sess.channel_direct_tcpip(&dest_host, dest_port, Some(("127.0.0.1", cfg.local_port))) {
                     Ok(ch) => {
                         // SOCKS5 success response: version 5, rep 0 (succeeded), rsv 0, atyp 1 (IPv4 0.0.0.0:0)
                         let _ = client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
                         ch
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        log::error!("direct-tcpip to {}:{} failed: {}", dest_host, dest_port, e);
                         // SOCKS5 reply 5: Connection refused
                         let _ = client.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]);
                         return Ok(());
@@ -203,6 +290,7 @@ fn handle_client(
         }
     };
 
+    sess.set_blocking(false);
     proxy_bidirectional(client, channel, stop, up, down);
     Ok(())
 }
@@ -282,52 +370,72 @@ fn proxy_bidirectional(
     bytes_up: Arc<AtomicU64>,
     bytes_down: Arc<AtomicU64>,
 ) {
-    let _ = client.set_read_timeout(Some(Duration::from_millis(100)));
-    let mut client_clone = match client.try_clone() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    let _ = client.set_nonblocking(true);
 
-    let stop_1 = stop.clone();
-    let up = bytes_up.clone();
+    let mut client_buf = [0u8; 16 * 1024];
+    let mut chan_buf = [0u8; 16 * 1024];
 
-    // Thread 1: Client -> SSH Channel (Upload)
-    let t1 = thread::spawn(move || {
-        let mut buf = [0u8; 16 * 1024];
-        while !stop_1.load(Ordering::Relaxed) {
-            match client.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if channel.write_all(&buf[..n]).is_err() || channel.flush().is_err() {
-                        break;
-                    }
-                    up.fetch_add(n as u64, Ordering::Relaxed);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                    continue;
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = channel.send_eof();
-    });
+    while !stop.load(Ordering::Relaxed) {
+        let mut had_activity = false;
 
-    // Thread 2: SSH Channel -> Client (Download)
-    let stop_2 = stop.clone();
-    let down = bytes_down.clone();
-    let mut buf = [0u8; 16 * 1024];
-    while !stop_2.load(Ordering::Relaxed) {
-        match client_clone.read(&mut buf) {
+        // 1. Client -> SSH Channel (Upload)
+        match client.read(&mut client_buf) {
             Ok(0) => break,
             Ok(n) => {
-                down.fetch_add(n as u64, Ordering::Relaxed);
+                had_activity = true;
+                bytes_up.fetch_add(n as u64, Ordering::Relaxed);
+                let mut written = 0;
+                while written < n {
+                    match channel.write(&client_buf[written..n]) {
+                        Ok(0) => break,
+                        Ok(w) => written += w,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if written < n {
+                    break;
+                }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                continue;
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(_) => break,
+        }
+
+        // 2. SSH Channel -> Client (Download)
+        match channel.read(&mut chan_buf) {
+            Ok(0) => {
+                if channel.eof() {
+                    break;
+                }
+            }
+            Ok(n) => {
+                had_activity = true;
+                bytes_down.fetch_add(n as u64, Ordering::Relaxed);
+                let mut written = 0;
+                while written < n {
+                    match client.write(&chan_buf[written..n]) {
+                        Ok(0) => break,
+                        Ok(w) => written += w,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if written < n {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+
+        if !had_activity {
+            thread::sleep(Duration::from_millis(5));
         }
     }
 
-    let _ = t1.join();
+    let _ = channel.send_eof();
 }

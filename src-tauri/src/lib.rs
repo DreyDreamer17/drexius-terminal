@@ -9,6 +9,7 @@ mod ssh;
 mod sync;
 mod tunnel;
 mod vault;
+mod ai_client;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -63,6 +64,13 @@ pub fn run() {
             vault::serial_list_ports,
             vault::team_vault_export,
             vault::team_vault_import,
+            // ai configs & multi-provider settings
+            vault::ai_configs_list,
+            vault::ai_config_save,
+            vault::ai_active_provider_get,
+            vault::ai_active_provider_set,
+            ai_client::ai_stream_proxy,
+            ai_client::ai_fetch_proxy,
             // hosts
             vault::hosts_list,
             vault::host_save,
@@ -90,6 +98,8 @@ pub fn run() {
             tunnel::tunnel_start,
             tunnel::tunnel_stop,
             tunnel::tunnel_status_all,
+            tunnel::ai_tunnel_start,
+            tunnel::ai_tunnel_stop,
             // snippets
             vault::snippets_list,
             vault::snippet_save,

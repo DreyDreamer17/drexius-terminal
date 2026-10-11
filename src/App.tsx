@@ -78,6 +78,7 @@ export default function App() {
   const [showSftp, setShowSftp] = useState(false);
   const [themeId, setThemeId] = useState(() => localStorage.getItem('nx.theme') ?? 'nexus');
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('nx.font') ?? 13));
+  const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('nx.lineHeight') ?? 1.0));
   const [showThemes, setShowThemes] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [modal, setModal] = useState<{ host: Host | null } | null>(null);
@@ -113,6 +114,7 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
+  useEffect(() => { localStorage.setItem('nx.lineHeight', String(lineHeight)); }, [lineHeight]);
   useEffect(() => { localStorage.setItem('nx.zen', zen ? '1' : '0'); }, [zen]);
   useEffect(() => { localStorage.setItem('nx.rail', showRail ? '1' : '0'); }, [showRail]);
   useEffect(() => { localStorage.setItem('nx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
@@ -534,6 +536,14 @@ export default function App() {
                       <button onClick={() => setFontSize((f) => Math.min(22, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
                     </div>
                   </div>
+                  <div className="mt-1 flex items-center justify-between px-2 pt-1 text-xs text-slate-400">
+                    Line height
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setLineHeight((lh) => Math.max(1.0, Number((lh - 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
+                      <span className="w-10 text-center font-mono text-white">{lineHeight.toFixed(2)}</span>
+                      <button onClick={() => setLineHeight((lh) => Math.min(1.5, Number((lh + 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+                    </div>
+                  </div>
                 </div>
               </>
               )}
@@ -664,6 +674,7 @@ export default function App() {
                       host={h}
                       theme={theme}
                       fontSize={fontSize}
+                      lineHeight={lineHeight}
                       active={t.id === activeTabId && t.activePaneId === p.id}
                       showHeader={isSplit}
                       onFocus={() => focusPane(t.id, p.id)}

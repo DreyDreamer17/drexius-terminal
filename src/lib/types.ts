@@ -217,3 +217,22 @@ export interface ActiveTunnelInfo {
   bytesDown: number;
   error?: string | null;
 }
+
+export type AiBalanceStrategy = 'round_robin' | 'p2c' | 'random';
+
+export interface AiProviderConfig {
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  apiKeys: string[];
+  selectedModel: string;
+  modelsCache: string[];
+  balanceStrategy: AiBalanceStrategy;
+  enabled: boolean;
+  updatedAt: number;
+  useProxies?: boolean;
+  proxyUrls?: string[];
+  proxyStrategy?: AiBalanceStrategy;
+  autoSshProxy?: boolean;
+  autoSshHostId?: string;
+}

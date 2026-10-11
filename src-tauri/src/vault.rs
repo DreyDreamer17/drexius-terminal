@@ -38,12 +38,42 @@ pub struct SerialPortInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AiProviderConfig {
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_keys: Vec<String>,
+    pub selected_model: String,
+    pub models_cache: Vec<String>,
+    pub balance_strategy: String, // "round_robin" | "p2c" | "random"
+    pub enabled: bool,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub use_proxies: bool,
+    #[serde(default)]
+    pub proxy_urls: Vec<String>,
+    #[serde(default = "default_proxy_strategy")]
+    pub proxy_strategy: String,
+    #[serde(default)]
+    pub auto_ssh_proxy: bool,
+    #[serde(default)]
+    pub auto_ssh_host_id: Option<String>,
+}
+
+fn default_proxy_strategy() -> String {
+    "p2c".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamVaultPayload {
     pub vault: VaultRecord,
     pub hosts: Vec<HostProfile>,
     pub keychain: Vec<KeychainItem>,
     pub tunnels: Vec<TunnelConfig>,
     pub snippets: Vec<Snippet>,
+    #[serde(default)]
+    pub ai_configs: Vec<AiProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +367,13 @@ impl Vault {
         let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
         let _ = conn.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", []);
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", []);
+        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN use_proxies INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_urls TEXT NOT NULL DEFAULT '[]'", []);
+        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_strategy TEXT NOT NULL DEFAULT 'p2c'", []);
+        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_proxy INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_host_id TEXT", []);
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []);
         // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
         let _ = import_hosts_keys_internal(&conn);
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
@@ -1411,12 +1448,15 @@ pub fn team_vault_export(
             })
         })?.collect::<Result<Vec<_>, _>>()?;
 
+        let ai_configs = query_all_ai_configs(c)?;
+
         Ok(TeamVaultPayload {
             vault: v_record,
             hosts,
             keychain,
             tunnels,
             snippets,
+            ai_configs,
         })
     })?;
 
@@ -1518,6 +1558,104 @@ pub fn team_vault_import(
             )?;
         }
 
+        for ai in &payload.ai_configs {
+            let keys_json = serde_json::to_string(&ai.api_keys).unwrap_or_else(|_| "[]".into());
+            let cache_json = serde_json::to_string(&ai.models_cache).unwrap_or_else(|_| "[]".into());
+            let proxies_json = serde_json::to_string(&ai.proxy_urls).unwrap_or_else(|_| "[]".into());
+            c.execute(
+                "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
+                params![
+                    ai.provider_id, ai.name, ai.base_url, keys_json,
+                    ai.selected_model, cache_json, ai.balance_strategy,
+                    if ai.enabled { 1 } else { 0 }, now(),
+                    if ai.use_proxies { 1 } else { 0 }, proxies_json, ai.proxy_strategy,
+                    if ai.auto_ssh_proxy { 1 } else { 0 }, ai.auto_ssh_host_id
+                ],
+            )?;
+        }
+
         Ok(payload.vault.id)
+    })
+}
+
+// ── AI Provider Configuration & Key Pooling ──
+
+pub(crate) fn query_all_ai_configs(c: &rusqlite::Connection) -> AppResult<Vec<AiProviderConfig>> {
+    let mut st = c.prepare(
+        "SELECT provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id FROM ai_configs ORDER BY updated_at DESC"
+    )?;
+    let items = st.query_map([], |r| {
+        let keys_str: String = r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "[]".into());
+        let cache_str: String = r.get::<_, Option<String>>(5)?.unwrap_or_else(|| "[]".into());
+        let proxies_str: String = r.get::<_, Option<String>>(10)?.unwrap_or_else(|| "[]".into());
+        Ok(AiProviderConfig {
+            provider_id: r.get(0)?,
+            name: r.get(1)?,
+            base_url: r.get(2)?,
+            api_keys: serde_json::from_str(&keys_str).unwrap_or_default(),
+            selected_model: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            models_cache: serde_json::from_str(&cache_str).unwrap_or_default(),
+            balance_strategy: r.get::<_, Option<String>>(6)?.unwrap_or_else(|| "round_robin".into()),
+            enabled: r.get::<_, Option<i64>>(7)?.unwrap_or(1) != 0,
+            updated_at: r.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            use_proxies: r.get::<_, Option<i64>>(9)?.unwrap_or(0) != 0,
+            proxy_urls: serde_json::from_str(&proxies_str).unwrap_or_default(),
+            proxy_strategy: r.get::<_, Option<String>>(11)?.unwrap_or_else(|| "p2c".into()),
+            auto_ssh_proxy: r.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+            auto_ssh_host_id: r.get::<_, Option<String>>(13)?,
+        })
+    })?.collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+#[tauri::command]
+pub fn ai_configs_list(vault: tauri::State<'_, Vault>) -> AppResult<Vec<AiProviderConfig>> {
+    vault.with(|c| query_all_ai_configs(c))
+}
+
+#[tauri::command]
+pub fn ai_config_save(config: AiProviderConfig, vault: tauri::State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        let keys_json = serde_json::to_string(&config.api_keys).unwrap_or_else(|_| "[]".into());
+        let cache_json = serde_json::to_string(&config.models_cache).unwrap_or_else(|_| "[]".into());
+        let proxies_json = serde_json::to_string(&config.proxy_urls).unwrap_or_else(|_| "[]".into());
+        c.execute(
+            "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
+            params![
+                config.provider_id, config.name, config.base_url, keys_json,
+                config.selected_model, cache_json, config.balance_strategy,
+                if config.enabled { 1 } else { 0 }, now(),
+                if config.use_proxies { 1 } else { 0 }, proxies_json, config.proxy_strategy,
+                if config.auto_ssh_proxy { 1 } else { 0 }, config.auto_ssh_host_id
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn ai_active_provider_get(vault: tauri::State<'_, Vault>) -> AppResult<Option<String>> {
+    vault.with(|c| {
+        Ok(c.query_row(
+            "SELECT value FROM ai_settings WHERE key = 'active_provider'",
+            [],
+            |r| r.get(0),
+        ).optional()?)
+    })
+}
+
+#[tauri::command]
+pub fn ai_active_provider_set(provider_id: String, vault: tauri::State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        c.execute(
+            "INSERT INTO ai_settings(key, value) VALUES('active_provider', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=?1",
+            [provider_id],
+        )?;
+        Ok(())
     })
 }
