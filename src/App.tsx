@@ -307,6 +307,7 @@ export default function App() {
   };
 
   const closePane = (tabId: string, paneId: string) => {
+    bridge.sftpClose(paneId).catch(() => {});
     setTabs((ts) => {
       const next = ts.map((t) => {
         if (t.id !== tabId) return t;
@@ -319,6 +320,10 @@ export default function App() {
   };
 
   const closeTab = (id: string) => {
+    const target = tabs.find((t) => t.id === id);
+    if (target) {
+      target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
+    }
     setTabs((ts) => {
       const i = ts.findIndex((t) => t.id === id);
       const next = ts.filter((t) => t.id !== id);
@@ -1142,31 +1147,44 @@ function SyncModal({
   const accentColor = theme?.accent ?? '#22d3ee';
   const bgColor = theme?.xterm?.background ?? '#0e131d';
   const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
-  const [token, setToken] = useState(() => localStorage.getItem('nx.sync.token') ?? '');
-  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string } | null>(null);
+  const [token, setToken] = useState('');
+  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string; hasToken?: boolean; relayUrl?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    try {
+      localStorage.removeItem('nx.sync.token');
+    } catch {}
     if (isTauri) {
-      bridge.syncStatus().then(setStatus).catch(() => {});
+      bridge.syncStatus().then((st) => {
+        setStatus(st);
+        if (st.relayUrl) setUrl(st.relayUrl);
+      }).catch(() => {});
     }
   }, []);
 
   const save = async () => {
-    localStorage.setItem('nx.sync.relay', url);
-    localStorage.setItem('nx.sync.token', token);
-    if (isTauri) await bridge.syncConfigure(url || null, token || undefined).catch(() => {});
-    toast(url ? 'Relay configured — data leaves this device only as ciphertext' : 'Sync disabled');
+    try {
+      localStorage.removeItem('nx.sync.token');
+      if (url) localStorage.setItem('nx.sync.relay', url);
+      else localStorage.removeItem('nx.sync.relay');
+    } catch {}
+    if (isTauri) {
+      const tokenArg = token ? token : (token === '' && status?.hasToken ? undefined : '');
+      await bridge.syncConfigure(url || null, tokenArg).catch(() => {});
+    }
+    toast(url ? 'Relay configured — secrets stored exclusively in encrypted vault' : 'Sync disabled');
     onClose();
   };
   const doSync = async () => {
     setBusy(true);
     try {
       if (isTauri) {
-        await bridge.syncConfigure(url || null, token || undefined);
+        const tokenArg = token ? token : undefined;
+        await bridge.syncConfigure(url || null, tokenArg);
       }
       const out = await bridge.syncNow();
-      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId });
+      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken });
       toast('Sync complete');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1258,8 +1276,21 @@ function SyncModal({
         <div className="relative">
           <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
-          <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">Device token (optional bearer auth)</label>
-          <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="••••••••" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
+          <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">
+            Device token (optional bearer auth)
+            {status?.hasToken && !token && (
+              <span className="ml-2 font-normal text-emerald-400 lowercase">
+                (saved in encrypted vault)
+              </span>
+            )}
+          </label>
+          <input
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            type="password"
+            placeholder={status?.hasToken ? '•••••••• (leave blank to keep existing)' : '••••••••'}
+            className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none"
+          />
           <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with HMAC-blinded IDs. Hosts, keys, snippets and tunnels sync E2EE.</p>
 
           {status && (

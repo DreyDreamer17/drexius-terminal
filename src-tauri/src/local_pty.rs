@@ -8,8 +8,11 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
 
 #[derive(Clone, Serialize)]
@@ -181,6 +184,17 @@ fn normalize_for_match(s: &str) -> String {
         )
 }
 
+fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[tauri::command]
 pub fn local_read_file(
     path: String,
@@ -239,10 +253,10 @@ pub fn local_read_file(
     for (i, line) in lines[start_idx..end_idx].iter().enumerate() {
         let line_num = start_idx + i + 1;
         if line.len() > max_line_len {
-            let clamped = &line[..max_line_len];
+            let clamped = safe_truncate_str(line, max_line_len);
             let _ = writeln!(
                 out,
-                "{:>4} | {}... (line truncated to {} chars)",
+                "{:>4} | {}... (line truncated to {} bytes)",
                 line_num, clamped, max_line_len
             );
         } else {
@@ -332,22 +346,47 @@ pub fn local_edit_file(
     let norm_content = normalize_for_match(&content);
     let norm_old = normalize_for_match(&old_string);
     if norm_content.contains(&norm_old) {
-        let occurrences = norm_content.matches(&norm_old).count();
-        if occurrences > 1 && !replace_all {
-            return Err(format!(
-                "old_string occurs {} times (via unicode normalization) in {}. Add more surrounding context or set replace_all: true",
-                occurrences, expanded
-            ));
-        }
-        // Locate matching byte offset in normalized content and slice corresponding part
-        if let Some(start_byte) = norm_content.find(&norm_old) {
-            let end_byte = start_byte + norm_old.len();
-            if content.is_char_boundary(start_byte) && content.is_char_boundary(end_byte) {
+        let content_char_spans: Vec<(usize, usize)> = content
+            .char_indices()
+            .map(|(idx, ch)| (idx, idx + ch.len_utf8()))
+            .collect();
+        let norm_chars: Vec<char> = norm_content.chars().collect();
+        let norm_old_chars: Vec<char> = norm_old.chars().collect();
+
+        if !norm_old_chars.is_empty()
+            && norm_chars.len() >= norm_old_chars.len()
+            && norm_chars.len() == content_char_spans.len()
+        {
+            let mut matches: Vec<(usize, usize)> = Vec::new();
+            for i in 0..=(norm_chars.len() - norm_old_chars.len()) {
+                if norm_chars[i..i + norm_old_chars.len()] == norm_old_chars[..] {
+                    let start_byte = content_char_spans[i].0;
+                    let end_byte = content_char_spans[i + norm_old_chars.len() - 1].1;
+                    matches.push((start_byte, end_byte));
+                }
+            }
+
+            if !matches.is_empty() {
+                if matches.len() > 1 && !replace_all {
+                    return Err(format!(
+                        "old_string occurs {} times (via unicode normalization) in {}. Add more surrounding context or set replace_all: true",
+                        matches.len(), expanded
+                    ));
+                }
+
                 let mut new_c = String::with_capacity(content.len() + new_string.len());
-                new_c.push_str(&content[..start_byte]);
-                new_c.push_str(&new_string);
-                new_c.push_str(&content[end_byte..]);
-                return std::fs::write(&expanded, new_c).map_err(|e| format!("Failed to write {}: {}", expanded, e));
+                let mut curr = 0;
+                for &(sb, eb) in &matches {
+                    new_c.push_str(&content[curr..sb]);
+                    new_c.push_str(&new_string);
+                    curr = eb;
+                    if !replace_all {
+                        break;
+                    }
+                }
+                new_c.push_str(&content[curr..]);
+                return std::fs::write(&expanded, new_c)
+                    .map_err(|e| format!("Failed to write {}: {}", expanded, e));
             }
         }
     }
@@ -531,17 +570,19 @@ fn pty_io_loop(
         Err(_) => return,
     };
 
+    let running = Arc::new(AtomicBool::new(true));
+    let running_w = running.clone();
+
     // Spawn a dedicated thread for writing from UI commands to PTY
-    let (done_tx, done_rx) = mpsc::channel::<()>();
     let write_thread = thread::spawn(move || {
-        while let Ok(cmd) = rx.recv() {
-            match cmd {
-                PtyCmd::Write(bytes) => {
+        while running_w.load(Ordering::Relaxed) {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(PtyCmd::Write(bytes)) => {
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
                         break;
                     }
                 }
-                PtyCmd::Resize(cols, rows) => {
+                Ok(PtyCmd::Resize(cols, rows)) => {
                     let _ = master.resize(PtySize {
                         rows: rows.max(5) as u16,
                         cols: cols.max(10) as u16,
@@ -549,15 +590,17 @@ fn pty_io_loop(
                         pixel_height: 0,
                     });
                 }
-                PtyCmd::Close => break,
+                Ok(PtyCmd::Close) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        let _ = done_tx.send(());
+        running_w.store(false, Ordering::Relaxed);
     });
 
     let mut buf = [0u8; 16 * 1024];
     loop {
-        if done_rx.try_recv().is_ok() {
+        if !running.load(Ordering::Relaxed) {
             break;
         }
         match reader.read(&mut buf) {
@@ -569,11 +612,12 @@ fn pty_io_loop(
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(std::time::Duration::from_millis(5));
+                thread::sleep(Duration::from_millis(5));
             }
             Err(_) => break,
         }
     }
 
+    running.store(false, Ordering::Relaxed);
     let _ = write_thread.join();
 }

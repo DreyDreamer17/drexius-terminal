@@ -214,6 +214,7 @@ pub struct SyncStatus {
     pub last_sync: Option<i64>,
     pub cursor: u64,
     pub last_error: Option<String>,
+    pub has_token: bool,
     #[serde(skip)]
     pub device_token: Option<String>,
 }
@@ -246,24 +247,82 @@ pub fn sync_status(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_,
                 engine.status.lock().device_id = id;
             }
         }
+
+        let relay_url: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key = 'sync_relay_url'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let dev_tok: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key = 'sync_device_token'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let mut s = engine.status.lock();
+        if s.relay_url.is_none() && relay_url.is_some() {
+            s.relay_url = relay_url;
+            s.enabled = s.relay_url.is_some();
+        }
+        if s.device_token.is_none() && dev_tok.is_some() {
+            s.device_token = dev_tok;
+        }
+        s.has_token = s.device_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
         Ok(())
     });
-    engine.status.lock().clone()
+    let mut out = engine.status.lock().clone();
+    out.has_token = out.device_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+    out
 }
 
 #[tauri::command]
-pub fn sync_configure(relay_url: Option<String>, device_token: Option<String>, engine: tauri::State<'_, SyncEngine>) {
+pub fn sync_configure(
+    relay_url: Option<String>,
+    device_token: Option<String>,
+    engine: tauri::State<'_, SyncEngine>,
+    vault: tauri::State<'_, Vault>,
+) {
     let mut s = engine.status.lock();
     s.enabled = relay_url.is_some();
-    s.relay_url = relay_url;
-    if let Some(tok) = device_token {
+    s.relay_url = relay_url.clone();
+    if let Some(ref tok) = device_token {
         if !tok.is_empty() {
-            s.device_token = Some(tok);
+            s.device_token = Some(tok.clone());
             s.last_error = None;
         } else {
             s.device_token = None;
         }
     }
+    s.has_token = s.device_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+    let dev_tok = s.device_token.clone();
+    drop(s);
+
+    let _ = vault.with(|conn| {
+        if let Some(ref url) = relay_url {
+            let _ = conn.execute(
+                "INSERT INTO ai_settings(key, value) VALUES('sync_relay_url', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
+                [url],
+            );
+        } else {
+            let _ = conn.execute("DELETE FROM ai_settings WHERE key = 'sync_relay_url'", []);
+        }
+
+        if let Some(ref tok) = dev_tok {
+            let _ = conn.execute(
+                "INSERT INTO ai_settings(key, value) VALUES('sync_device_token', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
+                [tok],
+            );
+        } else if device_token.is_some() {
+            let _ = conn.execute("DELETE FROM ai_settings WHERE key = 'sync_device_token'", []);
+        }
+        Ok(())
+    });
 }
 
 /// Extract every syncable record from a SQLite connection as a SyncRecord
@@ -438,10 +497,28 @@ fn hlc_wins(a: &str, b: &str) -> bool {
 /// End-to-end encrypted push/pull sync against the configured relay.
 #[tauri::command]
 pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_, Vault>) -> AppResult<SyncStatus> {
-    let (relay_url, device_token) = {
+    let (mut relay_url, mut device_token) = {
         let s = engine.status.lock();
         (s.relay_url.clone(), s.device_token.clone())
     };
+    if relay_url.is_none() {
+        let _ = vault.with(|conn| {
+            relay_url = conn
+                .query_row("SELECT value FROM ai_settings WHERE key = 'sync_relay_url'", [], |r| r.get(0))
+                .optional()?;
+            device_token = conn
+                .query_row("SELECT value FROM ai_settings WHERE key = 'sync_device_token'", [], |r| r.get(0))
+                .optional()?;
+            Ok(())
+        });
+        if let Some(ref url) = relay_url {
+            let mut s = engine.status.lock();
+            s.relay_url = Some(url.clone());
+            s.enabled = true;
+            s.device_token = device_token.clone();
+            s.has_token = device_token.as_ref().map(|t| !t.is_empty()).unwrap_or(false);
+        }
+    }
     let relay_url = relay_url.ok_or_else(|| AppError::Network("no relay configured".into()))?;
     let token = device_token.unwrap_or_default();
 

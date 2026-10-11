@@ -500,6 +500,12 @@ export const bridge = {
     vfs.write(s.host, path, content);
   },
 
+  async sftpClose(sessionId: string): Promise<void> {
+    if (isTauri) {
+      await invoke('sftp_close', { sessionId }).catch(() => {});
+    }
+  },
+
   // ── Keychain (Reusable Identities) ──
   async listKeychain(): Promise<KeychainItem[]> {
     if (isTauri) return invoke('keychain_list');
@@ -789,14 +795,14 @@ export const bridge = {
   },
 
   // ── Zero-knowledge Sync ──
-  async syncStatus(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null }> {
+  async syncStatus(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null; hasToken?: boolean }> {
     if (isTauri) return invoke('sync_status');
-    return { enabled: false, relayUrl: null, deviceId: 'demo', lastSync: null, cursor: 0, lastError: null };
+    return { enabled: false, relayUrl: null, deviceId: 'demo', lastSync: null, cursor: 0, lastError: null, hasToken: false };
   },
   async syncConfigure(relayUrl: string | null, deviceToken?: string): Promise<void> {
     if (isTauri) return invoke('sync_configure', { relayUrl, deviceToken: deviceToken ?? null });
   },
-  async syncNow(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null }> {
+  async syncNow(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null; hasToken?: boolean }> {
     if (isTauri) return invoke('sync_now');
     throw new Error('Sync is only available in the desktop app');
   },
