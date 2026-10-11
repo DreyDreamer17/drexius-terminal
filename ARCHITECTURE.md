@@ -112,9 +112,7 @@ every 10 s. On reconnect with `resume: true`, the session replays `cd <cwd>`.
   listener (port 48291, falling back to an OS-assigned port). Device B connects with the PIN,
   performs an X25519 key exchange (HKDF → XChaCha20-Poly1305) and clones the vault archive
   directly over the LAN. Because this is *your own* device, the archive does include AI configs.
-* **Cloud sync (`sync.rs`) — blueprint:** the crypto core (`K_sync`/`K_index` via HKDF, blinded
-  record ids, padded sealed blobs, HLC last-writer-wins) is implemented, but `SyncTransport` /
-  `HttpRelay` and `sync_now` are stubs; nothing is uploaded yet.
+* **Cloud sync (`sync.rs`):** end-to-end encrypted push/pull sync. The crypto core uses `K_sync`/`K_index` derived via HKDF from the master vault key, HMAC-blinded record IDs, 256-byte padded sealed CBOR blobs (`XChaCha20-Poly1305`), and Hybrid Logical Clocks (HLC last-writer-wins). Pushes and pulls run over `HttpRelay` with optional bearer authentication; credentials and tokens are persisted securely in the encrypted SQLCipher vault, and the relay only ever sees ciphertext.
 
 ## 5. AI assistant
 
@@ -163,7 +161,5 @@ ai_client::ai_stream_proxy
 
 **Known limitations**
 
-* The relay accepts arbitrary `http(s)` destinations because custom endpoints (vLLM, Ollama on a
-  VPS, …) are a feature; a compromised webview could use it to make requests with the user's
-  pooled keys only when the request names a provider. Requests without a provider carry no keys.
+* The AI relay resolves outbound routes through an origin check (`resolve_route`), verifying targets against configured provider endpoints before attaching credentials. Requests without a matching provider carry no pooled keys.
 * Secret redaction is pattern-based and can miss unusual formats.

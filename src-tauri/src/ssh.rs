@@ -384,6 +384,7 @@ pub fn ssh_connect(
             let _ = app.state::<Vault>().log_end(&sid, &reason);
             let _ = on_event.send(SshEvent::Disconnected { reason, resumable });
             app.state::<SshManager>().sessions.lock().remove(&sid);
+            app.state::<crate::sftp::SftpManager>().close(&sid);
         })?;
 
     Ok(session_id)

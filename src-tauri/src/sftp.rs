@@ -44,6 +44,10 @@ pub struct SftpManager {
 }
 
 impl SftpManager {
+    pub fn close(&self, session_id: &str) {
+        self.conns.lock().remove(session_id);
+    }
+
     fn get(&self, session_id: &str, ssh: &SshManager, vault: &Vault) -> AppResult<Arc<Mutex<SftpConn>>> {
         if let Some(c) = self.conns.lock().get(session_id) {
             return Ok(c.clone());
@@ -212,6 +216,12 @@ pub fn sftp_write_text(
     let mut file = c.sftp.create(Path::new(&path))?;
     file.write_all(content.as_bytes())?;
     file.flush()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn sftp_close(session_id: String, mgr: State<'_, SftpManager>) -> AppResult<()> {
+    mgr.close(&session_id);
     Ok(())
 }
 

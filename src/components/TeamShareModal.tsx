@@ -179,7 +179,7 @@ export function TeamShareModal({
               <h3 className="text-sm font-semibold text-white">Team Vault Sharing & Access</h3>
               <p className="flex items-center gap-1 text-[11px] text-slate-400">
                 <ShieldCheck className="h-3 w-3 text-emerald-400" />
-                Argon2id + ChaCha20-Poly1305 encrypted credential bundles
+                Argon2id + ChaCha20-Poly1305 encrypted host configurations & snippets
               </p>
             </div>
           </div>
@@ -290,7 +290,7 @@ export function TeamShareModal({
                   <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/10 p-2.5 text-xs text-cyan-200 flex items-start gap-2">
                     <ShieldCheck className="h-4 w-4 shrink-0 text-cyan-400 mt-0.5" />
                     <span>
-                      End-to-End Encryption: The bundle is encrypted with Argon2id + ChaCha20-Poly1305. Only teammates with this passphrase can decrypt the shared hosts.
+                      End-to-End Encryption: The bundle is encrypted with Argon2id + ChaCha20-Poly1305. Only teammates with this passphrase can decrypt the shared hosts and snippets. (Passwords and private keys are never exported, ensuring zero-knowledge isolation).
                     </span>
                   </div>
 

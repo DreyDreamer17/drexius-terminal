@@ -155,6 +155,7 @@ pub fn run() {
             sftp::sftp_rename,
             sftp::sftp_read_text,
             sftp::sftp_write_text,
+            sftp::sftp_close,
             // ssh config importer
             ssh_config::ssh_config_detect,
             ssh_config::ssh_config_preview,
