@@ -14,6 +14,8 @@ import {
 import type { EncryptedTeamVaultBundle, Host, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
+import { CustomSelect } from './CustomSelect';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
 interface Props {
   vaults: Vault[];
@@ -23,6 +25,7 @@ interface Props {
   onClose: () => void;
   onRefresh: () => Promise<void>;
   toast: (msg: string) => void;
+  theme?: NexusTheme;
 }
 
 export function TeamShareModal({
@@ -33,7 +36,12 @@ export function TeamShareModal({
   onClose,
   onRefresh,
   toast,
+  theme,
 }: Props) {
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0e131d';
+
   const [tab, setTab] = useState<'share' | 'import'>(initialTab);
   const teamVaults = vaults.filter((v) => v.kind === 'team');
   const defaultVault =
@@ -143,12 +151,37 @@ export function TeamShareModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-white/10 bg-[#0e131d] shadow-2xl flex flex-col max-h-[85vh]">
+      <div
+        className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-white/10 shadow-2xl flex flex-col max-h-[85vh]"
+        style={{ backgroundColor: bgColor }}
+      >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3.5 bg-black/20">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-emerald-400" />
-            <h3 className="text-sm font-semibold text-white">Team Vault Sharing & Access</h3>
+        <div className="relative flex items-center justify-between border-b border-white/10 px-5 py-4 bg-black/20">
+          <div className="flex items-center gap-3">
+            <div
+              className="grid h-10 w-10 place-items-center rounded-2xl border transition shadow-lg shrink-0"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 20px ${accentColor}25`,
+              }}
+            >
+              <Users className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white">Team Vault Sharing & Access</h3>
+              <p className="flex items-center gap-1 text-[11px] text-slate-400">
+                <ShieldCheck className="h-3 w-3 text-emerald-400" />
+                Argon2id + ChaCha20-Poly1305 encrypted credential bundles
+              </p>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -159,15 +192,17 @@ export function TeamShareModal({
         </div>
 
         {/* Tab switcher */}
-        <div className="flex border-b border-white/5 bg-white/[0.02] px-5 pt-2">
+        <div className="relative flex border-b border-white/5 bg-white/[0.02] px-5 pt-2">
           <button
             onClick={() => setTab('share')}
             className={cn(
               'flex items-center gap-2 border-b-2 px-3 py-2 text-xs font-medium transition',
-              tab === 'share'
-                ? 'border-emerald-400 text-emerald-300'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+              tab !== 'share' && 'border-transparent text-slate-400 hover:text-slate-200'
             )}
+            style={tab === 'share' ? {
+              borderColor: accentColor,
+              color: accentColor,
+            } : undefined}
           >
             <Share2 className="h-3.5 w-3.5" />
             <span>Share & Invite (Export)</span>
@@ -176,10 +211,12 @@ export function TeamShareModal({
             onClick={() => setTab('import')}
             className={cn(
               'flex items-center gap-2 border-b-2 px-3 py-2 text-xs font-medium transition',
-              tab === 'import'
-                ? 'border-fuchsia-400 text-fuchsia-300'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+              tab !== 'import' && 'border-transparent text-slate-400 hover:text-slate-200'
             )}
+            style={tab === 'import' ? {
+              borderColor: accentColor,
+              color: accentColor,
+            } : undefined}
           >
             <Download className="h-3.5 w-3.5" />
             <span>Import Shared Vault (.nxvault)</span>
@@ -187,29 +224,27 @@ export function TeamShareModal({
         </div>
 
         {/* Content body */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="relative flex-1 overflow-y-auto p-5 space-y-4">
           {tab === 'share' && (
             <>
               {/* Select Vault */}
               <div>
-                <label className="text-[11px] font-medium text-slate-300">Select Team Vault</label>
-                <select
+                <label className="text-[11px] font-medium text-slate-300 mb-1 block">Select Team Vault</label>
+                <CustomSelect
                   value={selectedVaultId}
-                  onChange={(e) => {
-                    setSelectedVaultId(e.target.value);
+                  options={vaults.map((v) => ({
+                    value: v.id,
+                    label: `${v.name} (${v.kind === 'personal' ? 'Personal' : 'Team Vault'})`,
+                  }))}
+                  onChange={(val) => {
+                    setSelectedVaultId(val);
                     setAssignedHostIds(
-                      new Set(hosts.filter((h) => h.vaultId === e.target.value).map((h) => h.id))
+                      new Set(hosts.filter((h) => h.vaultId === val).map((h) => h.id))
                     );
                     setExportBundle(null);
                   }}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white focus:border-cyan-400 focus:outline-none"
-                >
-                  {vaults.map((v) => (
-                    <option key={v.id} value={v.id} className="bg-[#0e131d] text-white">
-                      {v.name} ({v.kind === 'personal' ? 'Personal' : 'Team Vault'})
-                    </option>
-                  ))}
-                </select>
+                  accentColor={accentColor}
+                />
               </div>
 
               {/* Step 2: Assign Hosts */}
@@ -287,7 +322,12 @@ export function TeamShareModal({
                   <button
                     type="submit"
                     disabled={loading || !passphrase}
-                    className="w-full rounded-lg bg-emerald-500/20 border border-emerald-400/40 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30 transition shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    className="w-full rounded-xl py-2.5 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg"
+                    style={{
+                      backgroundColor: accentColor,
+                      color: '#000000',
+                      boxShadow: `0 0 20px ${accentColor}35`,
+                    }}
                   >
                     <Lock className="h-3.5 w-3.5" />
                     <span>{loading ? 'Encrypting Vault…' : 'Generate Encrypted Share Bundle'}</span>
@@ -304,14 +344,20 @@ export function TeamShareModal({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleCopyBundle}
-                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/5 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 transition"
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/5 py-2 text-xs font-medium text-slate-200 hover:bg-white/10 transition"
                     >
                       {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
                       <span>{copied ? 'Copied Bundle!' : 'Copy Bundle JSON'}</span>
                     </button>
                     <button
                       onClick={handleDownloadBundle}
-                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/20 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30 transition"
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg"
+                      style={{
+                        backgroundColor: accentColor,
+                        color: '#000000',
+                        borderColor: `${accentColor}50`,
+                        boxShadow: `0 0 20px ${accentColor}35`,
+                      }}
                     >
                       <Download className="h-3.5 w-3.5" />
                       <span>Download .nxvault File</span>
@@ -331,8 +377,15 @@ export function TeamShareModal({
 
           {tab === 'import' && (
             <form onSubmit={handleImport} className="space-y-3">
-              <div className="rounded-lg border border-fuchsia-400/20 bg-fuchsia-500/10 p-2.5 text-xs text-fuchsia-200 flex items-start gap-2">
-                <Download className="h-4 w-4 shrink-0 text-fuchsia-400 mt-0.5" />
+              <div
+                className="rounded-lg border p-2.5 text-xs flex items-start gap-2"
+                style={{
+                  backgroundColor: `${accentColor}12`,
+                  borderColor: `${accentColor}30`,
+                  color: accentColor,
+                }}
+              >
+                <Download className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
                   Import a shared `.nxvault` file or paste the encrypted JSON payload provided by your team lead.
                 </span>
@@ -346,7 +399,7 @@ export function TeamShareModal({
                   placeholder='Paste {"version": 1, "format": "nexus-team-vault", ...}'
                   value={importJson}
                   onChange={(e) => setImportJson(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 p-2.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:border-fuchsia-400 focus:outline-none"
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 p-2.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none"
                 />
               </div>
 
@@ -358,14 +411,19 @@ export function TeamShareModal({
                   placeholder="Enter the passphrase set during export"
                   value={importPassphrase}
                   onChange={(e) => setImportPassphrase(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-fuchsia-400 focus:outline-none"
+                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={importing || !importJson || !importPassphrase}
-                className="w-full rounded-lg bg-fuchsia-500/20 border border-fuchsia-400/40 py-2 text-xs font-medium text-fuchsia-200 hover:bg-fuchsia-500/30 transition shadow-sm disabled:opacity-50 flex items-center justify-center gap-1.5"
+                className="w-full rounded-xl py-2.5 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                style={{
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 0 20px ${accentColor}35`,
+                }}
               >
                 <Download className="h-3.5 w-3.5" />
                 <span>{importing ? 'Decrypting & Importing…' : 'Decrypt & Merge Team Vault'}</span>

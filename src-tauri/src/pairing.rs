@@ -5,7 +5,12 @@
 //! Device B connects with the PIN, executes an authenticated X25519 key exchange,
 //! and clones the vault database directly device-to-device.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+const MAX_PAIRING_ATTEMPTS: u32 = 5;
+const PAIRING_TIMEOUT_SECS: u64 = 300;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -466,23 +471,39 @@ pub async fn pairing_start_host(
     let expected_pin = pin_str;
     let s_name = device_name;
     let s_pk_hex = server_pk_hex;
+    let failed_attempts = Arc::new(AtomicU32::new(0));
 
-    // Background listener task
+    // Background listener task with auto-expiry and rate limiting
     tokio::spawn(async move {
+        let timeout = tokio::time::sleep(Duration::from_secs(PAIRING_TIMEOUT_SECS));
+        tokio::pin!(timeout);
+
         loop {
             tokio::select! {
                 _ = &mut shutdown_rx => {
                     log::info!("Pairing listener shut down via signal");
                     break;
                 }
+                _ = &mut timeout => {
+                    log::info!("Pairing listener timed out after {} seconds", PAIRING_TIMEOUT_SECS);
+                    break;
+                }
                 res = listener.accept() => {
                     match res {
                         Ok((mut stream, peer_addr)) => {
+                            if failed_attempts.load(Ordering::SeqCst) >= MAX_PAIRING_ATTEMPTS {
+                                log::warn!("Rejecting connection: max pairing attempts exceeded");
+                                let err_resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing session locked.\"}";
+                                let _ = stream.write_all(err_resp.as_bytes()).await;
+                                continue;
+                            }
+
                             let app_h = app_clone.clone();
                             let s_secret = server_secret.clone();
                             let s_pk = s_pk_hex.clone();
                             let s_dev = s_name.clone();
                             let exp_pin = expected_pin.clone();
+                            let attempts_clone = failed_attempts.clone();
 
                             tokio::spawn(async move {
                                 let vault = app_h.state::<Vault>();
@@ -490,6 +511,7 @@ pub async fn pairing_start_host(
                                     &mut stream,
                                     peer_addr,
                                     &exp_pin,
+                                    &attempts_clone,
                                     &s_secret,
                                     &s_pk,
                                     &s_dev,
@@ -508,6 +530,8 @@ pub async fn pairing_start_host(
                 }
             }
         }
+        let mgr = app_clone.state::<PairingManager>();
+        *mgr.active_host.lock() = None;
     });
 
     Ok(info)
@@ -517,6 +541,7 @@ async fn handle_incoming_pairing(
     stream: &mut tokio::net::TcpStream,
     peer_addr: std::net::SocketAddr,
     expected_pin: &str,
+    failed_attempts: &Arc<AtomicU32>,
     server_secret: &StaticSecret,
     server_pk_hex: &str,
     server_name: &str,
@@ -559,8 +584,29 @@ async fn handle_incoming_pairing(
                 let req: HandshakeRequest = serde_json::from_slice(body_slice)
                     .map_err(|e| AppError::Other(format!("Invalid pairing request JSON: {e}")))?;
 
+                if failed_attempts.load(Ordering::SeqCst) >= MAX_PAIRING_ATTEMPTS {
+                    let err_resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing session locked.\"}";
+                    let _ = stream.write_all(err_resp.as_bytes()).await;
+                    return Ok(());
+                }
+
                 if req.pin != expected_pin {
-                    let err_resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Invalid PIN\"}";
+                    let count = failed_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    let remaining = MAX_PAIRING_ATTEMPTS.saturating_sub(count);
+                    let err_resp = if count >= MAX_PAIRING_ATTEMPTS {
+                        log::warn!("Pairing locked out after {} failed attempts from {}", count, peer_addr);
+                        let mgr = app_handle.state::<PairingManager>();
+                        if let Some(tx) = mgr.shutdown_tx.lock().take() {
+                            let _ = tx.send(());
+                        }
+                        *mgr.active_host.lock() = None;
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing locked out.\"}".to_string()
+                    } else {
+                        format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"error\":\"Invalid PIN. {} attempts remaining.\"}}",
+                            remaining
+                        )
+                    };
                     let _ = stream.write_all(err_resp.as_bytes()).await;
                     return Ok(());
                 }
@@ -638,6 +684,13 @@ async fn handle_incoming_pairing(
                         "ip": peer_addr.ip().to_string(),
                     }),
                 );
+
+                // Single-use PIN enforcement: shut down listener immediately after successful pairing
+                let mgr = app_handle.state::<PairingManager>();
+                if let Some(tx) = mgr.shutdown_tx.lock().take() {
+                    let _ = tx.send(());
+                }
+                *mgr.active_host.lock() = None;
 
                 return Ok(());
             }

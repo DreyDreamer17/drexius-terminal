@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Search, Plus, Trash2, ArrowLeftRight, Play, Square, Network, Check, X, HardDrive } from 'lucide-react';
 import type { ActiveTunnelInfo, Host, TunnelConfig } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -243,17 +244,14 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
 
           <div>
             <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Through SSH Host *</label>
-            <select
+            <CustomSelect
               value={editing.hostId}
-              onChange={(e) => setEditing({ ...editing, hostId: e.target.value })}
-              className={inputClass}
-            >
-              {hosts.map((h) => (
-                <option key={h.id} value={h.id} className="bg-[#0b0f17]">
-                  {h.label} ({h.username}@{h.hostname}:{h.port})
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setEditing({ ...editing, hostId: val })}
+              options={hosts.map((h) => ({
+                value: h.id,
+                label: `${h.label} (${h.username}@${h.hostname}:${h.port})`,
+              }))}
+            />
           </div>
 
           {/* Local bind address (forwards that listen on OUR machine: local + dynamic) */}

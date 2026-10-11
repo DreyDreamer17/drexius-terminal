@@ -19,12 +19,14 @@ import { listen } from '@tauri-apps/api/event';
 import type { LocalDeviceInfo, PairedDevice, PairingHostInfo, PairingJoinResult } from '../lib/types';
 import { bridge, isTauri } from '../lib/bridge';
 import { cn } from '../utils/cn';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
 interface Props {
   onClose: () => void;
   onRefresh: () => Promise<void>;
   toast: (msg: string) => void;
   initialTab?: 'share' | 'join' | 'devices';
+  theme?: NexusTheme;
 }
 
 export function DevicePairingModal({
@@ -32,7 +34,12 @@ export function DevicePairingModal({
   onRefresh,
   toast,
   initialTab = 'share',
+  theme,
 }: Props) {
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0e131d';
+
   const [tab, setTab] = useState<'share' | 'join' | 'devices'>(initialTab);
 
   // Host (Share) state
@@ -73,7 +80,7 @@ export function DevicePairingModal({
                 margin: 1.5,
                 color: {
                   dark: '#030712',
-                  light: '#22d3ee',
+                  light: accentColor,
                 },
               });
               if (active) setQrDataUrl(url);
@@ -90,7 +97,7 @@ export function DevicePairingModal({
     return () => {
       active = false;
     };
-  }, [tab]);
+  }, [tab, accentColor]);
 
   // ── Listen for pairing success event from Tauri backend ──
   useEffect(() => {
@@ -196,12 +203,27 @@ export function DevicePairingModal({
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#0e131d] shadow-2xl"
+        className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+        style={{ backgroundColor: bgColor }}
       >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <div className="flex items-center gap-2.5">
-            <div className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-300">
+        <div className="relative flex items-center justify-between border-b border-white/10 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="grid h-10 w-10 place-items-center rounded-2xl border transition shadow-lg shrink-0"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 20px ${accentColor}25`,
+              }}
+            >
               <QrCode className="h-5 w-5" />
             </div>
             <div>
@@ -221,16 +243,20 @@ export function DevicePairingModal({
         </div>
 
         {/* Tab Switcher */}
-        <div className="grid grid-cols-3 border-b border-white/10 bg-black/30 p-1 text-xs">
+        <div className="relative grid grid-cols-3 border-b border-white/10 bg-black/30 p-1 text-xs">
           <button
             type="button"
             onClick={() => setTab('share')}
             className={cn(
               'flex items-center justify-center gap-1.5 rounded-lg py-2 transition font-medium',
-              tab === 'share'
-                ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm'
-                : 'text-slate-400 hover:text-white'
+              tab !== 'share' && 'text-slate-400 hover:text-white'
             )}
+            style={tab === 'share' ? {
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}40`,
+              color: accentColor,
+              borderWidth: 1,
+            } : undefined}
           >
             <Share2 className="h-3.5 w-3.5" />
             <span>Share Vault</span>
@@ -240,10 +266,14 @@ export function DevicePairingModal({
             onClick={() => setTab('join')}
             className={cn(
               'flex items-center justify-center gap-1.5 rounded-lg py-2 transition font-medium',
-              tab === 'join'
-                ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm'
-                : 'text-slate-400 hover:text-white'
+              tab !== 'join' && 'text-slate-400 hover:text-white'
             )}
+            style={tab === 'join' ? {
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}40`,
+              color: accentColor,
+              borderWidth: 1,
+            } : undefined}
           >
             <Laptop className="h-3.5 w-3.5" />
             <span>Link to Device</span>
@@ -256,10 +286,14 @@ export function DevicePairingModal({
             }}
             className={cn(
               'flex items-center justify-center gap-1.5 rounded-lg py-2 transition font-medium',
-              tab === 'devices'
-                ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm'
-                : 'text-slate-400 hover:text-white'
+              tab !== 'devices' && 'text-slate-400 hover:text-white'
             )}
+            style={tab === 'devices' ? {
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}40`,
+              color: accentColor,
+              borderWidth: 1,
+            } : undefined}
           >
             <Smartphone className="h-3.5 w-3.5" />
             <span>Devices ({devices.length})</span>
@@ -462,7 +496,12 @@ export function DevicePairingModal({
               <button
                 type="submit"
                 disabled={joining || !joinIp.trim() || !joinPin.trim()}
-                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-5 py-2 text-xs font-semibold text-black hover:opacity-90 transition disabled:opacity-50"
+                className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-lg"
+                style={{
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 0 20px ${accentColor}35`,
+                }}
               >
                 {joining ? (
                   <>

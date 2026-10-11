@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
-import { THEMES } from './lib/themes';
+import { THEMES, type NexusTheme } from './lib/themes';
 import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import { LockScreen } from './components/LockScreen';
 import { HostSidebar } from './components/HostSidebar';
@@ -408,7 +408,7 @@ export default function App() {
 
   const lock = async () => { setTabs([]); setActiveTabId(null); await bridge.lock(); setUnlocked(false); };
 
-  if (!unlocked) return <LockScreen onUnlocked={() => setUnlocked(true)} />;
+  if (!unlocked) return <LockScreen onUnlocked={() => setUnlocked(true)} theme={theme} />;
 
   const live = registry.all();
   const connected = live.filter((p) => p.status === 'connected').length;
@@ -464,32 +464,51 @@ export default function App() {
               onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
               onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
               onOpenPairingModal={() => setShowPairing({ initialTab: 'share' })}
+              theme={theme}
             />
             <button
               onClick={() => setPanel((p) => (p === 'hosts' ? null : 'hosts'))}
               title="Hosts / Vaults (⌘⇧K)"
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
                 panel === 'hosts'
-                  ? 'bg-cyan-400/20 text-cyan-200 border-cyan-400/40'
-                  : 'bg-white/[0.06] border-white/10 text-slate-300 hover:bg-white/[0.12] hover:text-white hover:border-white/20'
+                  ? 'text-white'
+                  : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
               )}
+              style={
+                panel === 'hosts'
+                  ? {
+                      backgroundColor: `${theme.accent}18`,
+                      borderColor: `${theme.accent}45`,
+                      boxShadow: `0 0 16px ${theme.accent}25`,
+                    }
+                  : undefined
+              }
             >
-              <Server className="h-3.5 w-3.5 text-cyan-400" />
-              <span className="font-medium hidden sm:inline">Hosts</span>
+              <Server className="h-3.5 w-3.5 transition-colors" style={{ color: panel === 'hosts' ? theme.accent : (theme?.accent || '#22d3ee') }} />
+              <span className="font-semibold hidden sm:inline">Hosts</span>
             </button>
             <button
               onClick={() => setShowSftp((v) => !v)}
               title="SFTP File Browser (⌘⇧F)"
               className={cn(
-                'flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
                 showSftp
-                  ? 'bg-emerald-400/20 text-emerald-200 border-emerald-400/40'
-                  : 'bg-white/[0.06] border-white/10 text-slate-300 hover:bg-white/[0.12] hover:text-white hover:border-white/20'
+                  ? 'text-white'
+                  : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
               )}
+              style={
+                showSftp
+                  ? {
+                      backgroundColor: `${theme.accent}18`,
+                      borderColor: `${theme.accent}45`,
+                      boxShadow: `0 0 16px ${theme.accent}25`,
+                    }
+                  : undefined
+              }
             >
-              <HardDrive className="h-3.5 w-3.5 text-emerald-400" />
-              <span className="font-medium hidden sm:inline">SFTP</span>
+              <HardDrive className="h-3.5 w-3.5 transition-colors" style={{ color: showSftp ? theme.accent : '#10b981' }} />
+              <span className="font-semibold hidden sm:inline">SFTP</span>
             </button>
           </div>
 
@@ -653,51 +672,76 @@ export default function App() {
         {/* Side panel — overlay drawer */}
         {panel && (
           <>
-            <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setPanel(null)} />
-            <aside className="fixed bottom-0 top-10 z-40 w-[320px] border-r border-white/10 bg-transparent shadow-2xl" style={{ left: (zen || !showRail) ? 0 : 48 }}>
-              {panel === 'hosts' && (
-                <HostSidebar
-                  hosts={hosts}
-                  vaults={vaults}
-                  activeVaultId={activeVaultId}
-                  onConnect={openHost}
-                  onSplit={(h) => splitWith(h)}
-                  onEdit={(h) => setModal({ host: h })}
-                  onDelete={deleteHost}
-                  onOpenTerminal={openLocalTerminal}
-                  onOpenSerial={() => setShowSerial(true)}
-                  onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
-                  onOpenSshConfig={() => setShowSshConfig(true)}
-                  onQuickConnectSsh={handleQuickConnectSsh}
-                />
-              )}
-              {panel === 'keychain' && (
-                <KeychainPanel
-                  keychain={keychain}
-                  onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
-                  onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
-                  onRefresh={refresh}
-                  toast={toast}
-                />
-              )}
-              {panel === 'tunnels' && (
-                <PortForwardingPanel
-                  hosts={hosts}
-                  tunnels={tunnels}
-                  onSave={async (t) => { await bridge.saveTunnel(t); refresh(); }}
-                  onDelete={async (id) => { await bridge.deleteTunnel(id); refresh(); }}
-                  toast={toast}
-                />
-              )}
-              {panel === 'snippets' && (
-                <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast} />
-              )}
-              {panel === 'logs' && (
-                <LogsPanel toast={toast} />
-              )}
-              {panel === 'known_hosts' && (
-                <KnownHostsPanel toast={toast} />
-              )}
+            <div
+              className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity animate-in fade-in duration-150"
+              onClick={() => setPanel(null)}
+            />
+            <aside
+              className="fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
+              style={{
+                left: (zen || !showRail) ? 0 : 48,
+                background: theme.xterm.background || '#0e131d',
+                boxShadow: `0 0 35px rgba(0, 0, 0, 0.8), 10px 0 40px rgba(0, 0, 0, 0.6)`,
+              }}
+            >
+              {/* Top ambient radial glow */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-20"
+                style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
+              />
+              {/* Top glowing line */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-75"
+                style={{ background: `linear-gradient(90deg, transparent, ${theme.accent}, transparent)` }}
+              />
+
+              <div className="relative flex flex-1 flex-col min-h-0 overflow-y-auto">
+                {panel === 'hosts' && (
+                  <HostSidebar
+                    hosts={hosts}
+                    vaults={vaults}
+                    activeVaultId={activeVaultId}
+                    onConnect={openHost}
+                    onSplit={(h) => splitWith(h)}
+                    onEdit={(h) => setModal({ host: h })}
+                    onDelete={deleteHost}
+                    onOpenTerminal={openLocalTerminal}
+                    onOpenSerial={() => setShowSerial(true)}
+                    onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
+                    onOpenSshConfig={() => setShowSshConfig(true)}
+                    onQuickConnectSsh={handleQuickConnectSsh}
+                    onClose={() => setPanel(null)}
+                    theme={theme}
+                  />
+                )}
+                {panel === 'keychain' && (
+                  <KeychainPanel
+                    keychain={keychain}
+                    onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
+                    onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
+                    onRefresh={refresh}
+                    toast={toast}
+                  />
+                )}
+                {panel === 'tunnels' && (
+                  <PortForwardingPanel
+                    hosts={hosts}
+                    tunnels={tunnels}
+                    onSave={async (t) => { await bridge.saveTunnel(t); refresh(); }}
+                    onDelete={async (id) => { await bridge.deleteTunnel(id); refresh(); }}
+                    toast={toast}
+                  />
+                )}
+                {panel === 'snippets' && (
+                  <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast} />
+                )}
+                {panel === 'logs' && (
+                  <LogsPanel toast={toast} />
+                )}
+                {panel === 'known_hosts' && (
+                  <KnownHostsPanel toast={toast} />
+                )}
+              </div>
             </aside>
           </>
         )}
@@ -759,7 +803,7 @@ export default function App() {
           })}
         </div>
 
-        {showSftp && <SftpDrawer activePaneId={activePaneId} tick={tick} onClose={() => setShowSftp(false)} toast={toast} />}
+        {showSftp && <SftpDrawer activePaneId={activePaneId} tick={tick} onClose={() => setShowSftp(false)} toast={toast} theme={theme} />}
 
         {/* Status bar */}
         {showStatusBar && (
@@ -980,6 +1024,7 @@ export default function App() {
           defaultVaultId={activeVaultId}
           onClose={() => setModal(null)}
           onSave={saveHost}
+          theme={theme}
         />
       )}
       {showSshConfig && (
@@ -989,6 +1034,7 @@ export default function App() {
           onClose={() => setShowSshConfig(false)}
           onSuccess={refresh}
           toast={toast}
+          theme={theme}
         />
       )}
       {shareModal && (
@@ -1000,6 +1046,7 @@ export default function App() {
           onClose={() => setShareModal(null)}
           onRefresh={refresh}
           toast={toast}
+          theme={theme}
         />
       )}
       {showSerial && (
@@ -1015,6 +1062,7 @@ export default function App() {
           onClose={() => setShowPairing(null)}
           onRefresh={refresh}
           toast={toast}
+          theme={theme}
         />
       )}
       {showSync && (
@@ -1022,6 +1070,7 @@ export default function App() {
           onClose={() => setShowSync(false)}
           onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
           toast={toast}
+          theme={theme}
         />
       )}
       {toastMsg && <div className="nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
@@ -1083,11 +1132,15 @@ function SyncModal({
   onClose,
   onOpenPairing,
   toast,
+  theme,
 }: {
   onClose: () => void;
   onOpenPairing: () => void;
   toast: (m: string) => void;
+  theme?: NexusTheme;
 }) {
+  const accentColor = theme?.accent ?? '#22d3ee';
+  const bgColor = theme?.xterm?.background ?? '#0e131d';
   const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
   const [token, setToken] = useState(() => localStorage.getItem('nx.sync.token') ?? '');
   const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string } | null>(null);
@@ -1133,16 +1186,45 @@ function SyncModal({
   const lastSyncStr = status?.lastSync ? new Date(status.lastSync * 1000).toLocaleString() : 'never';
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
-      <div onMouseDown={(e) => e.stopPropagation()} className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0e131d] p-6 shadow-2xl">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400/20 to-violet-500/20 ring-1 ring-white/10"><Cloud className="h-5 w-5 text-cyan-200" /></div>
-          <div><h3 className="text-sm font-semibold text-white">Zero-knowledge sync</h3><p className="text-[11px] text-slate-500">End-to-end encrypted · bring your own relay</p></div>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 p-6 shadow-2xl"
+        style={{ backgroundColor: bgColor }}
+      >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
+        <div className="relative flex items-center gap-3">
+          <div
+            className="grid h-10 w-10 place-items-center rounded-2xl border transition shadow-lg shrink-0"
+            style={{
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}35`,
+              color: accentColor,
+              boxShadow: `0 0 20px ${accentColor}25`,
+            }}
+          >
+            <Cloud className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-white">Zero-knowledge sync</h3>
+            <p className="text-[11px] text-slate-500">End-to-end encrypted · bring your own relay</p>
+          </div>
         </div>
 
         {/* Direct Wi-Fi / LAN Pairing Shortcut */}
-        <div className="mt-4 rounded-xl border border-cyan-500/20 bg-cyan-950/25 p-3 flex items-center justify-between">
+        <div
+          className="relative mt-4 rounded-xl border p-3 flex items-center justify-between"
+          style={{
+            backgroundColor: `${accentColor}0e`,
+            borderColor: `${accentColor}25`,
+          }}
+        >
           <div>
-            <div className="text-xs font-semibold text-cyan-200">No relay? Link directly over LAN</div>
+            <div className="text-xs font-semibold" style={{ color: accentColor }}>No relay? Link directly over LAN</div>
             <div className="text-[10.5px] text-slate-400">Clone your vault to a second device in 2 seconds via QR & PIN.</div>
           </div>
           <button
@@ -1151,47 +1233,69 @@ function SyncModal({
               onClose();
               onOpenPairing();
             }}
-            className="flex items-center gap-1 rounded-lg bg-cyan-500/20 border border-cyan-400/40 px-2.5 py-1.5 text-xs font-medium text-cyan-200 hover:bg-cyan-500/30 transition shrink-0 shadow-sm"
+            className="flex items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-medium transition shrink-0 shadow-sm"
+            style={{
+              backgroundColor: `${accentColor}20`,
+              borderColor: `${accentColor}40`,
+              color: accentColor,
+            }}
           >
             <QrCode className="h-3.5 w-3.5" />
             <span>Pair Device</span>
           </button>
         </div>
 
-        <ol className="mt-4 space-y-2">
+        <ol className="relative mt-4 space-y-2">
           {steps.map(([k, v], i) => (
             <li key={k} className="flex items-center gap-3 text-xs">
               <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/5 text-[10px] text-slate-400 ring-1 ring-white/10">{i + 1}</span>
-              <span className="w-14 font-semibold text-cyan-200">{k}</span>
+              <span className="w-14 font-semibold" style={{ color: accentColor }}>{k}</span>
               <span className="font-mono text-[11px] text-slate-400">{v}</span>
             </li>
           ))}
         </ol>
 
-        <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:border-cyan-400/40 focus:outline-none" />
-        <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">Device token (optional bearer auth)</label>
-        <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="••••••••" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:border-cyan-400/40 focus:outline-none" />
-        <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with HMAC-blinded IDs. Hosts, keys, snippets and tunnels sync E2EE.</p>
+        <div className="relative">
+          <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
+          <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">Device token (optional bearer auth)</label>
+          <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="••••••••" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
+          <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with HMAC-blinded IDs. Hosts, keys, snippets and tunnels sync E2EE.</p>
 
-        {status && (
-          <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">
-            device <span className="text-cyan-300">{status.deviceId}</span> · last sync <span className="text-emerald-300">{lastSyncStr}</span>
-            {status.lastError && <div className="mt-1 text-rose-300">error: {status.lastError}</div>}
-          </div>
-        )}
+          {status && (
+            <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">
+              device <span style={{ color: accentColor }}>{status.deviceId}</span> · last sync <span className="text-emerald-300">{lastSyncStr}</span>
+              {status.lastError && <div className="mt-1 text-rose-300">error: {status.lastError}</div>}
+            </div>
+          )}
 
-        <div className="mt-5 flex justify-between gap-2">
-          <button
-            onClick={doSync}
-            disabled={!url || busy}
-            className="rounded-lg bg-emerald-500/20 border border-emerald-400/30 px-4 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-40"
-          >
-            {busy ? 'Syncing…' : 'Sync now'}
-          </button>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="rounded-lg px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Close</button>
-            <button onClick={save} className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-4 py-2 text-xs font-semibold text-black">Save</button>
+          <div className="mt-5 flex justify-between gap-2">
+            <button
+              onClick={doSync}
+              disabled={!url || busy}
+              className="rounded-xl border px-4 py-2 text-xs font-semibold transition disabled:opacity-40"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+              }}
+            >
+              {busy ? 'Syncing…' : 'Sync now'}
+            </button>
+            <div className="flex gap-2">
+              <button onClick={onClose} className="rounded-xl px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Close</button>
+              <button
+                onClick={save}
+                className="rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg"
+                style={{
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 0 20px ${accentColor}35`,
+                }}
+              >
+                Save
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -7,8 +7,6 @@ import {
   RotateCw,
   CheckCircle2,
   XCircle,
-  AlertCircle,
-  Terminal,
   Copy,
   Code2,
   Check,

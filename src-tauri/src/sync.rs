@@ -21,6 +21,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use parking_lot::Mutex;
 use rand::RngCore;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -213,6 +214,8 @@ pub struct SyncStatus {
     pub last_sync: Option<i64>,
     pub cursor: u64,
     pub last_error: Option<String>,
+    #[serde(skip)]
+    pub device_token: Option<String>,
 }
 
 pub struct SyncEngine {
@@ -229,7 +232,22 @@ impl Default for SyncEngine {
 }
 
 #[tauri::command]
-pub fn sync_status(engine: tauri::State<'_, SyncEngine>) -> SyncStatus {
+pub fn sync_status(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_, Vault>) -> SyncStatus {
+    let _ = vault.with(|conn| {
+        let dev_id: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key = 'sync_device_id'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = dev_id {
+            if !id.is_empty() {
+                engine.status.lock().device_id = id;
+            }
+        }
+        Ok(())
+    });
     engine.status.lock().clone()
 }
 
@@ -240,9 +258,10 @@ pub fn sync_configure(relay_url: Option<String>, device_token: Option<String>, e
     s.relay_url = relay_url;
     if let Some(tok) = device_token {
         if !tok.is_empty() {
-            // store token only in memory for the session
+            s.device_token = Some(tok);
             s.last_error = None;
-            let _ = tok;
+        } else {
+            s.device_token = None;
         }
     }
 }
@@ -419,11 +438,43 @@ fn hlc_wins(a: &str, b: &str) -> bool {
 /// End-to-end encrypted push/pull sync against the configured relay.
 #[tauri::command]
 pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_, Vault>) -> AppResult<SyncStatus> {
-    let (relay_url, device_id) = {
+    let (relay_url, device_token) = {
         let s = engine.status.lock();
-        (s.relay_url.clone(), s.device_id.clone())
+        (s.relay_url.clone(), s.device_token.clone())
     };
     let relay_url = relay_url.ok_or_else(|| AppError::Network("no relay configured".into()))?;
+    let token = device_token.unwrap_or_default();
+
+    // Derive or load persistent device_id from the vault
+    let device_id = vault.with(|conn| -> AppResult<String> {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key = 'sync_device_id'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(AppError::Db)?;
+        if let Some(id) = existing {
+            if !id.is_empty() {
+                return Ok(id);
+            }
+        }
+        let mut id_bytes = [0u8; 8];
+        rand::thread_rng().fill_bytes(&mut id_bytes);
+        let new_id = hex::encode(id_bytes);
+        conn.execute(
+            "INSERT INTO ai_settings(key, value) VALUES('sync_device_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value=?1",
+            [&new_id],
+        )
+        .map_err(AppError::Db)?;
+        Ok(new_id)
+    })?;
+
+    {
+        engine.status.lock().device_id = device_id.clone();
+    }
 
     // Derive keys from vault master key.
     let root = vault.root_key()?;
@@ -432,7 +483,7 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     // 1. Collect all local records (outside async context since rusqlite is !Send-safe to share).
     let local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
 
-    let relay = HttpRelay::new(relay_url.clone(), device_id.clone());
+    let relay = HttpRelay::new(relay_url.clone(), token);
 
     // 2. Push each local record (idempotent PUTs).
     let mut pushed = 0usize;

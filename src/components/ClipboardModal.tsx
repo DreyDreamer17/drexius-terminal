@@ -7,18 +7,18 @@ import {
   Trash2,
   Check,
   Copy,
-  Terminal,
   Clock,
-  Sparkles,
   ArrowRight,
 } from 'lucide-react';
 import type { ClipboardItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
 interface Props {
   onClose: () => void;
   onPaste: (text: string) => void;
   toast: (msg: string) => void;
+  theme?: NexusTheme;
 }
 
 const timeAgo = (ts: number): string => {
@@ -31,7 +31,11 @@ const timeAgo = (ts: number): string => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
-export function ClipboardModal({ onClose, onPaste, toast }: Props) {
+export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0e131d';
+
   const [clips, setClips] = useState<ClipboardItem[]>([]);
   const [q, setQ] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -145,12 +149,27 @@ export function ClipboardModal({ onClose, onPaste, toast }: Props) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex flex-col w-full max-w-2xl h-[580px] rounded-2xl border border-white/10 bg-[#0e131d] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="relative flex flex-col w-full max-w-2xl h-[580px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        style={{ backgroundColor: bgColor }}
       >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 bg-white/[0.02]">
+        <div className="relative flex items-center justify-between border-b border-white/10 px-4 py-3 bg-white/[0.02]">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-cyan-500/15 border border-cyan-400/30 text-cyan-300">
+            <div
+              className="flex h-9 w-9 items-center justify-center rounded-2xl border transition shadow-lg shrink-0"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 20px ${accentColor}25`,
+              }}
+            >
               <Clipboard className="h-4 w-4" />
             </div>
             <div>
@@ -185,8 +204,11 @@ export function ClipboardModal({ onClose, onPaste, toast }: Props) {
         </div>
 
         {/* Search filter bar */}
-        <div className="p-3 border-b border-white/5 bg-black/30">
-          <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 shadow-inner focus-within:border-cyan-400/40 focus-within:ring-1 focus-within:ring-cyan-400/20">
+        <div className="relative p-3 border-b border-white/5 bg-black/30">
+          <div
+            className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 shadow-inner focus-within:ring-1"
+            style={{ outlineColor: accentColor }}
+          >
             <Search className="h-4 w-4 text-slate-500 shrink-0" />
             <input
               ref={inputRef}
@@ -239,9 +261,13 @@ export function ClipboardModal({ onClose, onPaste, toast }: Props) {
                   onMouseEnter={() => setSelectedIndex(idx)}
                   className={`group relative flex items-start gap-3 rounded-xl border p-2.5 cursor-pointer transition ${
                     isSelected
-                      ? 'border-cyan-500/50 bg-cyan-500/10 shadow-sm'
+                      ? 'shadow-sm'
                       : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
                   }`}
+                  style={isSelected ? {
+                    borderColor: `${accentColor}50`,
+                    backgroundColor: `${accentColor}15`,
+                  } : undefined}
                 >
                   {/* Pin indicator */}
                   <button
@@ -314,7 +340,12 @@ export function ClipboardModal({ onClose, onPaste, toast }: Props) {
                     <button
                       onClick={() => handleSelectClip(item)}
                       title="Paste into terminal"
-                      className="flex items-center gap-1 rounded-lg bg-cyan-500/20 border border-cyan-400/30 px-2 py-1 text-[11px] font-medium text-cyan-200 hover:bg-cyan-500/30 transition shadow-sm"
+                      className="flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition shadow-sm hover:brightness-110"
+                      style={{
+                        backgroundColor: `${accentColor}20`,
+                        borderColor: `${accentColor}40`,
+                        color: accentColor,
+                      }}
                     >
                       <span>Paste</span>
                       <ArrowRight className="h-3 w-3" />
