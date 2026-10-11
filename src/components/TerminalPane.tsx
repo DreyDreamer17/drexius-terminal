@@ -3,6 +3,9 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import {
   ShieldAlert,
@@ -30,6 +33,7 @@ interface Props {
   host: Host;
   theme: NexusTheme;
   fontSize: number;
+  lineHeight?: number;
   active: boolean;
   showHeader: boolean;
   onFocus: () => void;
@@ -43,6 +47,7 @@ export function TerminalPane({
   host,
   theme,
   fontSize,
+  lineHeight = 1.0,
   active,
   showHeader,
   onFocus,
@@ -145,6 +150,9 @@ export function TerminalPane({
           retryRef.current = 0;
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
+          if (term.cols && term.rows) {
+            bridge.resizeLocalPty(sid, term.cols, term.rows);
+          }
         } catch (e) {
           if (dead()) return;
           const msg = isBridgeError(e) ? e.message : String(e);
@@ -204,6 +212,9 @@ export function TerminalPane({
         retryRef.current = 0;
         setStatus('connected');
         update({ status: 'connected', sessionId: sid });
+        if (term.cols && term.rows) {
+          bridge.resize(sid, term.cols, term.rows);
+        }
       } catch (e) {
         if (dead()) return;
         if (isBridgeError(e) && e.kind === 'unknownHostKey') {
@@ -226,13 +237,17 @@ export function TerminalPane({
   // Mount xterm once
   useEffect(() => {
     const term = new Terminal({
-      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Consolas, monospace',
+      fontFamily:
+        '"JetBrainsMono Nerd Font", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
       fontSize,
-      lineHeight: 1.25,
+      lineHeight,
+      letterSpacing: 0,
       cursorBlink: true,
       cursorStyle: 'bar',
       scrollback: 10000,
       allowProposedApi: true,
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
       theme: theme.xterm,
     });
     const fit = new FitAddon();
@@ -240,16 +255,73 @@ export function TerminalPane({
     term.loadAddon(fit);
     term.loadAddon(search);
     term.loadAddon(new WebLinksAddon());
+
+    // Enable Unicode 11 character widths for modern emojis and TUI glyphs
+    try {
+      const unicode11 = new Unicode11Addon();
+      term.loadAddon(unicode11);
+      term.unicode.activeVersion = '11';
+    } catch (e) {
+      console.warn('Unicode11 addon failed to load:', e);
+    }
+
     term.open(elRef.current!);
+
+    // Load hardware-accelerated WebGL or 2D Canvas renderer for seamless, gapless box/block drawing
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        try {
+          const canvas = new CanvasAddon();
+          term.loadAddon(canvas);
+        } catch {}
+      });
+      term.loadAddon(webgl);
+    } catch {
+      try {
+        const canvas = new CanvasAddon();
+        term.loadAddon(canvas);
+      } catch (err) {
+        console.warn('WebGL/Canvas renderers unavailable, using DOM renderer:', err);
+      }
+    }
+
     termRef.current = term;
     fitRef.current = fit;
     searchRef.current = search;
+
+    // Synchronous immediate fit so cols/rows are initialized before connect()
+    try {
+      fit.fit();
+    } catch {
+      /* hidden */
+    }
 
     requestAnimationFrame(() => {
       try {
         fit.fit();
       } catch {
         /* hidden */
+      }
+    });
+
+    if (document.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        try {
+          fit.fit();
+        } catch {
+          /* hidden */
+        }
+      });
+    }
+
+    // Keep PTY dimensions in sync on any terminal resize event
+    term.onResize(({ cols, rows }) => {
+      const sid = sessionRef.current;
+      if (sid) {
+        if (isLocal) bridge.resizeLocalPty(sid, cols, rows);
+        else bridge.resize(sid, cols, rows);
       }
     });
 
@@ -360,6 +432,16 @@ export function TerminalPane({
       /* */
     }
   }, [fontSize]);
+
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.lineHeight = lineHeight;
+    try {
+      fitRef.current?.fit();
+    } catch {
+      /* */
+    }
+  }, [lineHeight]);
 
   useEffect(() => {
     if (active) termRef.current?.focus();

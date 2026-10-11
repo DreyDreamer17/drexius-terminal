@@ -10,6 +10,7 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import { DemoShell, homeOf, vfs } from './demoShell';
 import type {
   ActiveTunnelInfo,
+  AiProviderConfig,
   BridgeError,
   ConnectionLog,
   DetectedLocalKey,
@@ -62,6 +63,8 @@ interface DemoState {
   connectionLogs: ConnectionLog[];
   tunnels: TunnelConfig[];
   vaults: Vault[];
+  aiConfigs?: Record<string, AiProviderConfig>;
+  activeAiProvider?: string;
 }
 
 const SEED: DemoState = {
@@ -694,5 +697,118 @@ export const bridge = {
       os: 'linux',
       ip: '192.168.1.105',
     };
+  },
+
+  // ── AI Provider Configuration & Key Pooling ──
+  async listAiConfigs(): Promise<AiProviderConfig[]> {
+    if (isTauri) return invoke('ai_configs_list');
+    const s = need();
+    return Object.values(s.aiConfigs || {});
+  },
+
+  async saveAiConfig(config: AiProviderConfig): Promise<void> {
+    if (isTauri) return invoke('ai_config_save', { config });
+    const s = need();
+    if (!s.aiConfigs) s.aiConfigs = {};
+    s.aiConfigs[config.providerId] = { ...config, updatedAt: Math.floor(Date.now() / 1000) };
+    await persistDemo();
+  },
+
+  async getActiveAiProvider(): Promise<string | null> {
+    if (isTauri) return invoke('ai_active_provider_get');
+    return need().activeAiProvider ?? 'ollama';
+  },
+
+  async setActiveAiProvider(providerId: string): Promise<void> {
+    if (isTauri) return invoke('ai_active_provider_set', { providerId });
+    const s = need();
+    s.activeAiProvider = providerId;
+    await persistDemo();
+  },
+
+  // ── AI Proxy & Streaming Bridge ──
+  async streamAiProxy(
+    request: {
+      url: string;
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+      proxyUrl?: string;
+    },
+    onChunk: (text: string) => void
+  ): Promise<void> {
+    if (isTauri) {
+      const channel = new Channel<string>();
+      channel.onmessage = onChunk;
+      try {
+        await invoke('ai_stream_proxy', { request, channel });
+        return;
+      } catch (err: unknown) {
+        throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      }
+    }
+    const r = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+    });
+    if (!r.ok || !r.body) {
+      const err = await r.text().catch(() => '');
+      throw new Error(`HTTP ${r.status}: ${err}`);
+    }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      onChunk(dec.decode(value, { stream: true }));
+    }
+  },
+
+  async fetchAiProxy(request: {
+    url: string;
+    method: string;
+    headers: Record<string, string>;
+    body?: string;
+    proxyUrl?: string;
+  }): Promise<{ status: number; body: string }> {
+    if (isTauri) {
+      try {
+        return await invoke('ai_fetch_proxy', { request });
+      } catch (err: unknown) {
+        throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      }
+    }
+    const r = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+    });
+    return {
+      status: r.status,
+      body: await r.text().catch(() => ''),
+    };
+  },
+
+  async startAiSshTunnel(hostId: string): Promise<number> {
+    if (isTauri) {
+      try {
+        return await invoke<number>('ai_tunnel_start', { hostId });
+      } catch (err: unknown) {
+        throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      }
+    }
+    return 10885;
+  },
+
+  async stopAiSshTunnel(hostId: string): Promise<boolean> {
+    if (isTauri) {
+      try {
+        return await invoke<boolean>('ai_tunnel_stop', { hostId });
+      } catch (err: unknown) {
+        throw new Error(typeof err === 'string' ? err : (err as Error)?.message || String(err));
+      }
+    }
+    return true;
   },
 };
