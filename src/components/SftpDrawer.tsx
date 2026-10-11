@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Folder, FileText, FileArchive, FileCode, ChevronRight, ArrowUp, RefreshCw, FolderPlus, Upload, Download, Trash2, Pencil, X, Link2, HardDrive, Loader2, Home } from 'lucide-react';
+import { Folder, FileText, FileArchive, FileCode, ChevronRight, ArrowUp, RefreshCw, FolderPlus, Upload, Download, Trash2, Pencil, X, Link2, HardDrive, Loader2, Home, Save, AlertCircle } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { registry } from '../lib/sessions';
 import type { FileEntry } from '../lib/types';
@@ -19,6 +19,7 @@ export function SftpDrawer({ activePaneId, tick, onClose, toast }: { activePaneI
   const [selected, setSelected] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
   const [renaming, setRenaming] = useState<{ path: string; name: string } | null>(null);
+  const [editingFile, setEditingFile] = useState<{ path: string; name: string; size: number } | null>(null);
   const [transfer, setTransfer] = useState<{ name: string; pct: number; dir: 'up' | 'down' } | null>(null);
   const [drag, setDrag] = useState(false);
   const [height, setHeight] = useState(300);
@@ -137,8 +138,20 @@ export function SftpDrawer({ activePaneId, tick, onClose, toast }: { activePaneI
               {entries.map((e) => {
                 const Icon = iconFor(e);
                 return (
-                  <tr key={e.path} onClick={() => setSelected(e.path)} onDoubleClick={() => (e.isDir ? go(e.path) : download(e))}
-                    className={cn('group cursor-default border-t border-white/[0.03]', selected === e.path ? 'bg-cyan-400/10' : 'hover:bg-white/[0.03]')}>
+                  <tr
+                    key={e.path}
+                    onClick={() => setSelected(e.path)}
+                    onDoubleClick={() => {
+                      if (e.isDir) {
+                        go(e.path);
+                      } else if (/\.(gz|zip|tar|tgz|xz|png|jpg|jpeg|gif|ico|pdf|bin|exe|so|dylib)$/i.test(e.name) || e.size > 2 * 1024 * 1024) {
+                        download(e);
+                      } else {
+                        setEditingFile({ path: e.path, name: e.name, size: e.size });
+                      }
+                    }}
+                    className={cn('group cursor-default border-t border-white/[0.03]', selected === e.path ? 'bg-cyan-400/10' : 'hover:bg-white/[0.03]')}
+                  >
                     <td className="px-4 py-1.5">
                       <div className="flex items-center gap-2">
                         <Icon className={cn('h-4 w-4 shrink-0', e.isDir ? 'text-sky-300' : 'text-slate-400')} />
@@ -153,9 +166,18 @@ export function SftpDrawer({ activePaneId, tick, onClose, toast }: { activePaneI
                     <td className="text-slate-500">{e.modified ? new Date(e.modified * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''}</td>
                     <td className="pr-3">
                       <div className="flex justify-end gap-0.5 opacity-0 group-hover:opacity-100">
-                        {!e.isDir && <button onClick={() => download(e)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-emerald-300"><Download className="h-3.5 w-3.5" /></button>}
-                        <button onClick={() => setRenaming({ path: e.path, name: e.name })} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"><Pencil className="h-3.5 w-3.5" /></button>
-                        <button onClick={() => remove(e)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"><Trash2 className="h-3.5 w-3.5" /></button>
+                        {!e.isDir && (
+                          <>
+                            <button title="Edit remote file" onClick={() => setEditingFile({ path: e.path, name: e.name, size: e.size })} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-cyan-300">
+                              <FileCode className="h-3.5 w-3.5" />
+                            </button>
+                            <button title="Download" onClick={() => download(e)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-emerald-300">
+                              <Download className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
+                        <button title="Rename" onClick={() => setRenaming({ path: e.path, name: e.name })} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"><Pencil className="h-3.5 w-3.5" /></button>
+                        <button title="Delete" onClick={() => remove(e)} className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"><Trash2 className="h-3.5 w-3.5" /></button>
                       </div>
                     </td>
                   </tr>
@@ -173,6 +195,210 @@ export function SftpDrawer({ activePaneId, tick, onClose, toast }: { activePaneI
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all" style={{ width: `${transfer.pct * 100}%` }} /></div>
           </div>
         )}
+      </div>
+
+      {editingFile && sessionId && (
+        <RemoteFileEditorModal
+          sessionId={sessionId}
+          file={editingFile}
+          onClose={() => setEditingFile(null)}
+          toast={toast}
+          onSaved={() => load(path)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RemoteFileEditorModal({
+  sessionId,
+  file,
+  onClose,
+  toast,
+  onSaved,
+}: {
+  sessionId: string;
+  file: { path: string; name: string; size: number };
+  onClose: () => void;
+  toast: (m: string) => void;
+  onSaved?: () => void;
+}) {
+  const [content, setContent] = useState('');
+  const [originalContent, setOriginalContent] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    bridge.sftpReadText(sessionId, file.path)
+      .then((txt) => {
+        if (!active) return;
+        setContent(txt);
+        setOriginalContent(txt);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setError(isBridgeError(err) ? err.message : String(err));
+        setLoading(false);
+      });
+    return () => { active = false; };
+  }, [sessionId, file.path]);
+
+  const isDirty = content !== originalContent;
+
+  const save = async () => {
+    if (saving || loading) return;
+    setSaving(true);
+    try {
+      await bridge.sftpWriteText(sessionId, file.path, content);
+      setOriginalContent(content);
+      toast(`Saved ${file.name} to remote server`);
+      onSaved?.();
+    } catch (err) {
+      toast(isBridgeError(err) ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      save();
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const val = ta.value;
+      const next = val.substring(0, start) + '  ' + val.substring(end);
+      setContent(next);
+      setTimeout(() => {
+        ta.selectionStart = ta.selectionEnd = start + 2;
+      }, 0);
+    }
+  };
+
+  const tryClose = () => {
+    if (isDirty) {
+      if (confirm(`You have unsaved changes in ${file.name}. Close anyway?`)) {
+        onClose();
+      }
+    } else {
+      onClose();
+    }
+  };
+
+  const lines = content.split('\n');
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={tryClose}>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        className="flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d121c] shadow-2xl ring-1 ring-white/10"
+      >
+        {/* Header */}
+        <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/5 px-4 bg-black/30">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-500/10 text-cyan-300">
+              <FileCode className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-100 truncate">{file.name}</span>
+                {isDirty ? (
+                  <span className="rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.2 text-[9.5px] font-medium text-amber-300">
+                    Unsaved
+                  </span>
+                ) : (
+                  <span className="rounded bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.2 text-[9.5px] font-medium text-emerald-400">
+                    Clean
+                  </span>
+                )}
+              </div>
+              <p className="truncate font-mono text-[10px] text-slate-500">{file.path}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={save}
+              disabled={saving || loading || !isDirty}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition',
+                isDirty
+                  ? 'bg-cyan-500 text-black hover:bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.3)]'
+                  : 'bg-white/5 text-slate-500 border border-white/5 disabled:opacity-40'
+              )}
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+              <span>{saving ? 'Saving…' : 'Save (⌘S)'}</span>
+            </button>
+            <button
+              onClick={tryClose}
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Editor Body */}
+        <div className="relative min-h-0 flex-1 flex bg-[#080b11]">
+          {loading ? (
+            <div className="grid h-full w-full place-items-center gap-2 text-xs text-slate-400">
+              <Loader2 className="h-6 w-6 animate-spin text-cyan-400" />
+              <span>Loading remote file…</span>
+            </div>
+          ) : error ? (
+            <div className="grid h-full w-full place-items-center p-6 text-center text-xs text-rose-300">
+              <div className="max-w-md space-y-2">
+                <AlertCircle className="mx-auto h-8 w-8 text-rose-400 opacity-80" />
+                <p className="font-semibold">Unable to open file in editor</p>
+                <p className="text-slate-400 text-[11px]">{error}</p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full w-full min-h-0 min-w-0">
+              {/* Line numbers gutter */}
+              <div className="w-12 shrink-0 select-none overflow-hidden bg-black/40 py-3 text-right font-mono text-[11px] text-slate-600 pr-3 border-r border-white/5">
+                {lines.map((_, i) => (
+                  <div key={i} className="leading-5">{i + 1}</div>
+                ))}
+              </div>
+              {/* Textarea code editor */}
+              <textarea
+                ref={textareaRef}
+                autoFocus
+                spellCheck={false}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                onKeyDown={handleKeyDown}
+                className="h-full w-full resize-none border-0 bg-transparent py-3 px-3 font-mono text-[11px] leading-5 text-slate-200 placeholder:text-slate-700 focus:outline-none [tab-size:2]"
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex h-7 shrink-0 items-center justify-between border-t border-white/5 bg-black/30 px-3 text-[10.5px] text-slate-500">
+          <div className="flex items-center gap-3">
+            <span>{lines.length} lines</span>
+            <span>{content.length} characters</span>
+            <span className="font-mono">UTF-8</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span>⌘S / Ctrl+S to save</span>
+            <span>·</span>
+            <span>Esc to close</span>
+          </div>
+        </div>
       </div>
     </div>
   );

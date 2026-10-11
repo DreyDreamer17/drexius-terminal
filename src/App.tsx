@@ -26,6 +26,7 @@ import {
   PanelBottom,
   Radio,
   QrCode,
+  FolderInput,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { bridge, isTauri } from './lib/bridge';
@@ -39,6 +40,7 @@ import { VaultMenu } from './components/VaultMenu';
 import { TeamShareModal } from './components/TeamShareModal';
 import { SerialModal } from './components/SerialModal';
 import { DevicePairingModal } from './components/DevicePairingModal';
+import { SshConfigModal } from './components/SshConfigModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -152,6 +154,7 @@ export default function App() {
   const [shareModal, setShareModal] = useState<{ initialTab?: 'share' | 'import' } | null>(null);
   const [showSerial, setShowSerial] = useState(false);
   const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
+  const [showSshConfig, setShowSshConfig] = useState(false);
 
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
@@ -655,6 +658,7 @@ export default function App() {
                   onOpenTerminal={openLocalTerminal}
                   onOpenSerial={() => setShowSerial(true)}
                   onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
+                  onOpenSshConfig={() => setShowSshConfig(true)}
                   onQuickConnectSsh={handleQuickConnectSsh}
                 />
               )}
@@ -693,7 +697,15 @@ export default function App() {
         <main className="relative flex min-w-0 flex-1 flex-col">
           {/* Panes */}
         <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
-          {!tabs.length && <Welcome hosts={hosts} onOpen={openHost} onLocal={openLocalTerminal} onNew={() => setModal({ host: null })} />}
+          {!tabs.length && (
+            <Welcome
+              hosts={hosts}
+              onOpen={openHost}
+              onLocal={openLocalTerminal}
+              onNew={() => setModal({ host: null })}
+              onSshConfig={() => setShowSshConfig(true)}
+            />
+          )}
           {tabs.map((t) => {
             const isSplit = t.panes.length > 1;
             return (
@@ -729,6 +741,7 @@ export default function App() {
                       onClose={() => closePane(t.id, p.id)}
                       onChange={bump}
                       onData={(d) => handlePaneData(t.id, p.id, d)}
+                      toast={toast}
                     />
                   );
                 })}
@@ -745,7 +758,7 @@ export default function App() {
             <span className="flex items-center gap-1 text-emerald-400/90"><ShieldCheck className="h-3 w-3" />{isTauri ? 'SQLCipher AES-256' : 'Vault AES-256-GCM (sandbox)'}</span>
             <span className="flex items-center gap-1"><Activity className="h-3 w-3" />{connected} live session{connected === 1 ? '' : 's'}</span>
             {activeLive && <span className="flex items-center gap-1 font-mono"><History className="h-3 w-3 text-fuchsia-300" />snapshot: {activeLive.cwd}</span>}
-            <span className="ml-auto flex items-center gap-1"><Command className="h-3 w-3" />⇧K connect · ⇧D split · ⇧A AI · ⇧F SFTP · ⇧B rail · ⇧/ status</span>
+            <span className="ml-auto flex items-center gap-1"><Command className="h-3 w-3" />^R history · ⇧V clips · ⇧A AI · ⇧F SFTP · ⇧K connect</span>
             <span className={cn('flex items-center gap-1', isTauri ? 'text-cyan-300' : 'text-amber-300/80')}><Zap className="h-3 w-3" />{isTauri ? 'Native (Tauri)' : 'Browser sandbox'}</span>
           </footer>
         )}
@@ -925,16 +938,26 @@ export default function App() {
               )}
             </div>
 
-            <div className="mt-1.5 border-t border-white/5 pt-1.5">
+            <div className="mt-1.5 border-t border-white/5 pt-1.5 flex items-center justify-between">
               <button
                 onClick={() => {
                   setQuick(false);
                   setModal({ host: null });
                 }}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-cyan-300 hover:bg-white/5 transition"
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-cyan-300 hover:bg-white/5 transition"
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>New host…</span>
+              </button>
+              <button
+                onClick={() => {
+                  setQuick(false);
+                  setShowSshConfig(true);
+                }}
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-slate-400 hover:text-amber-300 hover:bg-white/5 transition"
+              >
+                <FolderInput className="h-3 w-3" />
+                <span>Import ~/.ssh/config</span>
               </button>
             </div>
           </div>
@@ -948,6 +971,15 @@ export default function App() {
           defaultVaultId={activeVaultId}
           onClose={() => setModal(null)}
           onSave={saveHost}
+        />
+      )}
+      {showSshConfig && (
+        <SshConfigModal
+          vaults={vaults}
+          defaultVaultId={activeVaultId}
+          onClose={() => setShowSshConfig(false)}
+          onSuccess={refresh}
+          toast={toast}
         />
       )}
       {shareModal && (
@@ -987,7 +1019,19 @@ export default function App() {
   );
 }
 
-function Welcome({ hosts, onOpen, onLocal, onNew }: { hosts: Host[]; onOpen: (h: Host) => void; onLocal: () => void; onNew: () => void }) {
+function Welcome({
+  hosts,
+  onOpen,
+  onLocal,
+  onNew,
+  onSshConfig,
+}: {
+  hosts: Host[];
+  onOpen: (h: Host) => void;
+  onLocal: () => void;
+  onNew: () => void;
+  onSshConfig: () => void;
+}) {
   return (
     <div className="relative grid h-full place-items-center overflow-hidden">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(34,211,238,0.08),transparent_60%)]" />
@@ -1009,12 +1053,15 @@ function Welcome({ hosts, onOpen, onLocal, onNew }: { hosts: Host[]; onOpen: (h:
             </button>
           ))}
         </div>
-        <div className="mt-4 flex items-center justify-center gap-2">
-          <button onClick={onLocal} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20">
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <button onClick={onLocal} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20 transition">
             <TerminalIcon className="h-3.5 w-3.5" />Open Local Terminal
           </button>
-          <button onClick={onNew} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 px-4 py-2 text-xs text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200">
+          <button onClick={onNew} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 px-4 py-2 text-xs text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200 transition">
             <Plus className="h-3.5 w-3.5" />Add a new host
+          </button>
+          <button onClick={onSshConfig} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-amber-400/25 bg-amber-400/[0.03] px-4 py-2 text-xs text-amber-300/80 hover:border-amber-400/50 hover:text-amber-200 transition">
+            <FolderInput className="h-3.5 w-3.5 text-amber-400" />Import ~/.ssh/config
           </button>
         </div>
       </div>

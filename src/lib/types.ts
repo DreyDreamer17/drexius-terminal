@@ -71,6 +71,18 @@ export interface Host {
   os?: string | null;
   jumpHostId?: string | null;
   vaultId?: string | null;
+  startupCommand?: string | null;
+}
+
+export interface ParsedSshHost {
+  id: string;
+  label: string;
+  hostname: string;
+  port: number;
+  username: string;
+  identityFile?: string | null;
+  proxyJump?: string | null;
+  group?: string | null;
 }
 
 export interface GeneratedKeyPair {
@@ -235,4 +247,24 @@ export interface AiProviderConfig {
   proxyStrategy?: AiBalanceStrategy;
   autoSshProxy?: boolean;
   autoSshHostId?: string;
+}
+
+export interface CommandHistoryItem {
+  id: string;
+  hostId?: string | null;
+  hostLabel: string;
+  command: string;
+  cwd?: string | null;
+  executedAt: number;
+  starred: boolean;
+}
+
+export interface ClipboardItem {
+  id: string;
+  content: string;
+  charCount: number;
+  lineCount: number;
+  source?: string | null;
+  copiedAt: number;
+  pinned: boolean;
 }

@@ -14,6 +14,7 @@ import {
   Users,
   CheckCircle2,
   ChevronDown,
+  FolderInput,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
 import { registry } from '../lib/sessions';
@@ -31,6 +32,7 @@ interface Props {
   onOpenTerminal: () => void;
   onOpenSerial: () => void;
   onOpenShareModal: () => void;
+  onOpenSshConfig: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
 }
 
@@ -75,6 +77,7 @@ export function HostSidebar({
   onOpenTerminal,
   onOpenSerial,
   onOpenShareModal,
+  onOpenSshConfig,
   onQuickConnectSsh,
 }: Props) {
   const [q, setQ] = useState('');
@@ -234,6 +237,16 @@ export function HostSidebar({
                 >
                   <Users className="h-3.5 w-3.5 text-emerald-400" />
                   <span>Import Vault bundle…</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onOpenSshConfig();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                >
+                  <FolderInput className="h-3.5 w-3.5 text-amber-400" />
+                  <span>Import ~/.ssh/config</span>
                 </button>
               </div>
             </>
@@ -400,6 +413,14 @@ export function HostSidebar({
             >
               <Plus className="h-3 w-3" /> Add a host to {activeVault?.name ?? 'vault'}
             </button>
+            <div className="mt-2">
+              <button
+                onClick={onOpenSshConfig}
+                className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition"
+              >
+                <FolderInput className="h-3 w-3" /> Import from ~/.ssh/config
+              </button>
+            </div>
           </div>
         )}
       </div>
