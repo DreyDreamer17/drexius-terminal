@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key } from 'lucide-react';
+import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key, Server } from 'lucide-react';
 import type { AuthMethod, Host, HostSecret, KeychainItem, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { OS_OPTIONS } from '../lib/os';
 import { cn } from '../utils/cn';
+import { CustomSelect } from './CustomSelect';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
 const COLORS = ['#22d3ee', '#a78bfa', '#f43f5e', '#f59e0b', '#4ade80', '#60a5fa', '#f472b6', '#94a3b8'];
 
@@ -30,13 +32,19 @@ export function HostModal({
   defaultVaultId,
   onClose,
   onSave,
+  theme,
 }: {
   host: Host | null;
   vaults?: Vault[];
   defaultVaultId?: string;
   onClose: () => void;
   onSave: (h: Host, s?: HostSecret) => void;
+  theme?: NexusTheme;
 }) {
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0e131d';
+
   const [h, setH] = useState<Host>(
     host ?? {
       id: '',
@@ -113,13 +121,41 @@ export function HostModal({
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
-      <div onMouseDown={(e) => e.stopPropagation()} className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#0e131d] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/5 px-5 py-4">
-          <div>
-            <h3 className="text-sm font-semibold text-white">{host ? 'Edit host' : 'New host'}</h3>
-            <p className="flex items-center gap-1 text-[11px] text-slate-500"><ShieldCheck className="h-3 w-3 text-emerald-400" />Credentials are sealed in the AES-256 vault</p>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+        style={{ backgroundColor: bgColor }}
+      >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
+        <div className="relative flex items-center justify-between border-b border-white/5 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border transition shadow-lg"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 20px ${accentColor}25`,
+              }}
+            >
+              <Server className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-white">{host ? 'Edit host' : 'New host'}</h3>
+              <p className="flex items-center gap-1 text-[11px] text-slate-500">
+                <ShieldCheck className="h-3 w-3 text-emerald-400" />
+                Credentials are sealed in the AES-256 vault
+              </p>
+            </div>
           </div>
-          <button onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><X className="h-4 w-4" /></button>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-white">
+            <X className="h-4 w-4" />
+          </button>
         </div>
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
           <div className="grid grid-cols-[1fr_auto] gap-3">
@@ -138,43 +174,46 @@ export function HostModal({
           </div>
           <div>
             <label className={label}>OS (icon)</label>
-            <select className={input} value={h.os ?? ''} onChange={(e) => set('os', (e.target.value || null) as Host['os'])}>
-              {OS_OPTIONS.map((o) => <option key={o.label} value={o.id}>{o.label}</option>)}
-            </select>
+            <CustomSelect
+              value={h.os ?? ''}
+              options={OS_OPTIONS.map((o) => ({ value: o.id ?? '', label: o.label }))}
+              onChange={(val) => set('os', (val || null) as Host['os'])}
+              placeholder="Select OS"
+              accentColor={accentColor}
+            />
             <p className="mt-1 text-[11px] text-slate-600">Auto-detect fills this in after first successful SSH connection (banner + /etc/os-release).</p>
           </div>
           <div>
             <label className={label}>Jump Host (ProxyJump / Bastion)</label>
-            <select
-              className={input}
+            <CustomSelect
               value={h.jumpHostId ?? ''}
-              onChange={(e) => set('jumpHostId', e.target.value || null)}
-            >
-              <option value="">Direct connection (No jump host)</option>
-              {allHosts
-                .filter((x) => x.id !== h.id && x.id !== '__local__' && !x.id.startsWith('local'))
-                .map((jh) => (
-                  <option key={jh.id} value={jh.id}>
-                    {jh.label} ({jh.username}@{jh.hostname}:{jh.port})
-                  </option>
-                ))}
-            </select>
+              options={[
+                { value: '', label: 'Direct connection (No jump host)' },
+                ...allHosts
+                  .filter((x) => x.id !== h.id && x.id !== '__local__' && !x.id.startsWith('local'))
+                  .map((jh) => ({
+                    value: jh.id,
+                    label: `${jh.label} (${jh.username}@${jh.hostname}:${jh.port})`,
+                  })),
+              ]}
+              onChange={(val) => set('jumpHostId', val || null)}
+              placeholder="Direct connection (No jump host)"
+              accentColor={accentColor}
+            />
             <p className="mt-1 text-[11px] text-slate-500">Route and encrypt this SSH connection through an intermediate bastion server.</p>
           </div>
           {vaults && vaults.length > 0 && (
             <div>
               <label className={label}>Target Vault</label>
-              <select
-                className={input}
+              <CustomSelect
                 value={h.vaultId || 'personal'}
-                onChange={(e) => set('vaultId', e.target.value)}
-              >
-                {vaults.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name} ({v.kind === 'personal' ? 'Personal' : 'Team Vault'})
-                  </option>
-                ))}
-              </select>
+                options={vaults.map((v) => ({
+                  value: v.id,
+                  label: `${v.name} (${v.kind === 'personal' ? 'Personal' : 'Team Vault'})`,
+                }))}
+                onChange={(val) => set('vaultId', val)}
+                accentColor={accentColor}
+              />
               <p className="mt-1 text-[11px] text-slate-500">The vault where this host profile and credentials reside.</p>
             </div>
           )}
@@ -221,10 +260,13 @@ export function HostModal({
                   <span>Linked Keychain Identity</span>
                 </div>
                 {keychain.length > 0 ? (
-                  <select
+                  <CustomSelect
                     value={h.keychainId}
-                    onChange={(e) => {
-                      const kid = e.target.value;
+                    options={keychain.map((k) => ({
+                      value: k.id,
+                      label: `${k.label} (${k.authMethod}${k.username ? ` · ${k.username}` : ''})`,
+                    }))}
+                    onChange={(kid) => {
                       set('keychainId', kid);
                       const k = keychain.find((x) => x.id === kid);
                       if (k) {
@@ -232,14 +274,8 @@ export function HostModal({
                         if (k.username && (!h.username || h.username === 'root')) set('username', k.username);
                       }
                     }}
-                    className={input}
-                  >
-                    {keychain.map((k) => (
-                      <option key={k.id} value={k.id} className="bg-[#0e131d]">
-                        {k.label} ({k.authMethod}{k.username ? ` · ${k.username}` : ''})
-                      </option>
-                    ))}
-                  </select>
+                    accentColor={accentColor}
+                  />
                 ) : (
                   <p className="text-xs text-amber-200/80">No identities in Keychain yet. Create one from the Keychain panel on the sidebar.</p>
                 )}
@@ -362,8 +398,19 @@ export function HostModal({
           <div><label className={label}>Tags</label><input className={input} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="api, eu-west" /></div>
         </div>
         <div className="flex justify-end gap-2 border-t border-white/5 bg-black/20 px-5 py-3">
-          <button onClick={onClose} className="rounded-lg px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Cancel</button>
-          <button disabled={!valid} onClick={submit} className="rounded-lg bg-gradient-to-r from-cyan-400 to-violet-400 px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Save host</button>
+          <button onClick={onClose} className="rounded-xl px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Cancel</button>
+          <button
+            disabled={!valid}
+            onClick={submit}
+            className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-40 shadow-lg"
+            style={{
+              backgroundColor: accentColor,
+              color: '#000000',
+              boxShadow: `0 0 20px ${accentColor}35`,
+            }}
+          >
+            Save host
+          </button>
         </div>
       </div>
     </div>

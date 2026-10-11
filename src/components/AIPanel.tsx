@@ -58,6 +58,7 @@ import { bridge } from '../lib/bridge';
 import type { AiBalanceStrategy, AiProviderConfig, Host } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
+import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
 
 interface Msg {
@@ -1435,27 +1436,25 @@ export function AIPanel({
                 {probing ? 'Probing…' : 'Fetch live'}
               </button>
             </div>
-            <select
+            <CustomSelect
               value={activeConfig.selectedModel}
-              onChange={(e) => handleSelectModel(e.target.value)}
-              className="w-full rounded border border-white/10 bg-slate-900 px-2.5 py-1.5 font-mono text-xs text-slate-200 focus:border-cyan-400/40 focus:outline-none cursor-pointer"
-            >
-              {availableModels.map((m) => {
+              onChange={(val) => handleSelectModel(val)}
+              options={availableModels.map((m) => {
                 const isOpencode = activeConfig.providerId === 'opencode';
-                const isFree = isOpencode && (
-                  m.startsWith('opencode/') ||
-                  m.endsWith('-free') ||
-                  m.includes(':free') ||
-                  m.includes('/free') ||
-                  m === 'opencode/big-pickle'
-                );
-                return (
-                  <option key={m} value={m} className="bg-slate-900 text-slate-200">
-                    {isFree ? `⚡ [Free] ${m}` : m}
-                  </option>
-                );
+                const isFree =
+                  isOpencode &&
+                  (m.startsWith('opencode/') ||
+                    m.endsWith('-free') ||
+                    m.includes(':free') ||
+                    m.includes('/free') ||
+                    m === 'opencode/big-pickle');
+                return {
+                  value: m,
+                  label: isFree ? `⚡ [Free] ${m}` : m,
+                };
               })}
-            </select>
+              theme={theme}
+            />
           </div>
 
           {/* OpenCode Free Information Banner */}
@@ -1871,19 +1870,25 @@ export function AIPanel({
                   <label className="text-[10px] uppercase tracking-wider text-slate-400">
                     Target SSH Host
                   </label>
-                  <select
+                  <CustomSelect
                     value={activeConfig.autoSshHostId || ''}
-                    onChange={(e) => handleSelectAutoSshHost(e.target.value || undefined)}
-                    style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
-                    className="w-full rounded border border-white/10 bg-white/[0.04] px-2 py-1.5 text-xs text-slate-200 focus:outline-none"
-                  >
-                    <option style={{ background: theme?.xterm?.background ?? '#0a0d14' }} value="">⚡ Auto-follow active terminal pane ({activeSshHostId ? (hosts.find(h => h.id === activeSshHostId)?.label || 'Connected host') : 'No SSH active'})</option>
-                    {hosts.map((h) => (
-                      <option style={{ background: theme?.xterm?.background ?? '#0a0d14' }} key={h.id} value={h.id}>
-                        {h.label || h.hostname} ({h.username}@{h.hostname}:{h.port})
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(val) => handleSelectAutoSshHost(val || undefined)}
+                    options={[
+                      {
+                        value: '',
+                        label: `⚡ Auto-follow active terminal pane (${
+                          activeSshHostId
+                            ? hosts.find((h) => h.id === activeSshHostId)?.label || 'Connected host'
+                            : 'No SSH active'
+                        })`,
+                      },
+                      ...hosts.map((h) => ({
+                        value: h.id,
+                        label: `${h.label || h.hostname} (${h.username}@${h.hostname}:${h.port})`,
+                      })),
+                    ]}
+                    theme={theme}
+                  />
                 </div>
 
                 {sshTunnelPort ? (

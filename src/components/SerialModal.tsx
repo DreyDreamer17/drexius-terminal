@@ -10,8 +10,6 @@ import {
   Check,
   CheckCircle2,
   Terminal,
-  Layers,
-  Sparkles,
 } from 'lucide-react';
 import { bridge } from '../lib/bridge';
 import type { SerialPortInfo } from '../lib/types';

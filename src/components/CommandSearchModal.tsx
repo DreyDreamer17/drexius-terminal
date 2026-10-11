@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import {
-  Search,
   X,
   Star,
   Trash2,
@@ -8,11 +7,12 @@ import {
   Clock,
   Folder,
   ArrowRight,
-  Sparkles,
   Code2,
 } from 'lucide-react';
 import type { CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { CustomSelect } from './CustomSelect';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
 interface Props {
   initialHostLabel?: string;
@@ -20,6 +20,7 @@ interface Props {
   onSelect: (command: string, executeImmediately?: boolean) => void;
   onSaveSnippet?: (command: string) => void;
   toast: (msg: string) => void;
+  theme?: NexusTheme;
 }
 
 const timeAgo = (ts: number): string => {
@@ -38,12 +39,17 @@ export function CommandSearchModal({
   onSelect,
   onSaveSnippet,
   toast,
+  theme,
 }: Props) {
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0e131d';
+
   const [history, setHistory] = useState<CommandHistoryItem[]>([]);
   const [q, setQ] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [hostFilter, setHostFilter] = useState<string | 'all'>('all');
+  const [hostFilter, setHostFilter] = useState<string | 'all'>(initialHostLabel ?? 'all');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const refresh = async () => {
@@ -155,12 +161,27 @@ export function CommandSearchModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 bg-[#0e131d] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="relative flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        style={{ backgroundColor: bgColor }}
       >
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 bg-white/[0.02]">
+        <div className="relative flex items-center justify-between border-b border-white/10 px-4 py-3 bg-white/[0.02]">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-300">
+            <div
+              className="flex h-9 w-9 items-center justify-center rounded-2xl border transition shadow-lg shrink-0"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 20px ${accentColor}25`,
+              }}
+            >
               <Terminal className="h-4 w-4" />
             </div>
             <div>
@@ -195,9 +216,12 @@ export function CommandSearchModal({
         </div>
 
         {/* Search input & Host filter row */}
-        <div className="p-3 border-b border-white/5 bg-black/30 flex items-center gap-2">
-          <div className="flex items-center gap-2 flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-2 shadow-inner focus-within:border-emerald-400/40 focus-within:ring-1 focus-within:ring-emerald-400/20">
-            <span className="text-[11px] font-mono text-emerald-400 font-semibold shrink-0">
+        <div className="relative p-3 border-b border-white/5 bg-black/30 flex items-center gap-2">
+          <div
+            className="flex items-center gap-2 flex-1 rounded-xl border border-white/10 bg-black/40 px-3 py-2 shadow-inner focus-within:ring-1"
+            style={{ outlineColor: accentColor }}
+          >
+            <span className="text-[11px] font-mono font-semibold shrink-0" style={{ color: accentColor }}>
               (reverse-i-search)`:
             </span>
             <input
@@ -220,18 +244,17 @@ export function CommandSearchModal({
 
           {/* Host filter dropdown */}
           {hosts.length > 1 && (
-            <select
-              value={hostFilter}
-              onChange={(e) => setHostFilter(e.target.value)}
-              className="rounded-xl border border-white/10 bg-black/40 px-2.5 py-2 text-xs text-slate-300 focus:border-emerald-400/40 focus:outline-none shrink-0"
-            >
-              <option value="all">All Hosts ({history.length})</option>
-              {hosts.map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
+            <div className="w-48 shrink-0">
+              <CustomSelect
+                value={hostFilter}
+                options={[
+                  { value: 'all', label: `All Hosts (${history.length})` },
+                  ...hosts.map((h) => ({ value: h, label: h })),
+                ]}
+                onChange={(val) => setHostFilter(val)}
+                accentColor={accentColor}
+              />
+            </div>
           )}
         </div>
 
@@ -260,95 +283,104 @@ export function CommandSearchModal({
               const isSelected = idx === selectedIndex;
 
               return (
-                <div
-                  key={item.id}
-                  onClick={() => {
-                    onSelect(item.command);
-                    onClose();
-                  }}
-                  onMouseEnter={() => setSelectedIndex(idx)}
-                  className={`group relative flex items-center justify-between gap-3 rounded-xl border p-2.5 cursor-pointer transition ${
-                    isSelected
-                      ? 'border-emerald-500/50 bg-emerald-500/10 shadow-sm'
-                      : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
-                  }`}
-                >
-                  {/* Star / Bookmark button */}
-                  <button
-                    onClick={(e) => handleToggleStar(item, e)}
-                    title={item.starred ? 'Unstar' : 'Star command'}
-                    className={`shrink-0 p-1 rounded-md transition ${
-                      item.starred
-                        ? 'text-amber-400 hover:bg-amber-400/20'
-                        : 'text-slate-600 hover:text-slate-300 hover:bg-white/10 opacity-0 group-hover:opacity-100'
+                  <div
+                    key={item.id}
+                    onClick={() => {
+                      onSelect(item.command);
+                      onClose();
+                    }}
+                    onMouseEnter={() => setSelectedIndex(idx)}
+                    className={`group relative flex items-center justify-between gap-3 rounded-xl border p-2.5 cursor-pointer transition ${
+                      isSelected
+                        ? 'shadow-sm'
+                        : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'
                     }`}
+                    style={isSelected ? {
+                      borderColor: `${accentColor}50`,
+                      backgroundColor: `${accentColor}15`,
+                    } : undefined}
                   >
-                    <Star className={`h-3.5 w-3.5 ${item.starred ? 'fill-amber-400' : ''}`} />
-                  </button>
+                    {/* Star / Bookmark button */}
+                    <button
+                      onClick={(e) => handleToggleStar(item, e)}
+                      title={item.starred ? 'Unstar' : 'Star command'}
+                      className={`shrink-0 p-1 rounded-md transition ${
+                        item.starred
+                          ? 'text-amber-400 hover:bg-amber-400/20'
+                          : 'text-slate-600 hover:text-slate-300 hover:bg-white/10 opacity-0 group-hover:opacity-100'
+                      }`}
+                    >
+                      <Star className={`h-3.5 w-3.5 ${item.starred ? 'fill-amber-400' : ''}`} />
+                    </button>
 
-                  {/* Command text & metadata */}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs text-slate-200 truncate font-medium">
-                        {item.command}
-                      </span>
+                    {/* Command text & metadata */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-slate-200 truncate font-medium">
+                          {item.command}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+                        <span className="flex items-center gap-1 font-mono">
+                          <Clock className="h-3 w-3" />
+                          {timeAgo(item.executedAt)}
+                        </span>
+                        <span>·</span>
+                        <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-slate-400 truncate max-w-[140px]">
+                          {item.hostLabel}
+                        </span>
+                        {item.cwd && (
+                          <>
+                            <span>·</span>
+                            <span className="flex items-center gap-1 font-mono text-slate-500 truncate max-w-[180px]">
+                              <Folder className="h-2.5 w-2.5 shrink-0" />
+                              <span className="truncate">{item.cwd}</span>
+                            </span>
+                          </>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
-                      <span className="flex items-center gap-1 font-mono">
-                        <Clock className="h-3 w-3" />
-                        {timeAgo(item.executedAt)}
-                      </span>
-                      <span>·</span>
-                      <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-slate-400 truncate max-w-[140px]">
-                        {item.hostLabel}
-                      </span>
-                      {item.cwd && (
-                        <>
-                          <span>·</span>
-                          <span className="flex items-center gap-1 font-mono text-slate-500 truncate max-w-[180px]">
-                            <Folder className="h-2.5 w-2.5 shrink-0" />
-                            <span className="truncate">{item.cwd}</span>
-                          </span>
-                        </>
+                    {/* Actions on hover / selection */}
+                    <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                      {onSaveSnippet && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSaveSnippet(item.command);
+                          }}
+                          title="Save command as reusable Snippet"
+                          className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+                        >
+                          <Code2 className="h-3.5 w-3.5" />
+                        </button>
                       )}
+                      <button
+                        onClick={(e) => handleDelete(item, e)}
+                        title="Delete from history"
+                        className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          onSelect(item.command, false);
+                          onClose();
+                        }}
+                        title="Insert into prompt (Enter)"
+                        className="flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition shadow-sm hover:brightness-110"
+                        style={{
+                          backgroundColor: `${accentColor}20`,
+                          borderColor: `${accentColor}40`,
+                          color: accentColor,
+                        }}
+                      >
+                        <span>Insert</span>
+                        <ArrowRight className="h-3 w-3" />
+                      </button>
                     </div>
                   </div>
-
-                  {/* Actions on hover / selection */}
-                  <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
-                    {onSaveSnippet && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSaveSnippet(item.command);
-                        }}
-                        title="Save command as reusable Snippet"
-                        className="rounded-lg p-1.5 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300 transition"
-                      >
-                        <Code2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                    <button
-                      onClick={(e) => handleDelete(item, e)}
-                      title="Delete from history"
-                      className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        onSelect(item.command, false);
-                        onClose();
-                      }}
-                      title="Insert into prompt (Enter)"
-                      className="flex items-center gap-1 rounded-lg bg-emerald-500/20 border border-emerald-400/30 px-2 py-1 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/30 transition shadow-sm"
-                    >
-                      <span>Insert</span>
-                      <ArrowRight className="h-3 w-3" />
-                    </button>
-                  </div>
-                </div>
               );
             })}
         </div>

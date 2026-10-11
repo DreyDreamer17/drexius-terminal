@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Lock, Loader2, ShieldCheck, Cpu, Cloud, Eye, EyeOff, Fingerprint, Check } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
+import { THEMES, type NexusTheme } from '../lib/themes';
 
-export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
+export function LockScreen({
+  onUnlocked,
+  theme,
+}: {
+  onUnlocked: () => void;
+  theme?: NexusTheme;
+}) {
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#06080d';
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [show, setShow] = useState(false);
@@ -95,31 +105,84 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
   ];
 
   return (
-    <div className="relative grid min-h-screen place-items-center overflow-hidden bg-[#06080d] px-4 text-slate-200">
+    <div
+      className="relative grid min-h-screen place-items-center overflow-hidden px-4 text-slate-200"
+      style={{ backgroundColor: bgColor }}
+    >
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
-      <div className="nx-blob pointer-events-none absolute -left-32 top-1/4 h-[420px] w-[420px] rounded-full bg-cyan-500/20 blur-[120px]" />
-      <div className="nx-blob-2 pointer-events-none absolute -right-32 bottom-1/4 h-[420px] w-[420px] rounded-full bg-fuchsia-600/20 blur-[120px]" />
+      <div
+        className="nx-blob pointer-events-none absolute -left-32 top-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
+        style={{ backgroundColor: `${accentColor}25` }}
+      />
+      <div
+        className="nx-blob-2 pointer-events-none absolute -right-32 bottom-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
+        style={{ backgroundColor: `${accentColor}15` }}
+      />
 
       <div className="relative grid w-full max-w-5xl items-center gap-12 md:grid-cols-2">
         <div className="hidden md:block">
-          <img src="/nexus-logo.png" alt="" className="h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.6)]" />
-          <h1 className="mt-6 text-5xl font-bold tracking-tight text-white">Nexus<span className="bg-gradient-to-r from-cyan-300 to-fuchsia-400 bg-clip-text text-transparent">Terminal</span></h1>
-          <p className="mt-3 max-w-md text-slate-400">The open-source, local-first SSH workspace. Terminals, SFTP, snippets and an on-device AI — secured by a vault only you can open.</p>
+          <img
+            src="/nexus-logo.png"
+            alt=""
+            className="h-20 w-20 rounded-2xl"
+            style={{ boxShadow: `0 0 50px -5px ${accentColor}60` }}
+          />
+          <h1 className="mt-6 text-5xl font-bold tracking-tight text-white">
+            Nexus<span style={{ color: accentColor }}>Terminal</span>
+          </h1>
+          <p className="mt-3 max-w-md text-slate-400">
+            The open-source, local-first SSH workspace. Terminals, SFTP, snippets and an on-device AI — secured by a vault only you can open.
+          </p>
           <div className="mt-8 space-y-4">
             {features.map((f) => (
               <div key={f.t} className="flex items-start gap-3">
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-white/5 ring-1 ring-white/10"><f.icon className="h-4 w-4 text-cyan-300" /></div>
-                <div><div className="text-sm font-medium text-white">{f.t}</div><div className="text-xs text-slate-500">{f.d}</div></div>
+                <div
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border transition"
+                  style={{
+                    backgroundColor: `${accentColor}12`,
+                    borderColor: `${accentColor}30`,
+                    color: accentColor,
+                  }}
+                >
+                  <f.icon className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-white">{f.t}</div>
+                  <div className="text-xs text-slate-500">{f.d}</div>
+                </div>
               </div>
             ))}
           </div>
         </div>
 
-        <form onSubmit={submit} className="nx-rise rounded-3xl border border-white/10 bg-white/[0.03] p-8 shadow-2xl backdrop-blur-xl">
+        <form
+          onSubmit={submit}
+          className="nx-rise relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] p-8 shadow-2xl backdrop-blur-xl"
+        >
+          {/* Top ambient radial glow */}
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-44 opacity-25"
+            style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+          />
+
           <img src="/nexus-logo.png" alt="" className="mx-auto h-14 w-14 rounded-xl md:hidden" />
-          <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-cyan-400/20 to-fuchsia-500/20 ring-1 ring-white/10 max-md:hidden"><Lock className="h-5 w-5 text-white" /></div>
-          <h2 className="mt-4 text-center text-xl font-semibold text-white">{initialized === false ? 'Create your vault' : 'Unlock vault'}</h2>
-          <p className="mt-1 text-center text-xs text-slate-500">{initialized === false ? 'Choose a master password. It cannot be recovered.' : 'Enter your master password to decrypt your hosts.'}</p>
+          <div
+            className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border transition shadow-lg max-md:hidden"
+            style={{
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}35`,
+              color: accentColor,
+              boxShadow: `0 0 25px ${accentColor}30`,
+            }}
+          >
+            <Lock className="h-5 w-5" />
+          </div>
+          <h2 className="mt-4 text-center text-xl font-semibold text-white">
+            {initialized === false ? 'Create your vault' : 'Unlock vault'}
+          </h2>
+          <p className="mt-1 text-center text-xs text-slate-500">
+            {initialized === false ? 'Choose a master password. It cannot be recovered.' : 'Enter your master password to decrypt your hosts.'}
+          </p>
 
           {/* Biometric unlock shortcut — only on desktop when a stored password exists */}
           {isTauri && initialized === true && hasStored && (
@@ -127,7 +190,12 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
               type="button"
               onClick={biometricUnlock}
               disabled={bioBusy || busy}
-              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-400/30 bg-emerald-400/10 py-2.5 text-sm font-medium text-emerald-200 transition hover:bg-emerald-400/20 disabled:opacity-50"
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium transition disabled:opacity-50"
+              style={{
+                backgroundColor: `${accentColor}15`,
+                borderColor: `${accentColor}40`,
+                color: accentColor,
+              }}
             >
               {bioBusy ? (
                 <><Loader2 className="h-4 w-4 animate-spin" />Waiting for biometrics…</>
@@ -147,13 +215,36 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
 
           <div className="mt-5 space-y-3">
             <div className="relative">
-              <input autoFocus type={show ? 'text' : 'password'} value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Master password"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-4 focus:ring-cyan-400/10" />
-              <button type="button" onClick={() => setShow((s) => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white">{show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
+              <input
+                autoFocus
+                type={show ? 'text' : 'password'}
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                placeholder="Master password"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
+                style={{
+                  outlineColor: accentColor,
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShow((s) => !s)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+              >
+                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </div>
             {initialized === false && (
-              <input type={show ? 'text' : 'password'} value={pw2} onChange={(e) => setPw2(e.target.value)} placeholder="Confirm master password"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-4 focus:ring-cyan-400/10" />
+              <input
+                type={show ? 'text' : 'password'}
+                value={pw2}
+                onChange={(e) => setPw2(e.target.value)}
+                placeholder="Confirm master password"
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
+                style={{
+                  outlineColor: accentColor,
+                }}
+              />
             )}
 
             {/* Remember in OS keychain opt-in (desktop only) */}
@@ -164,18 +255,26 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
                   role="checkbox"
                   aria-checked={remember}
                   onClick={() => setRemember((r) => !r)}
-                  className={
-                    'mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition ' +
-                    (remember
-                      ? 'border-emerald-400/60 bg-emerald-400/30 text-emerald-200'
-                      : 'border-white/20 bg-white/5 text-transparent hover:border-white/40')
+                  className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition"
+                  style={
+                    remember
+                      ? {
+                          borderColor: `${accentColor}70`,
+                          backgroundColor: `${accentColor}30`,
+                          color: accentColor,
+                        }
+                      : {
+                          borderColor: 'rgba(255,255,255,0.2)',
+                          backgroundColor: 'rgba(255,255,255,0.05)',
+                          color: 'transparent',
+                        }
                   }
                 >
                   {remember && <Check className="h-3 w-3" strokeWidth={3} />}
                 </button>
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
-                    <Fingerprint className="h-3.5 w-3.5 text-emerald-300" />
+                    <Fingerprint className="h-3.5 w-3.5" style={{ color: accentColor }} />
                     Remember in OS keychain
                   </div>
                   <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
@@ -186,8 +285,24 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
             )}
 
             {err && <p className="text-xs text-rose-400">{err}</p>}
-            <button disabled={busy || initialized === null} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 via-sky-400 to-fuchsia-400 py-3 text-sm font-semibold text-black shadow-[0_10px_40px_-10px_rgba(34,211,238,0.6)] transition hover:brightness-110 disabled:opacity-50">
-              {busy ? <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</> : initialized === false ? 'Create vault' : hasStored ? 'Unlock with password' : 'Unlock'}
+            <button
+              disabled={busy || initialized === null}
+              className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50"
+              style={{
+                backgroundColor: accentColor,
+                color: '#000000',
+                boxShadow: `0 10px 30px -5px ${accentColor}60`,
+              }}
+            >
+              {busy ? (
+                <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</>
+              ) : initialized === false ? (
+                'Create vault'
+              ) : hasStored ? (
+                'Unlock with password'
+              ) : (
+                'Unlock'
+              )}
             </button>
           </div>
 
@@ -195,7 +310,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
             {isTauri
               ? <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
-                {initialized && <button type="button" onClick={async () => { if (confirm('Erase the sandbox vault?')) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 text-cyan-400 hover:underline">Reset sandbox vault</button>}</>}
+                {initialized && <button type="button" onClick={async () => { if (confirm('Erase the sandbox vault?')) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
           </div>
         </form>
       </div>

@@ -15,8 +15,10 @@ import {
   CheckCircle2,
   ChevronDown,
   FolderInput,
+  X,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
+import type { NexusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { OsIcon } from './OsIcon';
 import { cn } from '../utils/cn';
@@ -34,6 +36,8 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
+  onClose?: () => void;
+  theme?: NexusTheme;
 }
 
 const authIcon = { key: KeyRound, password: Lock, agent: Fingerprint };
@@ -79,9 +83,12 @@ export function HostSidebar({
   onOpenShareModal,
   onOpenSshConfig,
   onQuickConnectSsh,
+  onClose,
+  theme,
 }: Props) {
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
+  const accentColor = theme?.accent || '#22d3ee';
 
   // Filter hosts by active vault first
   const vaultFilteredHosts = useMemo(() => {
@@ -170,6 +177,15 @@ export function HostSidebar({
             {vaultFilteredHosts.length} {vaultFilteredHosts.length === 1 ? 'profile' : 'profiles'} · encrypted vault
           </p>
         </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            title="Close panel"
+            className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white transition"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Universal Search & Direct Connect Bar */}
@@ -188,7 +204,12 @@ export function HostSidebar({
           {q.trim() && (
             <button
               onClick={handleUniversalConnect}
-              className="flex items-center gap-1 rounded bg-cyan-500/20 px-2 py-0.5 text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/30 transition shrink-0 border border-cyan-400/30 shadow-sm"
+              className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition shrink-0 border shadow-sm"
+              style={{
+                backgroundColor: `${accentColor}20`,
+                borderColor: `${accentColor}40`,
+                color: accentColor,
+              }}
             >
               Connect <ArrowRight className="h-2.5 w-2.5" />
             </button>
@@ -201,12 +222,18 @@ export function HostSidebar({
         <div className="relative">
           <button
             onClick={() => onEdit(null)}
-            className="flex h-7 items-center gap-1.5 rounded-lg bg-cyan-500/15 px-2.5 text-xs font-medium text-cyan-200 border border-cyan-400/30 hover:bg-cyan-500/25 transition shadow-sm"
+            className="flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium transition shadow-sm border"
+            style={{
+              backgroundColor: `${accentColor}18`,
+              borderColor: `${accentColor}40`,
+              color: accentColor,
+            }}
           >
             <Plus className="h-3.5 w-3.5" />
             <span>New host</span>
             <ChevronDown
-              className="h-3 w-3 text-cyan-300 opacity-60 hover:opacity-100 cursor-pointer"
+              className="h-3 w-3 opacity-60 hover:opacity-100 cursor-pointer"
+              style={{ color: accentColor }}
               onClick={(e) => {
                 e.stopPropagation();
                 setShowMenu((m) => !m);

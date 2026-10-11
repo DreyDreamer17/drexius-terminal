@@ -9,6 +9,8 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import {
   ShieldAlert,
+  ShieldCheck,
+  KeyRound,
   RotateCw,
   X,
   WifiOff,
@@ -1140,7 +1142,7 @@ export function TerminalPane({
         </div>
       )}
 
-      <div ref={containerRef} className={cn('relative min-h-0 flex-1', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
+      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
         <div ref={elRef} className="h-full w-full" />
 
         {/* Real-time Inline Ghost Text Autosuggestion (Fish / Zsh / Copilot style) */}
@@ -1180,44 +1182,140 @@ export function TerminalPane({
 
       {status === 'hostkey' && (
         <Overlay>
-          <ShieldAlert className="h-8 w-8 text-amber-300" />
-          <h3 className="mt-3 text-sm font-semibold text-white">Verify host identity</h3>
-          <p className="mt-1 max-w-sm text-center text-xs text-slate-400">
-            First connection to <span className="text-slate-200">{host.hostname}:{host.port}</span>. Compare this
-            fingerprint with the server's before trusting it.
-          </p>
-          <code className="mt-3 block max-w-sm break-all rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-center font-mono text-[11px] text-amber-200">
-            SHA256:{fingerprint}
-          </code>
-          <div className="mt-4 flex gap-2">
-            <button onClick={onClose} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5">
-              Cancel
-            </button>
-            <button
-              onClick={async () => {
-                await bridge.trustHostKey(host, fingerprint ?? '');
-                connect(false);
-              }}
-              className="rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-amber-300"
-            >
-              Trust & connect
-            </button>
+          <div
+            className="relative w-full max-w-md rounded-2xl border border-white/10 p-6 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+            style={{
+              background: theme.xterm.background || '#0e131d',
+              boxShadow: '0 0 40px rgba(245, 158, 11, 0.2), 0 20px 50px rgba(0, 0, 0, 0.8)',
+            }}
+          >
+            {/* Top ambient radial glow */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-30"
+              style={{ background: 'radial-gradient(ellipse at top, #f59e0b 0%, transparent 70%)' }}
+            />
+            {/* Glowing top line */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-80"
+              style={{ background: 'linear-gradient(90deg, transparent, #f59e0b, transparent)' }}
+            />
+
+            <div className="relative flex flex-col items-center text-center">
+              <div
+                className="grid h-12 w-12 place-items-center rounded-2xl border shadow-lg"
+                style={{
+                  backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                  borderColor: 'rgba(245, 158, 11, 0.4)',
+                  color: '#f59e0b',
+                  boxShadow: '0 0 24px rgba(245, 158, 11, 0.3)',
+                }}
+              >
+                <ShieldAlert className="h-6 w-6" />
+              </div>
+
+              <h3 className="mt-4 text-base font-bold text-white tracking-tight">Verify Host Identity</h3>
+              <p className="mt-1 text-xs text-slate-400 max-w-sm">
+                First connection to <span className="font-semibold text-slate-200 font-mono">{host.hostname}:{host.port}</span>.
+                Compare this cryptographic fingerprint before trusting the host key.
+              </p>
+
+              <div className="mt-4 w-full rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-3 text-left">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400/90 mb-1 flex items-center gap-1.5">
+                  <KeyRound className="h-3 w-3" />
+                  <span>SHA-256 Fingerprint (Trust On First Use)</span>
+                </div>
+                <code className="block break-all font-mono text-xs font-semibold text-amber-200 select-all bg-black/40 p-2 rounded-lg border border-amber-400/20">
+                  SHA256:{fingerprint}
+                </code>
+              </div>
+
+              <div className="mt-6 flex w-full items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await bridge.trustHostKey(host, fingerprint ?? '');
+                    connect(false);
+                  }}
+                  className="flex items-center gap-1.5 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg cursor-pointer"
+                  style={{
+                    backgroundColor: '#f59e0b',
+                    color: '#000000',
+                    boxShadow: '0 0 20px rgba(245, 158, 11, 0.35)',
+                  }}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Trust & connect
+                </button>
+              </div>
+            </div>
           </div>
         </Overlay>
       )}
 
       {status === 'error' && (
         <Overlay>
-          <WifiOff className="h-8 w-8 text-rose-400" />
-          <h3 className="mt-3 text-sm font-semibold text-white">Connection failed</h3>
-          <p className="mt-1 max-w-sm text-center font-mono text-xs text-rose-300/80">{error}</p>
-          <button
-            onClick={() => connect(false)}
-            className="mt-4 flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs text-white hover:bg-white/15"
+          <div
+            className="relative w-full max-w-sm rounded-2xl border border-rose-500/20 p-6 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+            style={{
+              background: theme.xterm.background || '#0e131d',
+              boxShadow: '0 0 40px rgba(244, 63, 94, 0.2), 0 20px 50px rgba(0, 0, 0, 0.8)',
+            }}
           >
-            <RotateCw className="h-3 w-3" />
-            Retry
-          </button>
+            {/* Top ambient radial glow */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-36 opacity-30"
+              style={{ background: 'radial-gradient(ellipse at top, #f43f5e 0%, transparent 70%)' }}
+            />
+            {/* Glowing top line */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-80"
+              style={{ background: 'linear-gradient(90deg, transparent, #f43f5e, transparent)' }}
+            />
+
+            <div className="relative flex flex-col items-center text-center">
+              <div
+                className="grid h-12 w-12 place-items-center rounded-2xl border shadow-lg"
+                style={{
+                  backgroundColor: 'rgba(244, 63, 94, 0.15)',
+                  borderColor: 'rgba(244, 63, 94, 0.4)',
+                  color: '#f43f5e',
+                  boxShadow: '0 0 24px rgba(244, 63, 94, 0.3)',
+                }}
+              >
+                <WifiOff className="h-6 w-6" />
+              </div>
+
+              <h3 className="mt-4 text-base font-bold text-white tracking-tight">Connection Failed</h3>
+              <p className="mt-2 w-full break-all rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 font-mono text-xs text-rose-300">
+                {error}
+              </p>
+
+              <div className="mt-6 flex w-full items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-xl border border-white/10 px-4 py-2 text-xs font-medium text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => connect(false)}
+                  className="flex items-center gap-1.5 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg cursor-pointer bg-white/10 text-white hover:bg-white/15"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                  Retry
+                </button>
+              </div>
+            </div>
+          </div>
         </Overlay>
       )}
 
@@ -1266,6 +1364,7 @@ export function TerminalPane({
             }).then(() => toast('Saved to snippets')).catch(() => {});
           }}
           toast={toast}
+          theme={theme}
         />
       )}
 
@@ -1278,6 +1377,7 @@ export function TerminalPane({
           }}
           onPaste={handlePasteClipboard}
           toast={toast}
+          theme={theme}
         />
       )}
     </div>
@@ -1286,7 +1386,11 @@ export function TerminalPane({
 
 function Overlay({ children }: { children: React.ReactNode }) {
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 p-6 backdrop-blur-sm">
+    <div
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-6 backdrop-blur-md cursor-default select-none pointer-events-auto"
+    >
       {children}
     </div>
   );

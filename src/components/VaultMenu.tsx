@@ -12,6 +12,7 @@ import {
   QrCode,
 } from 'lucide-react';
 import type { Vault } from '../lib/types';
+import type { NexusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenImportModal: () => void;
   onOpenPairingModal?: () => void;
+  theme?: NexusTheme;
 }
 
 export function VaultMenu({
@@ -34,6 +36,7 @@ export function VaultMenu({
   onOpenShareModal,
   onOpenImportModal,
   onOpenPairingModal,
+  theme,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -41,6 +44,9 @@ export function VaultMenu({
   const [newVaultColor, setNewVaultColor] = useState('#10b981');
   const [newVaultDesc, setNewVaultDesc] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const accentColor = theme?.accent || '#22d3ee';
+  const bgColor = theme?.xterm?.background || '#0e131d';
 
   const activeVault =
     activeVaultId === 'all'
@@ -82,78 +88,159 @@ export function VaultMenu({
           onClick={() => setOpen((o) => !o)}
           title="Switch Vault / Team Sharing"
           className={cn(
-            'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition border shadow-sm',
+            'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
             open
-              ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40 ring-1 ring-cyan-400/20'
+              ? 'text-white'
               : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
           )}
+          style={
+            open
+              ? {
+                  backgroundColor: `${accentColor}18`,
+                  borderColor: `${accentColor}45`,
+                  boxShadow: `0 0 16px ${accentColor}25`,
+                }
+              : undefined
+          }
         >
           {activeVault.kind === 'personal' ? (
-            <User className="h-3.5 w-3.5 text-cyan-400" />
+            <User className="h-3.5 w-3.5 transition-colors" style={{ color: open ? accentColor : (theme?.accent || '#22d3ee') }} />
           ) : (
-            <Users className="h-3.5 w-3.5 text-emerald-400" />
+            <Users className="h-3.5 w-3.5" style={{ color: activeVault.color || '#10b981' }} />
           )}
-          <span className="font-medium max-w-[120px] truncate">{activeVault.name}</span>
-          <ChevronDown className={cn('h-3 w-3 text-slate-400 transition-transform', open && 'rotate-180')} />
+          <span className="font-semibold max-w-[130px] truncate">{activeVault.name}</span>
+          <ChevronDown
+            className="h-3 w-3 transition-transform duration-200"
+            style={{
+              transform: open ? 'rotate(180deg)' : 'none',
+              color: open ? accentColor : '#94a3b8',
+            }}
+          />
         </button>
 
         {open && (
           <>
             <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-            <div className="absolute left-0 top-9 z-40 w-64 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur-xl">
-              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/5 flex items-center justify-between">
-                <span>Vaults & Sharing</span>
-                <span className="text-[9px] text-cyan-400">Zero-Knowledge</span>
+            <div
+              className="absolute left-0 top-9 z-40 w-72 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+              style={{
+                background: bgColor,
+                boxShadow: `0 0 30px ${accentColor}18, 0 20px 45px rgba(0, 0, 0, 0.75)`,
+              }}
+            >
+              {/* Top ambient radial glow */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-32 opacity-25"
+                style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+              />
+              {/* Subtle glowing top line */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-75"
+                style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
+              />
+
+              <div className="relative px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-white/5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-slate-300">
+                  <FolderKanban className="h-3.5 w-3.5" style={{ color: accentColor }} />
+                  <span>Vaults & Sharing</span>
+                </span>
+                <span
+                  className="text-[9px] px-2 py-0.5 rounded-full border font-mono tracking-normal shadow-sm font-semibold"
+                  style={{
+                    color: accentColor,
+                    backgroundColor: `${accentColor}15`,
+                    borderColor: `${accentColor}30`,
+                    boxShadow: `0 0 10px ${accentColor}15`,
+                  }}
+                >
+                  Zero-Knowledge
+                </span>
               </div>
 
-              <div className="py-1 space-y-0.5">
+              <div className="relative py-1 space-y-1">
                 <button
                   onClick={() => {
                     onSelectVault('all');
                     setOpen(false);
                   }}
                   className={cn(
-                    'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left transition',
+                    'flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-left transition-all',
                     activeVaultId === 'all'
-                      ? 'bg-cyan-500/20 text-cyan-200 font-medium'
-                      : 'text-slate-300 hover:bg-white/5 hover:text-white'
+                      ? 'text-white font-medium border'
+                      : 'text-slate-300 hover:bg-white/[0.06] hover:text-white border border-transparent'
                   )}
+                  style={
+                    activeVaultId === 'all'
+                      ? {
+                          backgroundColor: `${accentColor}18`,
+                          borderColor: `${accentColor}35`,
+                          boxShadow: `0 0 14px ${accentColor}18`,
+                        }
+                      : undefined
+                  }
                 >
-                  <FolderKanban className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                  <div
+                    className="grid h-6 w-6 place-items-center rounded-lg border border-white/10 shrink-0"
+                    style={{ backgroundColor: activeVaultId === 'all' ? `${accentColor}25` : 'rgba(255,255,255,0.04)' }}
+                  >
+                    <FolderKanban className="h-3.5 w-3.5" style={{ color: activeVaultId === 'all' ? accentColor : '#38bdf8' }} />
+                  </div>
                   <span className="flex-1 truncate">All Vaults (Consolidated)</span>
-                  {activeVaultId === 'all' && <Check className="h-3 w-3 text-cyan-400 shrink-0" />}
+                  {activeVaultId === 'all' && <Check className="h-3.5 w-3.5 shrink-0" style={{ color: accentColor }} />}
                 </button>
 
                 {vaults.map((v) => {
                   const isSelected = v.id === activeVaultId;
                   const isPersonal = v.kind === 'personal';
                   return (
-                    <div key={v.id} className="group flex items-center gap-1 rounded-lg hover:bg-white/5 pr-1">
+                    <div key={v.id} className="group relative flex items-center gap-1 rounded-xl">
                       <button
                         onClick={() => {
                           onSelectVault(v.id);
                           setOpen(false);
                         }}
                         className={cn(
-                          'flex flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left transition',
+                          'flex flex-1 items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-left transition-all',
                           isSelected
-                            ? 'bg-cyan-500/20 text-cyan-200 font-medium'
-                            : 'text-slate-300 hover:text-white'
+                            ? 'text-white font-medium border'
+                            : 'text-slate-300 hover:bg-white/[0.06] hover:text-white border border-transparent'
                         )}
+                        style={
+                          isSelected
+                            ? {
+                                backgroundColor: `${accentColor}18`,
+                                borderColor: `${accentColor}35`,
+                                boxShadow: `0 0 14px ${accentColor}18`,
+                              }
+                            : undefined
+                        }
                       >
-                        {isPersonal ? (
-                          <User className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
-                        ) : (
-                          <span
-                            className="h-2 w-2 rounded-full shrink-0"
-                            style={{ background: v.color || '#10b981' }}
-                          />
-                        )}
+                        <div
+                          className="grid h-6 w-6 place-items-center rounded-lg border border-white/10 shrink-0"
+                          style={{
+                            backgroundColor: isSelected
+                              ? `${accentColor}25`
+                              : isPersonal
+                              ? 'rgba(255,255,255,0.04)'
+                              : `${v.color || '#10b981'}20`,
+                          }}
+                        >
+                          {isPersonal ? (
+                            <User className="h-3.5 w-3.5" style={{ color: isSelected ? accentColor : (theme?.accent || '#22d3ee') }} />
+                          ) : (
+                            <span
+                              className="h-2 w-2 rounded-full shadow-sm"
+                              style={{ background: v.color || '#10b981', boxShadow: `0 0 6px ${v.color || '#10b981'}` }}
+                            />
+                          )}
+                        </div>
                         <span className="flex-1 truncate">{v.name}</span>
                         {isPersonal && (
-                          <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">Default</span>
+                          <span className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-medium text-slate-400">
+                            Default
+                          </span>
                         )}
-                        {isSelected && <Check className="h-3 w-3 text-cyan-400 shrink-0" />}
+                        {isSelected && <Check className="h-3.5 w-3.5 shrink-0" style={{ color: accentColor }} />}
                       </button>
                       {!isPersonal && (
                         <button
@@ -164,9 +251,9 @@ export function VaultMenu({
                             }
                           }}
                           title="Delete vault"
-                          className="opacity-0 group-hover:opacity-100 rounded p-1 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition"
+                          className="opacity-0 group-hover:opacity-100 rounded-lg p-1.5 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition shrink-0"
                         >
-                          <Trash2 className="h-3 w-3" />
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
@@ -175,16 +262,18 @@ export function VaultMenu({
               </div>
 
               {/* Action shortcuts */}
-              <div className="mt-1 border-t border-white/5 pt-1 space-y-0.5">
+              <div className="relative mt-1 border-t border-white/5 pt-1.5 space-y-1">
                 <button
                   onClick={() => {
                     setOpen(false);
                     setShowCreateModal(true);
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-slate-300 hover:bg-white/[0.06] hover:text-white transition group"
                 >
-                  <Plus className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>New Team Vault…</span>
+                  <div className="grid h-6 w-6 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-400 shrink-0 group-hover:scale-105 transition-transform">
+                    <Plus className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="font-medium">New Team Vault…</span>
                 </button>
 
                 <button
@@ -192,10 +281,19 @@ export function VaultMenu({
                     setOpen(false);
                     onOpenShareModal();
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-slate-300 hover:bg-white/[0.06] hover:text-white transition group"
                 >
-                  <Share2 className="h-3.5 w-3.5 text-cyan-400" />
-                  <span>Share / Invite Members…</span>
+                  <div
+                    className="grid h-6 w-6 place-items-center rounded-lg border shrink-0 group-hover:scale-105 transition-transform"
+                    style={{
+                      borderColor: `${accentColor}35`,
+                      backgroundColor: `${accentColor}18`,
+                      color: accentColor,
+                    }}
+                  >
+                    <Share2 className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="font-medium">Share / Invite Members…</span>
                 </button>
 
                 <button
@@ -203,10 +301,12 @@ export function VaultMenu({
                     setOpen(false);
                     onOpenImportModal();
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5 hover:text-white transition"
+                  className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-slate-300 hover:bg-white/[0.06] hover:text-white transition group"
                 >
-                  <Download className="h-3.5 w-3.5 text-fuchsia-400" />
-                  <span>Import Shared Vault (.nxvault)…</span>
+                  <div className="grid h-6 w-6 place-items-center rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/15 text-fuchsia-400 shrink-0 group-hover:scale-105 transition-transform">
+                    <Download className="h-3.5 w-3.5" />
+                  </div>
+                  <span className="font-medium">Import Shared Vault (.nxvault)…</span>
                 </button>
 
                 {onOpenPairingModal && (
@@ -215,10 +315,12 @@ export function VaultMenu({
                       setOpen(false);
                       onOpenPairingModal();
                     }}
-                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-amber-300 hover:bg-white/5 transition"
+                    className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-xs text-amber-300 hover:bg-white/[0.06] transition group"
                   >
-                    <QrCode className="h-3.5 w-3.5 text-amber-400" />
-                    <span>Link Device (QR & PIN)…</span>
+                    <div className="grid h-6 w-6 place-items-center rounded-lg border border-amber-500/30 bg-amber-500/15 text-amber-400 shrink-0 group-hover:scale-105 transition-transform">
+                      <QrCode className="h-3.5 w-3.5" />
+                    </div>
+                    <span className="font-medium">Link Device (QR & PIN)…</span>
                   </button>
                 )}
               </div>
@@ -229,17 +331,38 @@ export function VaultMenu({
 
       {/* Create Team Vault Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0e131d] p-5 shadow-2xl">
-            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Users className="h-4 w-4 text-emerald-400" />
-              Create Team Vault
-            </h3>
-            <p className="mt-1 text-xs text-slate-400">
-              Set up an isolated vault for shared team credentials, hosts, and scripts.
-            </p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div
+            className="relative w-full max-w-sm rounded-2xl border border-white/10 p-5 shadow-2xl overflow-hidden"
+            style={{ background: bgColor }}
+          >
+            {/* Top ambient radial glow */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-36 opacity-25"
+              style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+            />
 
-            <form onSubmit={handleCreate} className="mt-4 space-y-3">
+            <div className="relative flex items-center gap-3">
+              <div
+                className="grid h-10 w-10 place-items-center rounded-2xl border transition shadow-lg shrink-0"
+                style={{
+                  backgroundColor: `${accentColor}18`,
+                  borderColor: `${accentColor}35`,
+                  color: accentColor,
+                  boxShadow: `0 0 20px ${accentColor}25`,
+                }}
+              >
+                <Users className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-white">Create Team Vault</h3>
+                <p className="text-xs text-slate-400">
+                  Set up an isolated vault for shared team credentials and hosts.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleCreate} className="relative mt-4 space-y-3">
               <div>
                 <label className="text-[11px] font-medium text-slate-300">Vault Name</label>
                 <input
@@ -248,7 +371,15 @@ export function VaultMenu({
                   placeholder="e.g. DevOps Core, Production, Staging"
                   value={newVaultName}
                   onChange={(e) => setNewVaultName(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-mono text-white placeholder:text-slate-500 focus:outline-none transition"
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = accentColor;
+                    e.currentTarget.style.boxShadow = `0 0 0 1px ${accentColor}40`;
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '';
+                    e.currentTarget.style.boxShadow = '';
+                  }}
                 />
               </div>
 
@@ -276,7 +407,15 @@ export function VaultMenu({
                   placeholder="e.g. Cloud servers & staging clusters"
                   value={newVaultDesc}
                   onChange={(e) => setNewVaultDesc(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-mono text-white placeholder:text-slate-500 focus:outline-none transition"
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = accentColor;
+                    e.currentTarget.style.boxShadow = `0 0 0 1px ${accentColor}40`;
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = '';
+                    e.currentTarget.style.boxShadow = '';
+                  }}
                 />
               </div>
 
@@ -284,14 +423,19 @@ export function VaultMenu({
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:bg-white/10 hover:text-white transition"
+                  className="rounded-xl px-3.5 py-2 text-xs text-slate-400 hover:bg-white/10 hover:text-white transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={saving || !newVaultName.trim()}
-                  className="rounded-lg bg-emerald-500/20 border border-emerald-400/40 px-3.5 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30 transition shadow-sm disabled:opacity-50"
+                  className="rounded-xl px-4 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg disabled:opacity-50"
+                  style={{
+                    backgroundColor: accentColor,
+                    color: '#000000',
+                    boxShadow: `0 0 16px ${accentColor}35`,
+                  }}
                 >
                   {saving ? 'Creating…' : 'Create Team Vault'}
                 </button>
