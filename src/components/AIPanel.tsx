@@ -2997,6 +2997,8 @@ function CodeBlock({
   activePaneId: string | null;
   toast: (m: string) => void;
 }) {
+  const [confirm, setConfirm] = useState(false);
+
   // Guard against tool call JSON blocks being treated as terminal commands
   if (
     code.startsWith('{') &&
@@ -3015,7 +3017,6 @@ function CodeBlock({
   const cleanCode = (sanitizedLines.length > 0 ? sanitizedLines : rawLines).join('\n');
 
   const risk = classifyRisk(cleanCode);
-  const [confirm, setConfirm] = useState(false);
 
   const send = (run: boolean) => {
     const p = activePaneId ? registry.get(activePaneId) : undefined;

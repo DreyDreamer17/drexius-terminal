@@ -15,7 +15,7 @@ use crate::vault::{AuthMethod, HostProfile, HostSecret, Vault};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use ssh2::{Channel, ExtendedData, HashType, Session};
+use ssh2::{Channel, ExtendedData, HashType, MethodType, Session};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -178,6 +178,8 @@ fn detect_remote_os(sess: &Session, banner: Option<&str>) -> Option<String> {
     parse_banner_os(banner)
 }
 
+const MAX_JUMP_DEPTH: usize = 8;
+
 /// TCP connect → handshake → host-key verification (TOFU) → authentication.
 /// Returns a *blocking* authenticated session.
 pub fn open_authenticated(
@@ -185,12 +187,36 @@ pub fn open_authenticated(
     secret: &HostSecret,
     vault: &Vault,
 ) -> AppResult<(Session, String)> {
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(host.id.clone());
+    open_authenticated_inner(host, secret, vault, &mut visited, 0)
+}
+
+fn open_authenticated_inner(
+    host: &HostProfile,
+    secret: &HostSecret,
+    vault: &Vault,
+    visited: &mut std::collections::HashSet<String>,
+    depth: usize,
+) -> AppResult<(Session, String)> {
+    if depth >= MAX_JUMP_DEPTH {
+        return Err(AppError::Other(format!(
+            "Jump host recursion depth exceeded limit ({MAX_JUMP_DEPTH})"
+        )));
+    }
+
     let tcp = if let Some(jump_id) = &host.jump_host_id {
-        if !jump_id.trim().is_empty() {
+        let trimmed_jump = jump_id.trim();
+        if !trimmed_jump.is_empty() {
+            if !visited.insert(trimmed_jump.to_string()) {
+                return Err(AppError::Other(format!(
+                    "Jump host cycle detected involving host ID '{trimmed_jump}'"
+                )));
+            }
             // Retrieve Jump Host profile and secret
-            let (jump_host, jump_secret) = vault.host_with_secret(jump_id)?;
-            // Authenticate jump session (handles nested jumps automatically)
-            let (jump_sess, _) = open_authenticated(&jump_host, &jump_secret, vault)?;
+            let (jump_host, jump_secret) = vault.host_with_secret(trimmed_jump)?;
+            // Authenticate jump session (handles nested jumps with cycle prevention)
+            let (jump_sess, _) = open_authenticated_inner(&jump_host, &jump_secret, vault, visited, depth + 1)?;
 
             // Bind ephemeral loopback listener
             let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -265,6 +291,9 @@ pub fn open_authenticated(
     sess.set_tcp_stream(tcp);
     sess.set_timeout(20_000);
     sess.set_compress(true);
+    let _ = sess.method_pref(MethodType::Kex, "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256");
+    let _ = sess.method_pref(MethodType::CryptCs, "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr");
+    let _ = sess.method_pref(MethodType::CryptSc, "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr");
     sess.handshake()?;
 
     // ── Host key verification (trust-on-first-use, pinned in the vault) ──

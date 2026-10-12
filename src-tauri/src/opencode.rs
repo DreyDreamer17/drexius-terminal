@@ -408,30 +408,59 @@ pub async fn opencode_stream(
 
     // Per-run permission config, passed inline so no config file is written.
     // Rule syntax follows OpenCode's `permission` config (edit/webfetch/bash, with pattern maps for bash).
-    let permission = if autonomous {
-        serde_json::json!({
+    let permission: serde_json::Value = if autonomous {
+        serde_json::from_str(r#"{
             "permission": {
                 "edit": "deny",
                 "webfetch": "deny",
                 "bash": {
                     "*": "allow",
                     "rm *": "deny",
+                    "/bin/rm *": "deny",
+                    "/usr/bin/rm *": "deny",
                     "sudo *": "deny",
+                    "doas *": "deny",
+                    "su *": "deny",
+                    "pkexec *": "deny",
                     "curl *": "deny",
                     "wget *": "deny",
                     "ssh *": "deny",
                     "scp *": "deny",
+                    "sftp *": "deny",
+                    "rsync *": "deny",
                     "nc *": "deny",
+                    "ncat *": "deny",
+                    "netcat *": "deny",
+                    "socat *": "deny",
                     "dd *": "deny",
                     "mkfs*": "deny",
                     "chmod *": "deny",
                     "chown *": "deny",
+                    "chgrp *": "deny",
                     "kill *": "deny",
                     "killall *": "deny",
-                    "pkill *": "deny"
+                    "pkill *": "deny",
+                    "bash *": "deny",
+                    "sh *": "deny",
+                    "zsh *": "deny",
+                    "dash *": "deny",
+                    "/bin/*": "deny",
+                    "/usr/bin/*": "deny",
+                    "env *": "deny",
+                    "xargs *": "deny",
+                    "find * -delete*": "deny",
+                    "find * -exec*": "deny",
+                    "python *": "deny",
+                    "python3 *": "deny",
+                    "perl *": "deny",
+                    "ruby *": "deny",
+                    "node *": "deny",
+                    "php *": "deny",
+                    "eval *": "deny",
+                    "exec *": "deny"
                 }
             }
-        })
+        }"#).unwrap_or_default()
     } else {
         // In read-only mode, set tools to "ask" instead of "deny".
         // Completely denying all tools causes OpenCode to strip tools from the request payload,

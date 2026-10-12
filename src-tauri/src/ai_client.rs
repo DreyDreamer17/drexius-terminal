@@ -71,6 +71,9 @@ pub struct AiProxyRequest {
     pub provider_id: Option<String>,
     #[serde(default)]
     pub auth: AiAuth,
+    /// Explicit proxy override (e.g. local SSH SOCKS5 tunnel).
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -292,6 +295,16 @@ fn has_explicit_auth(h: &HashMap<String, String>) -> bool {
     h.iter().any(|(k, v)| is_auth_header(k) && !v.trim().is_empty())
 }
 
+fn is_loopback_socks5(url: &str) -> bool {
+    if let Ok(u) = reqwest::Url::parse(url.trim()) {
+        let scheme = u.scheme();
+        let host = u.host_str().unwrap_or("");
+        (scheme == "socks5" || scheme == "socks5h") && (host == "127.0.0.1" || host == "localhost")
+    } else {
+        false
+    }
+}
+
 fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
     let provider_id = req.provider_id.clone().unwrap_or_default();
     let mut route = Route {
@@ -362,8 +375,15 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
     }
     route.inject = wants_injection;
 
-    // Proxies come only from the provider's configured pool (or the SSH tunnel proxy stored in that config).
-    // The WebView cannot pick a proxy per request, so a keyed request can't be sent through an arbitrary hop.
+    // Allow an explicit local SSH SOCKS5 proxy override (e.g. from an active dynamic SSH port forward).
+    // Restricted strictly to local loopback SOCKS5 to prevent key exfiltration to arbitrary external proxies.
+    if let Some(proxy) = &req.proxy_url {
+        let trimmed = proxy.trim();
+        if is_loopback_socks5(trimmed) {
+            route.proxies = vec![trimmed.to_string()];
+            route.proxy_strategy = "first".into();
+        }
+    }
 
     if carries_auth && cfg.is_none() {
         return Err("Requests that carry credentials must name a configured provider.".into());

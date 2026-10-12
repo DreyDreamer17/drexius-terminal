@@ -42,7 +42,9 @@ nexusterminal/
         ├── snapshot.rs                 # cwd / last-command snapshots → vault, resume on reconnect
         ├── ai_client.rs                # AI HTTP relay: key/proxy pools, auth injection, failover, cancel
         ├── pairing.rs                  # Direct device-to-device pairing over the LAN
-        └── sync.rs                     # Zero-knowledge sync: crypto core done, transport/engine are stubs
+        ├── sync.rs                     # Zero-knowledge sync: encrypted push/pull, HLC LWW, tombstones
+        ├── serial.rs                   # Hardware serial port connections (UART) via serialport
+        └── opencode.rs                 # OpenCode runner: isolated scratch workspace, streaming, security filters
 ```
 
 ## 1. Trust boundaries
@@ -162,6 +164,11 @@ ai_client::ai_stream_proxy
 * **Offline fallback:** `offlineAnswer()` gives canned diagnostics when no provider is reachable.
 * **Browser demo mode** (no Tauri): there is no Rust relay, so keys live in the demo sandbox and
   the pooling logic in `ollama.ts` runs client-side.
+
+## 6. OpenCode agent & serial UART
+
+* **OpenCode CLI (`opencode.rs`):** executes background inference and multi-step tool workflows via local `opencode` binary. Runs inside an isolated scratch workspace (`~/NexusTerminal/ai-workspace`), never in the user's home directory. Emits live token streams and formatted `opencode_workflow` activity blocks. In read-only mode, tools default to non-interactive reject; in autonomous mode, shell commands are protected by an extensive denylist against subshell escapes, dangerous binaries, and privilege escalation.
+* **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
 **Known limitations**
 

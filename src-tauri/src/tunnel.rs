@@ -79,7 +79,7 @@ impl TunnelManager {
                 bytes_up: t.bytes_up.load(Ordering::Relaxed),
                 bytes_down: t.bytes_down.load(Ordering::Relaxed),
                 error: None,
-                bound_port: t.bound_remote_port.max(t.local_port),
+                bound_port: if t.bound_remote_port > 0 { t.bound_remote_port } else { t.local_port },
             }
         } else {
             ActiveTunnelInfo {
@@ -103,7 +103,7 @@ impl TunnelManager {
                 bytes_up: t.bytes_up.load(Ordering::Relaxed),
                 bytes_down: t.bytes_down.load(Ordering::Relaxed),
                 error: None,
-                bound_port: t.bound_remote_port.max(t.local_port),
+                bound_port: if t.bound_remote_port > 0 { t.bound_remote_port } else { t.local_port },
             })
             .collect()
     }

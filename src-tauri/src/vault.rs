@@ -411,6 +411,10 @@ impl Vault {
         *self.inner.lock() = None;
     }
 
+    pub fn is_unlocked(&self) -> bool {
+        self.inner.lock().is_some()
+    }
+
     pub fn with<T>(&self, f: impl FnOnce(&Connection) -> AppResult<T>) -> AppResult<T> {
         let g = self.inner.lock();
         let u = g.as_ref().ok_or(AppError::VaultLocked)?;
@@ -612,6 +616,9 @@ pub fn vault_status(vault: State<'_, Vault>) -> VaultStatus {
 
 #[tauri::command(async)]
 pub fn vault_unlock(master_password: String, vault: State<'_, Vault>) -> AppResult<()> {
+    if master_password.len() < 4 {
+        return Err(AppError::Other("Master password must be at least 4 characters".into()));
+    }
     let pw = Zeroizing::new(master_password);
     vault.unlock(&pw)
 }
@@ -670,11 +677,14 @@ pub fn os_keychain_unlock(vault: State<'_, Vault>) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn os_keychain_store(master_password: String) -> AppResult<()> {
-    // Persist the master password in the OS keychain. Called after a
-    // successful manual unlock when the user has opted in via a checkbox.
-    // set_password is idempotent — repeated calls overwrite the existing
-    // entry, which is what we want if the master password is ever rotated.
+pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> AppResult<()> {
+    // Persist the master password in the OS keychain only if vault is unlocked and password valid.
+    if !vault.is_unlocked() {
+        return Err(AppError::VaultLocked);
+    }
+    if master_password.len() < 4 {
+        return Err(AppError::Other("Master password must be at least 4 characters".into()));
+    }
     let pw = Zeroizing::new(master_password);
     keychain_entry()?
         .set_password(&pw)
@@ -742,14 +752,28 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
                 params![profile.id, s.password, s.private_key, s.passphrase],
             )?;
         }
+        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&profile.id]);
         Ok(profile.id.clone())
     })
+}
+
+/// Records a deletion tombstone in `sync_log` so sync engines propagate the removal to peers.
+pub fn log_sync_deletion(conn: &Connection, tbl: &str, record_id: &str) -> rusqlite::Result<()> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let hlc = format!("{now_ms}:0:local");
+    conn.execute(
+        "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 1)
+         ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
+        params![record_id, tbl, hlc],
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn host_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
-        c.execute("DELETE FROM hosts WHERE id=?1", [id])?;
+        c.execute("DELETE FROM hosts WHERE id=?1", [&id])?;
+        let _ = log_sync_deletion(c, "hosts", &id);
         Ok(())
     })
 }
@@ -796,6 +820,7 @@ pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult
                 input.password, input.private_key, input.passphrase, input.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
+        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&id]);
         Ok(id)
     })
 }
@@ -805,6 +830,7 @@ pub fn keychain_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
         c.execute("DELETE FROM keychain WHERE id=?1", [&id])?;
         c.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&id])?;
+        let _ = log_sync_deletion(c, "keychain", &id);
         Ok(())
     })
 }
@@ -1104,8 +1130,22 @@ pub fn keychain_generate_key(
 
     let temp_dir = std::env::temp_dir();
     let unique_id = uuid::Uuid::new_v4().to_string();
-    let key_path = temp_dir.join(format!("nx_keygen_{}", unique_id));
-    let pub_path = temp_dir.join(format!("nx_keygen_{}.pub", unique_id));
+    let key_dir = temp_dir.join(format!("nx_keygen_{}", unique_id));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(&key_dir).map_err(|e| AppError::Other(format!("Failed to create secure key dir: {e}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(&key_dir).map_err(|e| AppError::Other(format!("Failed to create key dir: {e}")))?;
+    }
+
+    let key_path = key_dir.join("id_key");
+    let pub_path = key_dir.join("id_key.pub");
 
     let pass = passphrase.unwrap_or_default();
     let cmt = comment.unwrap_or_else(|| "nexus-generated-key".into());
@@ -1124,18 +1164,26 @@ pub fn keychain_generate_key(
 
     let status = cmd
         .status()
-        .map_err(|e| AppError::Other(format!("Failed to execute ssh-keygen: {e}")))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&key_dir);
+            AppError::Other(format!("Failed to execute ssh-keygen: {e}"))
+        })?;
 
     if !status.success() {
-        let _ = std::fs::remove_file(&key_path);
-        let _ = std::fs::remove_file(&pub_path);
+        let _ = std::fs::remove_dir_all(&key_dir);
         return Err(AppError::Other("ssh-keygen execution failed".into()));
     }
 
     let private_key = std::fs::read_to_string(&key_path)
-        .map_err(|e| AppError::Other(format!("Failed to read generated private key: {e}")))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&key_dir);
+            AppError::Other(format!("Failed to read generated private key: {e}"))
+        })?;
     let public_key = std::fs::read_to_string(&pub_path)
-        .map_err(|e| AppError::Other(format!("Failed to read generated public key: {e}")))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_dir_all(&key_dir);
+            AppError::Other(format!("Failed to read generated public key: {e}"))
+        })?;
 
     // Compute fingerprint via ssh-keygen -lf
     let mut fp_cmd = std::process::Command::new("ssh-keygen");
@@ -1152,8 +1200,7 @@ pub fn keychain_generate_key(
         "SHA256:unknown".to_string()
     };
 
-    let _ = std::fs::remove_file(&key_path);
-    let _ = std::fs::remove_file(&pub_path);
+    let _ = std::fs::remove_dir_all(&key_dir);
 
     Ok(GeneratedKeyPair {
         algorithm: algo.to_uppercase(),
@@ -1231,6 +1278,28 @@ pub fn looks_sensitive_command(cmd: &str) -> bool {
     ];
     let lower = cmd.to_lowercase();
     KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
+/// Heuristic for clipboard content or raw text that probably carries a credential or private key.
+pub fn looks_sensitive_text(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if (lower.contains("-----begin") && lower.contains("private key"))
+        || lower.contains("-----begin openssh private key-----")
+        || lower.contains("-----begin rsa private key-----")
+        || lower.contains("-----begin dsa private key-----")
+        || lower.contains("-----begin ec private key-----")
+    {
+        return true;
+    }
+    const TEXT_KEYWORDS: &[&str] = &[
+        "password", "passwd", "passphrase", "passcode", "api_key", "apikey", "api-key",
+        "private_key", "bearer ", "authorization:", "secret_key", "client_secret",
+        "aws_secret_access_key", "ghp_", "github_pat_", "xoxb-", "xoxp-",
+    ];
+    if TEXT_KEYWORDS.iter().any(|k| lower.contains(k)) {
+        return true;
+    }
+    looks_sensitive_command(text)
 }
 
 #[tauri::command]
@@ -1379,6 +1448,9 @@ pub fn clipboard_history_add(
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return Err(AppError::Other("Empty clipboard content".into()));
+    }
+    if looks_sensitive_text(trimmed) {
+        return Err(AppError::Other("Not recorded: clipboard content appears to contain sensitive information or credentials.".into()));
     }
     let char_count = content.chars().count();
     let line_count = content.lines().count().max(1);
@@ -1599,6 +1671,7 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
                 tunnel.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
+        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&tunnel.id]);
         Ok(tunnel.id.clone())
     })
 }
@@ -1606,7 +1679,8 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
 #[tauri::command]
 pub fn tunnel_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
-        c.execute("DELETE FROM tunnels WHERE id=?1", [id])?;
+        c.execute("DELETE FROM tunnels WHERE id=?1", [&id])?;
+        let _ = log_sync_deletion(c, "tunnels", &id);
         Ok(())
     })
 }
@@ -1646,6 +1720,7 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
                 snippet.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
+        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&snippet.id]);
         Ok(snippet.id.clone())
     })
 }
@@ -1653,7 +1728,8 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
 #[tauri::command]
 pub fn snippet_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
-        c.execute("DELETE FROM snippets WHERE id=?1", [id])?;
+        c.execute("DELETE FROM snippets WHERE id=?1", [&id])?;
+        let _ = log_sync_deletion(c, "snippets", &id);
         Ok(())
     })
 }
@@ -1703,6 +1779,7 @@ pub fn vault_save(mut record: VaultRecord, vault: State<'_, Vault>) -> AppResult
              ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
             params![record.id, record.name, record.kind, record.color, record.description, record.created_at],
         )?;
+        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&record.id]);
         Ok(record.id)
     })
 }
@@ -1718,6 +1795,7 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
         c.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&id])?;
         c.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&id])?;
         c.execute("DELETE FROM vaults WHERE id=?1", [&id])?;
+        let _ = log_sync_deletion(c, "vaults", &id);
         Ok(())
     })
 }

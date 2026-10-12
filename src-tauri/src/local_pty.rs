@@ -102,7 +102,7 @@ pub fn local_pty_spawn(
         .unwrap_or_else(|| std::path::PathBuf::from("/"));
     cmd.cwd(work_dir.clone());
 
-    let _child = pair
+    let mut child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| AppError::Other(format!("Failed to spawn shell '{shell_path}': {e}")))?;
@@ -141,6 +141,7 @@ pub fn local_pty_spawn(
         .name(format!("local-pty-{}", &sid[..8]))
         .spawn(move || {
             pty_io_loop(pair.master, rx, &on_event);
+            let _ = child.wait(); // Reaps the child process so exited shells don't linger as zombies
             let _ = on_event.send(PtyEvent::Disconnected {
                 reason: "shell process exited".into(),
                 resumable: false,

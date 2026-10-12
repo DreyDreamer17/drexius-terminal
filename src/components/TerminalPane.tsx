@@ -552,7 +552,7 @@ export function TerminalPane({
               break;
             case 'connected': {
               term.write(
-                `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}… · AES-256-GCM / chacha20-poly1305\x1b[0m\r\n`
+                `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
               );
               const detected = ev.os ?? parseOsFromBanner(ev.banner);
               if (detected && detected !== host.os) {
@@ -734,6 +734,16 @@ export function TerminalPane({
     const dScroll = term.onScroll(updateGhostPos);
 
     term.attachCustomKeyEventHandler((e) => {
+      // Prevent xterm from sending ^T (transpose chars) or ^K (kill line) to the shell when workspace shortcuts trigger
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key.toLowerCase() === 't' || e.key.toLowerCase() === 'k') && e.type === 'keydown') {
+        return false;
+      }
+
+      // Prevent xterm from sending control sequences on workspace shift shortcuts
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+        return false;
+      }
+
       // Ctrl+R -> Command History Reverse Search
       if (e.ctrlKey && e.key.toLowerCase() === 'r' && e.type === 'keydown') {
         setShowCmdSearch(true);
@@ -987,12 +997,16 @@ export function TerminalPane({
         try {
           const text = await navigator.clipboard.readText();
           if (text) {
-            const sid = sessionRef.current;
-            if (sid) {
-              if (isSerial) bridge.writeSerial(sid, text);
-              else if (isLocal) bridge.writeLocalPty(sid, text);
-              else bridge.write(sid, text);
-              onData?.(text);
+            if (termRef.current) {
+              termRef.current.paste(text);
+            } else {
+              const sid = sessionRef.current;
+              if (sid) {
+                if (isSerial) bridge.writeSerial(sid, text);
+                else if (isLocal) bridge.writeLocalPty(sid, text);
+                else bridge.write(sid, text);
+                onData?.(text);
+              }
             }
           }
         } catch {
