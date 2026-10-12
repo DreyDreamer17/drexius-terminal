@@ -22,11 +22,57 @@ use ssh2::Session;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::State;
+
+const MAX_FORWARD_CONNECTIONS: usize = 64;
+const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Validate tunnel configuration before saving or starting.
+/// Rejects non-loopback bind addresses on dynamic SOCKS5 tunnels to prevent
+/// creating an unauthenticated open proxy on the local area network.
+pub fn validate_tunnel(tunnel: &TunnelConfig) -> AppResult<()> {
+    if tunnel.local_port == 0 {
+        return Err(AppError::Other("Local port must be between 1 and 65535".into()));
+    }
+    match tunnel.forward_type.as_str() {
+        "dynamic" => {
+            let host = tunnel.local_host.trim();
+            let is_loopback = if host.eq_ignore_ascii_case("localhost") {
+                true
+            } else if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                ip.is_loopback()
+            } else {
+                false
+            };
+            if !is_loopback {
+                return Err(AppError::Other(
+                    "Dynamic SOCKS5 tunnels must bind to a loopback address (127.0.0.1, ::1, or localhost) to prevent unauthorized LAN open proxy exposure".into(),
+                ));
+            }
+        }
+        "local" => {
+            if tunnel.remote_host.trim().is_empty() {
+                return Err(AppError::Other("Remote host cannot be empty for local port forwards".into()));
+            }
+            if tunnel.remote_port == 0 {
+                return Err(AppError::Other("Remote port must be between 1 and 65535 for local port forwards".into()));
+            }
+        }
+        "remote" => {
+            if tunnel.local_host.trim().is_empty() {
+                return Err(AppError::Other("Local target host cannot be empty for remote port forwards".into()));
+            }
+        }
+        other => {
+            return Err(AppError::Other(format!("Unsupported forward type: {other}")));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,10 +100,18 @@ struct RunningTunnel {
     bound_remote_port: u16,
 }
 
-#[derive(Default)]
 pub struct TunnelManager {
-    running: Mutex<HashMap<String, RunningTunnel>>,
+    running: Arc<Mutex<HashMap<String, RunningTunnel>>>,
     starting: Mutex<HashSet<String>>,
+}
+
+impl Default for TunnelManager {
+    fn default() -> Self {
+        Self {
+            running: Arc::new(Mutex::new(HashMap::new())),
+            starting: Mutex::new(HashSet::new()),
+        }
+    }
 }
 
 impl TunnelManager {
@@ -83,6 +137,15 @@ impl TunnelManager {
     pub fn stop(&self, id: &str) {
         self.starting.lock().remove(id);
         if let Some(t) = self.running.lock().remove(id) {
+            t.stop_flag.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn stop_all(&self) {
+        self.starting.lock().clear();
+        let mut running = self.running.lock();
+        for (_, t) in running.drain() {
             t.stop_flag.store(true, Ordering::Relaxed);
         }
     }
@@ -138,6 +201,7 @@ pub fn tunnel_start(
 
     let res = (|| {
         let tunnel = vault.tunnel_get(&id)?;
+        validate_tunnel(&tunnel)?;
         let (host, secret) = vault.host_with_secret(&tunnel.host_id)?;
         let (session, _) = open_authenticated(&host, &secret, &vault)?;
 
@@ -199,27 +263,38 @@ fn spawn_local_worker(
         bound_remote_port: 0,
     };
 
-    mgr.running.lock().insert(tunnel_id, running_tunnel);
+    mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
 
     let stop = stop_flag;
     let up = bytes_up;
     let down = bytes_down;
     let t_lock = transport_lock;
+    let tid = tunnel_id.clone();
+    let mgr_running = mgr.running.clone();
+    let active_conns = Arc::new(AtomicUsize::new(0));
 
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if active_conns.load(Ordering::Relaxed) >= MAX_FORWARD_CONNECTIONS {
+                            log::warn!("Tunnel {tid} reached max concurrent connections ({MAX_FORWARD_CONNECTIONS}); dropping");
+                            drop(stream);
+                            continue;
+                        }
+                        active_conns.fetch_add(1, Ordering::Relaxed);
                         let sess = session.clone();
                         let stop_c = stop.clone();
                         let up_c = up.clone();
                         let down_c = down.clone();
                         let c = cfg.clone();
                         let tl = t_lock.clone();
+                        let conns_counter = active_conns.clone();
                         thread::spawn(move || {
                             let _ = handle_client(stream, sess, c, stop_c, up_c, down_c, tl);
+                            conns_counter.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -228,8 +303,14 @@ fn spawn_local_worker(
                     Err(_) => break,
                 }
             }
+            // Cleanup on listener exit so tunnel status correctly reports stopped
+            mgr_running.lock().remove(&tid);
         })
-        .map_err(|e| AppError::Io(e))?;
+    {
+        // Spawn failed — clean up manager entry so slot is not left occupied
+        mgr.running.lock().remove(&tunnel_id);
+        return Err(AppError::Io(e));
+    }
 
     Ok(())
 }
@@ -273,8 +354,11 @@ fn spawn_remote_worker(
     let up = bytes_up;
     let down = bytes_down;
     let local_target = format!("{}:{}", cfg.local_host, cfg.local_port);
+    let tid = tunnel_id.clone();
+    let mgr_running = mgr.running.clone();
+    let active_conns = Arc::new(AtomicUsize::new(0));
 
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
             // Use non-blocking mode on the session so we can poll Listener::accept
@@ -286,7 +370,7 @@ fn spawn_remote_worker(
                     break;
                 }
                 // Accept the next forwarded-tcpip channel from the server.
-                let channel = match listener.accept() {
+                let mut channel = match listener.accept() {
                     Ok(ch) => ch,
                     Err(e) => {
                         let io_err = std::io::Error::from(e);
@@ -308,6 +392,12 @@ fn spawn_remote_worker(
                     }
                 };
 
+                if active_conns.load(Ordering::Relaxed) >= MAX_FORWARD_CONNECTIONS {
+                    log::warn!("Remote tunnel {tid} reached max concurrent connections ({MAX_FORWARD_CONNECTIONS}); dropping channel");
+                    let _ = channel.close();
+                    continue;
+                }
+
                 // Open a local TCP connection to the forward target (e.g. 127.0.0.1:8080).
                 let addr = match local_target.to_socket_addrs().ok().and_then(|mut i| i.next()) {
                     Some(a) => a,
@@ -324,21 +414,25 @@ fn spawn_remote_worker(
                     }
                 };
 
+                active_conns.fetch_add(1, Ordering::Relaxed);
                 let stop_c = stop.clone();
                 let up_c = up.clone();
                 let down_c = down.clone();
+                let conns_counter = active_conns.clone();
                 let _ = local.set_nonblocking(true);
                 thread::spawn(move || {
-                    // For remote forwards, the SSH channel is what the remote client
-                    // speaks into (bytes arriving "down" from the server), and the local
-                    // TCP stream is what we forward those bytes to (bytes going "up"
-                    // toward the local service). proxy_remote_channel wires them up
-                    // with the byte counters matching that orientation.
                     proxy_remote_channel(local, channel, stop_c, up_c, down_c);
+                    conns_counter.fetch_sub(1, Ordering::Relaxed);
                 });
             }
+            // Cleanup on listener exit so tunnel status correctly reports stopped
+            mgr_running.lock().remove(&tid);
         })
-        .map_err(|e| AppError::Io(e))?;
+    {
+        // Spawn failed — clean up manager entry so slot is not left occupied
+        mgr.running.lock().remove(&tunnel_id);
+        return Err(AppError::Io(e));
+    }
 
     Ok(())
 }
@@ -553,6 +647,7 @@ fn proxy_bidirectional(
 
     let mut client_buf = [0u8; 16 * 1024];
     let mut chan_buf = [0u8; 16 * 1024];
+    let mut last_activity = std::time::Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
         let mut had_activity = false;
@@ -611,7 +706,13 @@ fn proxy_bidirectional(
             Err(_) => break,
         }
 
-        if !had_activity {
+        if had_activity {
+            last_activity = std::time::Instant::now();
+        } else {
+            if last_activity.elapsed() > IDLE_CONNECTION_TIMEOUT {
+                log::debug!("Tunnel proxy connection timed out after {IDLE_CONNECTION_TIMEOUT:?} idle");
+                break;
+            }
             thread::sleep(Duration::from_millis(15));
         }
     }

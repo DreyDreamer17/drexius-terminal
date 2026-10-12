@@ -11,6 +11,10 @@ use std::time::Duration;
 
 const MAX_PAIRING_ATTEMPTS: u32 = 5;
 const PAIRING_TIMEOUT_SECS: u64 = 300;
+const MAX_PAIRING_CONNECTIONS: usize = 8;
+const PAIRING_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PAIRING_BODY_SIZE: usize = 64 * 1024;
+const MAX_PAIRING_CIPHERTEXT_SIZE: usize = 50 * 1024 * 1024;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -528,6 +532,7 @@ pub async fn pairing_start_host(
     let s_name = device_name;
     let s_pk_hex = server_pk_hex;
     let failed_attempts = Arc::new(AtomicU32::new(0));
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_PAIRING_CONNECTIONS));
 
     // Background listener task with auto-expiry and rate limiting
     tokio::spawn(async move {
@@ -547,6 +552,15 @@ pub async fn pairing_start_host(
                 res = listener.accept() => {
                     match res {
                         Ok((mut stream, peer_addr)) => {
+                            let permit = match permits.clone().try_acquire_owned() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    log::warn!("Rejecting pairing connection from {peer_addr}: max concurrent pairing connections ({MAX_PAIRING_CONNECTIONS}) reached");
+                                    let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n").await;
+                                    continue;
+                                }
+                            };
+
                             if failed_attempts.load(Ordering::SeqCst) >= MAX_PAIRING_ATTEMPTS {
                                 log::warn!("Rejecting connection: max pairing attempts exceeded");
                                 let err_resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing session locked.\"}";
@@ -562,19 +576,28 @@ pub async fn pairing_start_host(
                             let attempts_clone = failed_attempts.clone();
 
                             tokio::spawn(async move {
+                                let _permit = permit;
                                 let vault = app_h.state::<Vault>();
-                                if let Err(e) = handle_incoming_pairing(
-                                    &mut stream,
-                                    peer_addr,
-                                    &exp_pin,
-                                    &attempts_clone,
-                                    &s_secret,
-                                    &s_pk,
-                                    &s_dev,
-                                    &vault,
-                                    &app_h,
+                                match tokio::time::timeout(
+                                    PAIRING_HANDSHAKE_TIMEOUT,
+                                    handle_incoming_pairing(
+                                        &mut stream,
+                                        peer_addr,
+                                        &exp_pin,
+                                        &attempts_clone,
+                                        &s_secret,
+                                        &s_pk,
+                                        &s_dev,
+                                        &vault,
+                                        &app_h,
+                                    ),
                                 ).await {
-                                    log::warn!("Pairing connection error: {e}");
+                                    Ok(Err(e)) => log::warn!("Pairing connection error from {peer_addr}: {e}"),
+                                    Err(_) => {
+                                        log::warn!("Pairing handshake timed out from {peer_addr}");
+                                        let _ = stream.write_all(b"HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n").await;
+                                    }
+                                    Ok(Ok(())) => {}
                                 }
                             });
                         }
@@ -640,6 +663,11 @@ async fn handle_incoming_pairing(
                             }
                         }
                     }
+                    if content_len > MAX_PAIRING_BODY_SIZE {
+                        let err_resp = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
+                        let _ = stream.write_all(err_resp.as_bytes()).await;
+                        return Err(AppError::Other(format!("Pairing payload exceeds maximum allowed size ({content_len} > {MAX_PAIRING_BODY_SIZE})")));
+                    }
                 } else {
                     scan_from = n_total.saturating_sub(3);
                 }
@@ -648,6 +676,11 @@ async fn handle_incoming_pairing(
 
         if let Some(pos) = header_pos {
             let body_start = pos + 4;
+            if body_start + content_len > buf.len() {
+                let err_resp = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(err_resp.as_bytes()).await;
+                return Err(AppError::Other("Pairing request body exceeds buffer size".into()));
+            }
             if n_total - body_start >= content_len {
                 let body_slice = &buf[body_start..body_start + content_len];
                 let req: HandshakeRequest = serde_json::from_slice(body_slice)
@@ -871,6 +904,14 @@ pub async fn pairing_join_client(
     let ciphertext = B64
         .decode(&handshake_resp.encrypted_payload)
         .map_err(|_| AppError::Crypto("Invalid ciphertext base64".into()))?;
+
+    if ciphertext.len() > MAX_PAIRING_CIPHERTEXT_SIZE {
+        return Err(AppError::Crypto(format!(
+            "Pairing archive payload exceeds maximum allowed size ({} > {})",
+            ciphertext.len(),
+            MAX_PAIRING_CIPHERTEXT_SIZE
+        )));
+    }
 
     let cipher = XChaCha20Poly1305::new((&session_key).into());
     let plaintext = cipher

@@ -1696,6 +1696,7 @@ pub fn tunnels_list(vault: State<'_, Vault>) -> AppResult<Vec<TunnelConfig>> {
 
 #[tauri::command]
 pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResult<String> {
+    crate::tunnel::validate_tunnel(&tunnel)?;
     if tunnel.id.is_empty() {
         tunnel.id = uuid::Uuid::new_v4().to_string();
     }
