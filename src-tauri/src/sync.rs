@@ -351,6 +351,14 @@ pub fn sync_configure(
 /// Extract every syncable record from a SQLite connection as a SyncRecord
 /// using `updated_at` as a coarse cursor (HLC will be "<updated_at_ms>:0:<device>").
 fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppResult<Vec<SyncRecord>> {
+    let mut logged_hlcs: HashMap<String, String> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT record_id, hlc FROM sync_log WHERE deleted = 0") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            for row in rows.flatten() {
+                logged_hlcs.insert(row.0, row.1);
+            }
+        }
+    }
     let mut out = Vec::new();
     for &tbl in SYNC_TABLES {
         let (id_col, body_cols): (&str, &[&str]) = match tbl {
@@ -382,10 +390,14 @@ fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppRes
                 let updated = obj.get("updated_at").and_then(|v| v.as_i64()).unwrap_or(0);
                 let created = obj.get("created_at").and_then(|v| v.as_i64()).unwrap_or(updated);
                 let ts = if updated > 0 { updated * 1000 } else { created * 1000 };
+                let hlc = logged_hlcs
+                    .get(&id_val)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{ts}:0:{device_id}"));
                 Ok(SyncRecord {
                     table: tbl.to_string(),
                     id: id_val,
-                    hlc: format!("{ts}:0:{device_id}"),
+                    hlc,
                     deleted: false,
                     body: serde_json::Value::Object(obj),
                 })
@@ -452,7 +464,11 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
         return Ok(());
     }
 
-    let _ = conn.execute("DELETE FROM sync_log WHERE record_id=?1", [&rec.id]);
+    let _ = conn.execute(
+        "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 0)
+         ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=0",
+        rusqlite::params![rec.id, rec.table, rec.hlc],
+    );
 
     let obj = match &rec.body {
         serde_json::Value::Object(o) => o,
@@ -638,7 +654,14 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
 
     // 1. Pull remote blobs first (decrypt & merge into local vault)
     let cursor = { engine.status.lock().cursor };
-    let changes = relay.changes_since(cursor).await.unwrap_or_default();
+    let changes = match relay.changes_since(cursor).await {
+        Ok(c) => c,
+        Err(e) => {
+            let mut s = engine.status.lock();
+            s.last_error = Some(format!("failed to fetch sync changes: {e}"));
+            return Err(e);
+        }
+    };
 
     // To discover known record ids if /changes is not implemented by relay
     let initial_local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
@@ -677,10 +700,10 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     let mut pulled = 0usize;
     vault.with(|conn| -> AppResult<()> {
         for (_blob_id, (remote, _cur)) in remote_blobs {
-            let local_tombstone_hlc: Option<String> = conn
-                .query_row("SELECT hlc FROM sync_log WHERE record_id=?1 AND deleted=1", [&remote.id], |r| r.get(0))
+            let local_logged_hlc: Option<String> = conn
+                .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [&remote.id], |r| r.get(0))
                 .ok();
-            let local_hlc = if let Some(thlc) = local_tombstone_hlc {
+            let local_hlc = if let Some(thlc) = local_logged_hlc {
                 thlc
             } else {
                 let local_ts: Option<i64> = match remote.table.as_str() {
