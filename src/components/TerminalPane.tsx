@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -82,6 +82,7 @@ const COMMON_SHELL_COMMANDS = [
   'grep -rnw . -e "',
   'curl -fsSL ',
 ];
+const COMMON_SHELL_COMMANDS_LOWER = COMMON_SHELL_COMMANDS.map((c) => c.toLowerCase());
 
 interface Props {
   pane: Pane;
@@ -98,7 +99,7 @@ interface Props {
   toast?: (msg: string) => void;
 }
 
-export function TerminalPane({
+export const TerminalPane = memo(function TerminalPane({
   pane,
   host,
   theme,
@@ -126,6 +127,7 @@ export function TerminalPane({
 
   // Command & Clipboard history + Autosuggestion states
   const historyCacheRef = useRef<string[]>([]);
+  const historyLowerRef = useRef<string[]>([]);
   const [showCmdSearch, setShowCmdSearch] = useState(false);
   const [showClipboard, setShowClipboard] = useState(false);
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
@@ -255,23 +257,33 @@ export function TerminalPane({
     }
     const prefixLower = prefix.toLowerCase();
 
-    // 1. Gather all candidate commands from history and common shell commands
-    const historyMatches = historyCacheRef.current.filter(
-      (cmd) => cmd.toLowerCase().startsWith(prefixLower) && cmd.length > prefix.length
-    );
-    const commonMatches = COMMON_SHELL_COMMANDS.filter(
-      (cmd) => cmd.toLowerCase().startsWith(prefixLower) && cmd.length > prefix.length
-    );
+    // 1. Check history first using precomputed lowercase array (O(1) allocation per check)
+    const historyOrig = historyCacheRef.current;
+    const historyLow = historyLowerRef.current;
+    let bestMatch: string | null = null;
 
-    const candidates = [...historyMatches, ...commonMatches];
-    if (candidates.length === 0) {
+    for (let i = 0; i < historyLow.length; i++) {
+      if (historyLow[i].startsWith(prefixLower) && historyOrig[i].length > prefix.length) {
+        bestMatch = historyOrig[i];
+        break;
+      }
+    }
+
+    // 2. Fall back to common commands if no history match
+    if (!bestMatch) {
+      for (let i = 0; i < COMMON_SHELL_COMMANDS_LOWER.length; i++) {
+        if (COMMON_SHELL_COMMANDS_LOWER[i].startsWith(prefixLower) && COMMON_SHELL_COMMANDS[i].length > prefix.length) {
+          bestMatch = COMMON_SHELL_COMMANDS[i];
+          break;
+        }
+      }
+    }
+
+    if (!bestMatch) {
       setSuggestion(null);
       setGhostPos(null);
       return;
     }
-
-    // 2. Most recent history match wins, then built-in common commands.
-    const bestMatch = candidates[0];
 
     setSuggestion({
       full: bestMatch,
@@ -313,6 +325,12 @@ export function TerminalPane({
   }, [isSerial, isLocal]);
 
   const updateGhostPos = useCallback(() => {
+    // If no suggestion is active, skip measuring and avoid re-renders (fixes H4 render storm)
+    if (!suggestionRef.current) {
+      setGhostPos((prev) => (prev !== null ? null : prev));
+      return;
+    }
+
     const term = termRef.current;
     const container = containerRef.current;
     const el = elRef.current;
@@ -360,10 +378,12 @@ export function TerminalPane({
     const x = Math.round(screenRect.left - containerRect.left + cursorX * cellWidth);
     const y = Math.round(screenRect.top - containerRect.top + cursorY * cellHeight);
 
-    setGhostPos({
-      x,
-      y,
-      cellHeight,
+    // Only set new state if coordinates or cellHeight actually changed
+    setGhostPos((prev) => {
+      if (prev && prev.x === x && prev.y === y && prev.cellHeight === cellHeight) {
+        return prev;
+      }
+      return { x, y, cellHeight };
     });
   }, []);
 
@@ -726,6 +746,7 @@ export function TerminalPane({
         }
       }
       historyCacheRef.current = cleaned;
+      historyLowerRef.current = cleaned.map((cmd) => cmd.toLowerCase());
     }).catch(() => {});
 
     // Track cursor and viewport changes to update ghost text alignment
@@ -854,8 +875,9 @@ export function TerminalPane({
       onData?.(data);
     });
 
-    // Copy on selection (Termius convenience & Clipboard history)
-    term.onSelectionChange(() => {
+    // Copy on selection mouseup (Termius convenience & Clipboard history)
+    // Copies once on mouse release to prevent thrashing clipboard & flooding DB on every drag event (fixes H8)
+    const handleMouseUpCopy = () => {
       if (term.hasSelection()) {
         const sel = term.getSelection();
         if (sel && sel.trim().length > 0) {
@@ -863,7 +885,9 @@ export function TerminalPane({
           bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
         }
       }
-    });
+    };
+    const elContainer = elRef.current;
+    elContainer?.addEventListener('mouseup', handleMouseUpCopy);
 
     registry.set({
       paneId: pane.id,
@@ -901,6 +925,7 @@ export function TerminalPane({
 
     return () => {
       genRef.current += 1;
+      elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
       ro.disconnect();
       dCursor.dispose();
       dRender.dispose();
@@ -1046,7 +1071,7 @@ export function TerminalPane({
           )}
           <span className="flex min-w-0 items-center gap-1 truncate font-mono text-slate-500">
             <FolderOpen className="h-3 w-3 shrink-0" />
-            {isSerial ? cwd : cwd}
+            {isSerial ? (pane.serialOptions?.portName ?? 'Serial') : cwd}
           </span>
           <div className="ml-auto flex items-center gap-1">
             <button
@@ -1418,7 +1443,7 @@ export function TerminalPane({
       )}
     </div>
   );
-}
+});
 
 function Overlay({ children }: { children: React.ReactNode }) {
   return (

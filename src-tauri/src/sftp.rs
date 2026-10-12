@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
-use tauri::{ipc::Channel as IpcChannel, State};
+use std::time::Instant;
+use tauri::{ipc::Channel as IpcChannel, Manager, State};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,7 +58,11 @@ impl SftpManager {
         let (session, _) = open_authenticated(&host, &secret, vault)?;
         let sftp = session.sftp()?;
         let conn = Arc::new(Mutex::new(SftpConn { _session: session, sftp }));
-        self.conns.lock().insert(session_id.to_string(), conn.clone());
+        let mut conns = self.conns.lock();
+        if let Some(existing) = conns.get(session_id) {
+            return Ok(existing.clone());
+        }
+        conns.insert(session_id.to_string(), conn.clone());
         Ok(conn)
     }
 }
@@ -92,66 +97,86 @@ pub fn sftp_list(
             })
         })
         .collect();
-    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    out.sort_by_cached_key(|e| (std::cmp::Reverse(e.is_dir), e.name.to_lowercase()));
     Ok(out)
 }
 
-#[tauri::command(async)]
-pub fn sftp_download(
+#[tauri::command]
+pub async fn sftp_download(
     session_id: String,
     remote: String,
     local: String,
     on_progress: IpcChannel<TransferProgress>,
-    mgr: State<'_, SftpManager>,
-    ssh: State<'_, SshManager>,
-    vault: State<'_, Vault>,
+    app: tauri::AppHandle,
 ) -> AppResult<()> {
-    let conn = mgr.get(&session_id, &ssh, &vault)?;
-    let c = conn.lock();
-    let mut src = c.sftp.open(Path::new(&remote))?;
-    let total = src.stat()?.size.unwrap_or(0);
-    let mut dst = std::fs::File::create(&local)?;
-    let mut buf = vec![0u8; CHUNK];
-    let mut done = 0u64;
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = app.state::<SftpManager>();
+        let ssh = app.state::<SshManager>();
+        let vault = app.state::<Vault>();
+        let conn = mgr.get(&session_id, &ssh, &vault)?;
+        let c = conn.lock();
+        let mut src = c.sftp.open(Path::new(&remote))?;
+        let total = src.stat()?.size.unwrap_or(0);
+        let mut dst = std::fs::File::create(&local)?;
+        let mut buf = vec![0u8; CHUNK];
+        let mut done = 0u64;
+        let mut last_emit = Instant::now();
+        loop {
+            let n = src.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&buf[..n])?;
+            done += n as u64;
+            if last_emit.elapsed().as_millis() >= 50 || done == total {
+                let _ = on_progress.send(TransferProgress { transferred: done, total });
+                last_emit = Instant::now();
+            }
         }
-        dst.write_all(&buf[..n])?;
-        done += n as u64;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
-    }
-    Ok(())
+        Ok::<(), AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
-#[tauri::command(async)]
-pub fn sftp_upload(
+#[tauri::command]
+pub async fn sftp_upload(
     session_id: String,
     local: String,
     remote: String,
     on_progress: IpcChannel<TransferProgress>,
-    mgr: State<'_, SftpManager>,
-    ssh: State<'_, SshManager>,
-    vault: State<'_, Vault>,
+    app: tauri::AppHandle,
 ) -> AppResult<()> {
-    let conn = mgr.get(&session_id, &ssh, &vault)?;
-    let c = conn.lock();
-    let mut src = std::fs::File::open(&local)?;
-    let total = src.metadata()?.len();
-    let mut dst = c.sftp.create(Path::new(&remote))?;
-    let mut buf = vec![0u8; CHUNK];
-    let mut done = 0u64;
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = app.state::<SftpManager>();
+        let ssh = app.state::<SshManager>();
+        let vault = app.state::<Vault>();
+        let conn = mgr.get(&session_id, &ssh, &vault)?;
+        let c = conn.lock();
+        let mut src = std::fs::File::open(&local)?;
+        let total = src.metadata()?.len();
+        let mut dst = c.sftp.create(Path::new(&remote))?;
+        let mut buf = vec![0u8; CHUNK];
+        let mut done = 0u64;
+        let mut last_emit = Instant::now();
+        loop {
+            let n = src.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&buf[..n])?;
+            done += n as u64;
+            if last_emit.elapsed().as_millis() >= 50 || done == total {
+                let _ = on_progress.send(TransferProgress { transferred: done, total });
+                last_emit = Instant::now();
+            }
         }
-        dst.write_all(&buf[..n])?;
-        done += n as u64;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
-    }
-    Ok(())
+        Ok::<(), AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 #[tauri::command(async)]

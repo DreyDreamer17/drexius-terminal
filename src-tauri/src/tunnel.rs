@@ -19,7 +19,7 @@ use crate::vault::{TunnelConfig, Vault};
 use parking_lot::Mutex;
 use serde::Serialize;
 use ssh2::Session;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -57,14 +57,31 @@ struct RunningTunnel {
 #[derive(Default)]
 pub struct TunnelManager {
     running: Mutex<HashMap<String, RunningTunnel>>,
+    starting: Mutex<HashSet<String>>,
 }
 
 impl TunnelManager {
+    #[allow(dead_code)]
     pub fn is_running(&self, id: &str) -> bool {
         self.running.lock().contains_key(id)
     }
 
+    pub fn try_claim_starting(&self, id: &str) -> bool {
+        let mut starting = self.starting.lock();
+        let running = self.running.lock();
+        if running.contains_key(id) || starting.contains(id) {
+            return false;
+        }
+        starting.insert(id.to_string());
+        true
+    }
+
+    pub fn release_starting(&self, id: &str) {
+        self.starting.lock().remove(id);
+    }
+
     pub fn stop(&self, id: &str) {
+        self.starting.lock().remove(id);
         if let Some(t) = self.running.lock().remove(id) {
             t.stop_flag.store(true, Ordering::Relaxed);
         }
@@ -115,36 +132,42 @@ pub fn tunnel_start(
     mgr: State<'_, TunnelManager>,
     vault: State<'_, Vault>,
 ) -> AppResult<ActiveTunnelInfo> {
-    if mgr.is_running(&id) {
+    if !mgr.try_claim_starting(&id) {
         return Ok(mgr.status(&id));
     }
 
-    let tunnel = vault.tunnel_get(&id)?;
-    let (host, secret) = vault.host_with_secret(&tunnel.host_id)?;
-    let (session, _) = open_authenticated(&host, &secret, &vault)?;
+    let res = (|| {
+        let tunnel = vault.tunnel_get(&id)?;
+        let (host, secret) = vault.host_with_secret(&tunnel.host_id)?;
+        let (session, _) = open_authenticated(&host, &secret, &vault)?;
 
-    match tunnel.forward_type.as_str() {
-        "remote" => spawn_remote_worker(id.clone(), session, tunnel, &mgr)?,
-        _ => {
-            // local | dynamic — bind a local TcpListener
-            let bind_addr = format!("{}:{}", tunnel.local_host, tunnel.local_port);
-            let listener = TcpListener::bind(&bind_addr)
-                .map_err(|e| AppError::Network(format!("Failed to bind {bind_addr}: {e}")))?;
-            listener
-                .set_nonblocking(true)
-                .map_err(|e| AppError::Io(e))?;
-            let local_port = tunnel.local_port;
-            spawn_local_worker(
-                id.clone(),
-                format!("tunnel-{}", &id[..8.min(id.len())]),
-                listener,
-                session,
-                tunnel,
-                local_port,
-                &mgr,
-            )?;
+        match tunnel.forward_type.as_str() {
+            "remote" => spawn_remote_worker(id.clone(), session, tunnel, &mgr)?,
+            _ => {
+                // local | dynamic — bind a local TcpListener
+                let bind_addr = format!("{}:{}", tunnel.local_host, tunnel.local_port);
+                let listener = TcpListener::bind(&bind_addr)
+                    .map_err(|e| AppError::Network(format!("Failed to bind {bind_addr}: {e}")))?;
+                listener
+                    .set_nonblocking(true)
+                    .map_err(|e| AppError::Io(e))?;
+                let local_port = tunnel.local_port;
+                spawn_local_worker(
+                    id.clone(),
+                    format!("tunnel-{}", &id[..8.min(id.len())]),
+                    listener,
+                    session,
+                    tunnel,
+                    local_port,
+                    &mgr,
+                )?;
+            }
         }
-    }
+        Ok::<(), AppError>(())
+    })();
+
+    mgr.release_starting(&id);
+    res?;
 
     Ok(mgr.status(&id))
 }
@@ -160,9 +183,12 @@ fn spawn_local_worker(
     local_port: u16,
     mgr: &TunnelManager,
 ) -> AppResult<()> {
+    session.set_blocking(false);
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let bytes_up = Arc::new(AtomicU64::new(0));
     let bytes_down = Arc::new(AtomicU64::new(0));
+    let transport_lock = Arc::new(parking_lot::Mutex::new(()));
 
     let running_tunnel = RunningTunnel {
         stop_flag: stop_flag.clone(),
@@ -178,6 +204,7 @@ fn spawn_local_worker(
     let stop = stop_flag;
     let up = bytes_up;
     let down = bytes_down;
+    let t_lock = transport_lock;
 
     thread::Builder::new()
         .name(thread_name)
@@ -190,8 +217,9 @@ fn spawn_local_worker(
                         let up_c = up.clone();
                         let down_c = down.clone();
                         let c = cfg.clone();
+                        let tl = t_lock.clone();
                         thread::spawn(move || {
-                            let _ = handle_client(stream, sess, c, stop_c, up_c, down_c);
+                            let _ = handle_client(stream, sess, c, stop_c, up_c, down_c, tl);
                         });
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -333,50 +361,55 @@ pub fn ai_tunnel_start(
     vault: State<'_, Vault>,
 ) -> AppResult<u16> {
     let tunnel_id = format!("ai_auto_{}", host_id);
-    if mgr.is_running(&tunnel_id) {
+    if !mgr.try_claim_starting(&tunnel_id) {
         let guard = mgr.running.lock();
         if let Some(t) = guard.get(&tunnel_id) {
             return Ok(t.local_port);
         }
     }
 
-    let (host, secret) = vault.host_with_secret(&host_id)?;
-    let (session, _) = open_authenticated(&host, &secret, &vault)?;
+    let res = (|| {
+        let (host, secret) = vault.host_with_secret(&host_id)?;
+        let (session, _) = open_authenticated(&host, &secret, &vault)?;
 
-    // Bind loopback on an OS-assigned port (not a fixed, guessable one).
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?;
+        // Bind loopback on an OS-assigned port (not a fixed, guessable one).
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?;
 
-    let local_port = listener.local_addr().map_err(|e| AppError::Io(e))?.port();
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| AppError::Io(e))?;
+        let local_port = listener.local_addr().map_err(|e| AppError::Io(e))?.port();
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| AppError::Io(e))?;
 
-    let cfg = TunnelConfig {
-        id: tunnel_id.clone(),
-        label: format!("AI Proxy ({})", host.label),
-        host_id: host_id.clone(),
-        forward_type: "dynamic".to_string(),
-        local_host: "127.0.0.1".to_string(),
-        local_port,
-        remote_host: "127.0.0.1".to_string(),
-        remote_port: 0,
-        updated_at: 0,
-        vault_id: None,
-    };
+        let cfg = TunnelConfig {
+            id: tunnel_id.clone(),
+            label: format!("AI Proxy ({})", host.label),
+            host_id: host_id.clone(),
+            forward_type: "dynamic".to_string(),
+            local_host: "127.0.0.1".to_string(),
+            local_port,
+            remote_host: "127.0.0.1".to_string(),
+            remote_port: 0,
+            updated_at: 0,
+            vault_id: None,
+        };
 
-    spawn_local_worker(
-        tunnel_id,
-        format!("ai-tun-{}", local_port),
-        listener,
-        session,
-        cfg,
-        local_port,
-        &mgr,
-    )?;
+        spawn_local_worker(
+            tunnel_id.clone(),
+            format!("ai-tun-{}", local_port),
+            listener,
+            session,
+            cfg,
+            local_port,
+            &mgr,
+        )?;
 
-    log::info!("AI SOCKS5 tunnel active on 127.0.0.1:{} for host {}", local_port, host_id);
-    Ok(local_port)
+        log::info!("AI SOCKS5 tunnel active on 127.0.0.1:{} for host {}", local_port, host_id);
+        Ok::<u16, AppError>(local_port)
+    })();
+
+    mgr.release_starting(&tunnel_id);
+    res
 }
 
 #[tauri::command]
@@ -393,6 +426,7 @@ fn handle_client(
     stop: Arc<AtomicBool>,
     up: Arc<AtomicU64>,
     down: Arc<AtomicU64>,
+    transport_lock: Arc<parking_lot::Mutex<()>>,
 ) -> std::io::Result<()> {
     client.set_nodelay(true)?;
 
@@ -400,7 +434,11 @@ fn handle_client(
         // Simple SOCKS5 handshake & request parser
         match socks5_handshake(&mut client) {
             Ok((dest_host, dest_port)) => {
-                match sess.channel_direct_tcpip(&dest_host, dest_port, Some(("127.0.0.1", cfg.local_port))) {
+                let open_res = {
+                    let _guard = transport_lock.lock();
+                    sess.channel_direct_tcpip(&dest_host, dest_port, Some(("127.0.0.1", cfg.local_port)))
+                };
+                match open_res {
                     Ok(ch) => {
                         // SOCKS5 success response: version 5, rep 0 (succeeded), rsv 0, atyp 1 (IPv4 0.0.0.0:0)
                         let _ = client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
@@ -418,17 +456,20 @@ fn handle_client(
         }
     } else {
         // Direct local port forward
-        match sess.channel_direct_tcpip(
-            &cfg.remote_host,
-            cfg.remote_port,
-            Some((&cfg.local_host, cfg.local_port)),
-        ) {
+        let open_res = {
+            let _guard = transport_lock.lock();
+            sess.channel_direct_tcpip(
+                &cfg.remote_host,
+                cfg.remote_port,
+                Some((&cfg.local_host, cfg.local_port)),
+            )
+        };
+        match open_res {
             Ok(ch) => ch,
             Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
         }
     };
 
-    sess.set_blocking(false);
     proxy_bidirectional(client, channel, stop, up, down);
     Ok(())
 }
@@ -571,7 +612,7 @@ fn proxy_bidirectional(
         }
 
         if !had_activity {
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(15));
         }
     }
 
@@ -653,7 +694,7 @@ fn proxy_remote_channel(
         }
 
         if !had_activity {
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(15));
         }
     }
 

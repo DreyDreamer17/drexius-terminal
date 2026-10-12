@@ -118,15 +118,25 @@ export default function App() {
 
     const startX = e.clientX;
     const startW = aiWidthRef.current;
+    let rafId = 0;
+    let pendingWidth = startW;
+
+    const apply = () => {
+      rafId = 0;
+      setAiWidth(pendingWidth);
+    };
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = moveEvent.clientX - startX;
       const maxAllowed = Math.max(380, window.innerWidth - 300);
-      const newWidth = Math.max(320, Math.min(maxAllowed, startW - deltaX));
-      setAiWidth(newWidth);
+      pendingWidth = Math.max(320, Math.min(maxAllowed, startW - deltaX));
+      if (!rafId) {
+        rafId = requestAnimationFrame(apply);
+      }
     };
 
     const onMouseUp = () => {
+      if (rafId) cancelAnimationFrame(rafId);
       setIsResizingAi(false);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
@@ -327,33 +337,45 @@ export default function App() {
     if (h) splitWith(h, pref);
   };
 
-  const closePane = (tabId: string, paneId: string) => {
+  const closePane = useCallback((tabId: string, paneId: string) => {
     bridge.sftpClose(paneId).catch(() => {});
     setTabs((ts) => {
-      const next = ts.map((t) => {
+      return ts.map((t) => {
         if (t.id !== tabId) return t;
         const panes = t.panes.filter((p) => p.id !== paneId);
-        return { ...t, panes, layout: layoutFor(panes.length, t.layout), activePaneId: t.activePaneId === paneId ? panes[0]?.id ?? '' : t.activePaneId, title: panes.length > 1 ? `${t.title.split(' +')[0]} +${panes.length - 1}` : hostMap.get(panes[0]?.hostId ?? '')?.label ?? t.title };
+        return {
+          ...t,
+          panes,
+          layout: layoutFor(panes.length, t.layout),
+          activePaneId: t.activePaneId === paneId ? panes[0]?.id ?? '' : t.activePaneId,
+          title: panes.length > 1 ? `${t.title.split(' +')[0]} +${panes.length - 1}` : hostMap.get(panes[0]?.hostId ?? '')?.label ?? t.title,
+        };
       }).filter((t) => t.panes.length);
-      if (!next.find((t) => t.id === activeTabId)) setActiveTabId(next[next.length - 1]?.id ?? null);
-      return next;
     });
-  };
+  }, [hostMap]);
 
-  const closeTab = (id: string) => {
+  const closeTab = useCallback((id: string) => {
     const target = tabs.find((t) => t.id === id);
     if (target) {
       target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
     }
-    setTabs((ts) => {
-      const i = ts.findIndex((t) => t.id === id);
-      const next = ts.filter((t) => t.id !== id);
-      if (id === activeTabId) setActiveTabId(next[Math.max(0, i - 1)]?.id ?? null);
-      return next;
-    });
-  };
+    const i = tabs.findIndex((t) => t.id === id);
+    if (id === activeTabId) {
+      const remaining = tabs.filter((t) => t.id !== id);
+      setActiveTabId(remaining[Math.max(0, i - 1)]?.id ?? null);
+    }
+    setTabs((ts) => ts.filter((t) => t.id !== id));
+  }, [tabs, activeTabId]);
 
-  const focusPane = (tabId: string, paneId: string) => setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
+  const focusPane = useCallback((tabId: string, paneId: string) => {
+    setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
+  }, []);
+
+  useEffect(() => {
+    if (activeTabId && !tabs.some((t) => t.id === activeTabId)) {
+      setActiveTabId(tabs[tabs.length - 1]?.id ?? null);
+    }
+  }, [tabs, activeTabId]);
 
   const filteredHosts = useMemo(() => {
     if (!quickFilter.trim()) return hosts;

@@ -170,7 +170,7 @@ fn detect_remote_os(sess: &Session, banner: Option<&str>) -> Option<String> {
     let _ = sess.set_timeout(4000);
     ch.exec("cat /etc/os-release 2>/dev/null; echo ---; uname -s 2>/dev/null").ok()?;
     let mut out = String::new();
-    let _ = ch.read_to_string(&mut out);
+    let _ = (&mut ch).take(64 * 1024).read_to_string(&mut out);
     let _ = ch.wait_close();
     if let Some(os) = parse_os_release(&out) {
         return Some(os);
@@ -540,7 +540,7 @@ fn io_loop(
         }
 
         if idle {
-            thread::sleep(Duration::from_millis(4));
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }

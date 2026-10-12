@@ -70,12 +70,21 @@ impl SnapshotStore {
             let ids: Vec<String> = g.dirty.drain().collect();
             ids.iter().filter_map(|id| g.live.get(id).cloned()).collect()
         };
+        let mut failed = Vec::new();
+        let mut first_err = None;
         for s in &pending {
             if let Err(e) = vault.save_snapshot(s) {
-                // put back as dirty, retry next tick (e.g. vault locked)
-                self.0.lock().dirty.insert(s.host_id.clone());
-                return Err(e);
+                failed.push(s.host_id.clone());
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
             }
+        }
+        if !failed.is_empty() {
+            self.0.lock().dirty.extend(failed);
+        }
+        if let Some(e) = first_err {
+            return Err(e);
         }
         Ok(())
     }
