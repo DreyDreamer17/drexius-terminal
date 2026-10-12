@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Sparkles,
   RefreshCw,
@@ -56,7 +56,7 @@ import {
   type ProviderSpec,
 } from '../lib/ollama';
 import { bridge } from '../lib/bridge';
-import type { AiBalanceStrategy, AiProviderConfig, Host } from '../lib/types';
+import type { AiBalanceStrategy, AiProviderConfig, Host, OpencodeHostStatus } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { CustomSelect } from './CustomSelect';
@@ -207,12 +207,14 @@ export function AIPanel({
   onClose,
   theme,
   newConnectionNonce,
+  visible,
 }: {
   activePaneId: string | null;
   toast: (m: string) => void;
   onClose?: () => void;
   theme?: NexusTheme;
   newConnectionNonce?: number;
+  visible?: boolean;
 }) {
   const [configs, setConfigs] = useState<AiProviderConfig[]>(() => loadCachedConfigs());
   const [activeProviderId, setActiveProviderId] = useState<string>(() => {
@@ -221,6 +223,8 @@ export function AIPanel({
   const [online, setOnline] = useState<boolean | null>(null);
   const [probing, setProbing] = useState(false);
   const [opencodeInstalled, setOpencodeInstalled] = useState<boolean | null>(null);
+  const [hostOpencodeStatus, setHostOpencodeStatus] = useState<OpencodeHostStatus | null>(null);
+  const [probingHostOpencode, setProbingHostOpencode] = useState(false);
   const [showCfg, setShowCfg] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
@@ -634,6 +638,49 @@ export function AIPanel({
       }
     }).catch(() => setOpencodeInstalled(false));
   }, []);
+
+  const probeHostOpencode = useCallback(async (force = false) => {
+    const p = activePaneId ? registry.get(activePaneId) : undefined;
+    const sid = p?.sessionId ?? null;
+    const hid = p?.hostId ?? null;
+    setProbingHostOpencode(true);
+    try {
+      const status = await bridge.detectOpencodeSession(sid, hid, force);
+      setHostOpencodeStatus(status);
+      if (!status.isRemote) {
+        setOpencodeInstalled(status.installed);
+      }
+    } catch {
+      setHostOpencodeStatus(null);
+    } finally {
+      setProbingHostOpencode(false);
+    }
+  }, [activePaneId]);
+
+  const installOnRemoteHost = () => {
+    const p = activePaneId ? registry.get(activePaneId) : undefined;
+    if (!p || p.status !== 'connected') {
+      toast('No active connection to host');
+      return;
+    }
+    p.send('curl -fsSL https://opencode.ai/install.sh | bash\r');
+    toast(`Installing OpenCode on ${hostOpencodeStatus?.hostLabel || 'host'}… Click refresh once complete.`);
+  };
+
+  useEffect(() => {
+    if (activeConfig.providerId === 'opencode' && visible !== false) {
+      probeHostOpencode();
+    }
+  }, [activePaneId, activeConfig.providerId, visible, newConnectionNonce, probeHostOpencode]);
+
+  useEffect(() => {
+    const unsubscribe = registry.subscribe((paneId) => {
+      if (paneId === activePaneId && activeConfig.providerId === 'opencode') {
+        probeHostOpencode();
+      }
+    });
+    return unsubscribe;
+  }, [activePaneId, activeConfig.providerId, probeHostOpencode]);
 
   useEffect(() => {
     let mounted = true;
@@ -1165,7 +1212,9 @@ export function AIPanel({
           },
         },
         abortRef.current.signal,
-        pane?.cwd
+        pane?.cwd,
+        pane?.sessionId,
+        pane?.hostId
       );
 
       const finalMsg: Msg = {
@@ -2154,6 +2203,35 @@ export function AIPanel({
         </div>
         <div className="rounded-2xl bg-white/[0.03] border border-white/10 focus-within:border-white/20 focus-within:bg-white/[0.05] transition relative">
           <div className="p-2">
+          {activeConfig.providerId === 'opencode' && hostOpencodeStatus?.isRemote && !hostOpencodeStatus.installed && (
+            <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-200">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                <span className="truncate text-[11px]">
+                  OpenCode not on <strong className="text-white">{hostOpencodeStatus.hostLabel}</strong> (using local agent)
+                </span>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={installOnRemoteHost}
+                  className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 hover:text-white font-medium text-[10px] transition cursor-pointer flex items-center gap-1"
+                  title="Run curl installer on remote host terminal"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  Install on Host
+                </button>
+                <button
+                  type="button"
+                  onClick={() => probeHostOpencode(true)}
+                  className="p-1 rounded hover:bg-white/10 text-amber-300 hover:text-white transition cursor-pointer"
+                  title="Re-check host"
+                >
+                  <RefreshCw className={cn("h-3 w-3", probingHostOpencode && "animate-spin")} />
+                </button>
+              </div>
+            </div>
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -2171,19 +2249,48 @@ export function AIPanel({
           <div className="mt-2 flex items-center justify-between gap-1.5 px-1">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               {activeConfig.providerId === 'opencode' && (
-                <button
-                  type="button"
-                  onClick={toggleOpencodeAutonomous}
-                  title={opencodeAutonomous
-                    ? 'Autonomous: OpenCode may run commands without asking (denylist applies)'
-                    : 'Read-only: OpenCode cannot edit files or run shell commands'}
-                  className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
-                    opencodeAutonomous ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:bg-white/5'
+                <>
+                  <button
+                    type="button"
+                    onClick={toggleOpencodeAutonomous}
+                    title={opencodeAutonomous
+                      ? `Autonomous: OpenCode may run commands without asking on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
+                      : 'Read-only: OpenCode cannot edit files or run shell commands'}
+                    className={cn(
+                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                      opencodeAutonomous ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:bg-white/5'
+                    )}
+                  >
+                    {opencodeAutonomous ? 'Autonomous' : 'Read-only'}
+                  </button>
+
+                  {hostOpencodeStatus?.isRemote ? (
+                    hostOpencodeStatus.installed ? (
+                      <span
+                        className="flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 shrink-0"
+                        title={`Running natively on remote host: ${hostOpencodeStatus.hostLabel}`}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
+                        <span className="truncate max-w-[100px]">{hostOpencodeStatus.hostLabel}</span>
+                      </span>
+                    ) : (
+                      <span
+                        className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 shrink-0"
+                        title={`OpenCode not on ${hostOpencodeStatus.hostLabel} (falls back to local)`}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
+                        <span>Local (Fallback)</span>
+                      </span>
+                    )
+                  ) : (
+                    <span
+                      className="flex items-center gap-1 rounded bg-white/5 border border-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300 shrink-0"
+                      title="Running on local machine"
+                    >
+                      <span>Local</span>
+                    </span>
                   )}
-                >
-                  {opencodeAutonomous ? 'Autonomous' : 'Read-only'}
-                </button>
+                </>
               )}
                             {/* Attach Context Button (+) */}
               <div className="relative shrink-0" ref={attachMenuRef}>

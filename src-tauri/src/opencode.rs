@@ -4,13 +4,29 @@
 //! and runs inference via the local `opencode run` CLI streaming stdout JSON events.
 
 use crate::ai_client::AiStreamEvent;
+use crate::ssh::SshManager;
+use crate::vault::{HostProfile, HostSecret, Vault};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tauri::State;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::oneshot;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeHostStatus {
+    pub is_remote: bool,
+    pub host_id: Option<String>,
+    pub host_label: Option<String>,
+    pub installed: bool,
+    pub binary_path: Option<String>,
+}
+
+static REMOTE_PROBE_CACHE: OnceLock<Mutex<HashMap<String, (bool, Option<String>, Instant)>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +173,116 @@ pub async fn opencode_detect() -> Result<OpencodeStatus, String> {
         installed: true,
         binary_path: Some(bin_str),
         models: all_models,
+    })
+}
+
+/// Probe whether OpenCode is installed on a remote host via SSH.
+pub async fn detect_remote_opencode(host_id: &str, vault: &Vault) -> Result<Option<String>, String> {
+    if let Some((installed, path, ts)) = REMOTE_PROBE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .get(host_id)
+    {
+        if ts.elapsed() < Duration::from_secs(60) {
+            return Ok(if *installed { path.clone() } else { None });
+        }
+    }
+
+    let (host, secret) = vault.host_with_secret(host_id).map_err(|e| e.to_string())?;
+    let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
+        .map_err(|e| format!("Failed to reach host: {}", e))?;
+    let _ = sess.set_timeout(3500);
+    let mut ch = sess
+        .channel_session()
+        .map_err(|e| format!("Failed to open channel: {}", e))?;
+    ch.exec("export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\")")
+        .map_err(|e| format!("Exec failed: {}", e))?;
+    let mut out = String::new();
+    use std::io::Read;
+    let _ = ch.read_to_string(&mut out);
+    let _ = ch.wait_close();
+    let trimmed = out.trim();
+    let result = if !trimmed.is_empty() && !trimmed.contains("not found") {
+        Some(trimmed.to_string())
+    } else {
+        None
+    };
+
+    let installed = result.is_some();
+    let path = result.clone();
+    REMOTE_PROBE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .insert(host_id.to_string(), (installed, path, Instant::now()));
+
+    Ok(result)
+}
+
+/// Invalidate cached probe status for a host (e.g. after user runs installation script).
+pub fn invalidate_remote_probe_cache(host_id: &str) {
+    if let Some(cache) = REMOTE_PROBE_CACHE.get() {
+        cache.lock().remove(host_id);
+    }
+}
+
+/// Detect whether OpenCode is installed on the active session target (remote SSH host or local).
+#[tauri::command]
+pub async fn opencode_detect_session(
+    session_id: Option<String>,
+    host_id: Option<String>,
+    force: Option<bool>,
+    ssh: State<'_, SshManager>,
+    vault: State<'_, Vault>,
+) -> Result<OpencodeHostStatus, String> {
+    let target_host_id = host_id
+        .filter(|h| h != "__local__" && !h.starts_with("local") && !h.starts_with("serial_"))
+        .or_else(|| {
+            session_id.as_deref().and_then(|sid| ssh.host_of(sid).ok())
+        });
+
+    if let Some(hid) = target_host_id {
+        if let Ok((host, _)) = vault.host_with_secret(&hid) {
+            let host_label = host.label.clone();
+
+            let force_refresh = force.unwrap_or(false);
+            if force_refresh {
+                invalidate_remote_probe_cache(&hid);
+            } else if let Some((installed, path, ts)) = REMOTE_PROBE_CACHE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .get(&hid)
+            {
+                if ts.elapsed() < Duration::from_secs(60) {
+                    return Ok(OpencodeHostStatus {
+                        is_remote: true,
+                        host_id: Some(hid),
+                        host_label: Some(host_label),
+                        installed: *installed,
+                        binary_path: path.clone(),
+                    });
+                }
+            }
+
+            let detected = detect_remote_opencode(&hid, &vault).await?;
+            let installed = detected.is_some();
+            return Ok(OpencodeHostStatus {
+                is_remote: true,
+                host_id: Some(hid),
+                host_label: Some(host_label),
+                installed,
+                binary_path: detected,
+            });
+        }
+    }
+
+    let local_bin = find_opencode_binary();
+    let installed = local_bin.is_some();
+    Ok(OpencodeHostStatus {
+        is_remote: false,
+        host_id: None,
+        host_label: None,
+        installed,
+        binary_path: local_bin.map(|p| p.to_string_lossy().into_owned()),
     })
 }
 
@@ -376,38 +502,31 @@ async fn emit_chunked_stream(
     true
 }
 
-/// Run inference via OpenCode CLI and stream tokens over Tauri Channel.
-#[tauri::command]
-pub async fn opencode_stream(
-    prompt: String,
+/// Stream OpenCode execution remotely over SSH.
+async fn opencode_stream_remote(
+    host: HostProfile,
+    secret: HostSecret,
     model: String,
+    prompt: String,
     cwd: Option<String>,
-    stream_id: Option<String>,
-    autonomous: Option<bool>,
+    autonomous: bool,
+    stream_id: String,
     channel: tauri::ipc::Channel<AiStreamEvent>,
+    mut cancel_rx: oneshot::Receiver<()>,
+    vault: &Vault,
 ) -> Result<(), String> {
-    // Autonomous mode (--auto) is opt-in. Without it, edits, web fetches and shell commands are
-    // denied outright; with it, they run unless an explicit deny rule matches.
-    let autonomous = autonomous.unwrap_or(false);
-    let bin_path = find_opencode_binary().ok_or_else(|| {
-        "OpenCode binary not found on this system. Please verify ~/.opencode/bin/opencode or PATH.".to_string()
-    })?;
+    let key_mask = if is_free_model(&model) {
+        format!("Free (Remote: {})", host.label)
+    } else {
+        let provider = model.split('/').next().unwrap_or("opencode");
+        format!("OpenCode [{}] ({})", provider, host.label)
+    };
 
-    let s_id = stream_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-    cancel_channels().lock().insert(s_id.clone(), cancel_tx);
+    let _ = channel.send(AiStreamEvent::Meta {
+        key_mask: Some(key_mask),
+        proxy_mask: None,
+    });
 
-    let _guard = CancelGuard(Some(s_id));
-
-    // Every run happens in a dedicated scratch workspace, never in the user's home directory.
-    // The `cwd` argument from the UI refers to the remote/pane shell and is intentionally ignored here.
-    let _ = cwd;
-    let workspace = ai_workspace_dir();
-    std::fs::create_dir_all(&workspace)
-        .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
-
-    // Per-run permission config, passed inline so no config file is written.
-    // Rule syntax follows OpenCode's `permission` config (edit/webfetch/bash, with pattern maps for bash).
     let permission: serde_json::Value = if autonomous {
         serde_json::from_str(r#"{
             "permission": {
@@ -462,13 +581,253 @@ pub async fn opencode_stream(
             }
         }"#).unwrap_or_default()
     } else {
-        // In read-only mode, set tools to "ask" instead of "deny".
-        // Completely denying all tools causes OpenCode to strip tools from the request payload,
-        // which triggers the free tier server-side anti-abuse error:
-        // "OpenCode's free tier can only be used from within OpenCode".
-        // With "ask", tools remain declared in the request payload, and because `--auto` is omitted
-        // in non-autonomous mode, OpenCode's non-interactive runner automatically rejects any tool
-        // execution attempt without running it.
+        serde_json::json!({
+            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
+        })
+    };
+
+    let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
+        .map_err(|e| format!("Failed to authenticate SSH for remote OpenCode: {}", e))?;
+    let _ = sess.set_timeout(30_000);
+
+    let mut ch = sess
+        .channel_session()
+        .map_err(|e| format!("Failed to open remote exec channel: {}", e))?;
+
+    let perm_json = permission.to_string();
+    let escaped_perm = perm_json.replace('\'', "'\\''");
+    let auto_flag = if autonomous { " --auto" } else { "" };
+    let dir_flag = if let Some(ref d) = cwd {
+        if !d.trim().is_empty() {
+            format!(" --dir {}", crate::ssh::shell_quote(d.trim()))
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let cmd = format!(
+        "export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \
+         BIN=$(command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\") || echo \"opencode\"); \
+         OPENCODE_CONFIG_CONTENT='{}' \"$BIN\" run --format json --thinking --pure{} -m {}{}",
+        escaped_perm,
+        auto_flag,
+        crate::ssh::shell_quote(&model),
+        dir_flag,
+    );
+
+    ch.exec(&cmd)
+        .map_err(|e| format!("Failed to execute OpenCode on remote host: {}", e))?;
+
+    use std::io::{BufRead, BufReader as StdBufReader, Write};
+    ch.write_all(prompt.as_bytes())
+        .map_err(|e| format!("Failed to send prompt to remote OpenCode stdin: {}", e))?;
+    ch.send_eof()
+        .map_err(|e| format!("Failed to send EOF to remote OpenCode stdin: {}", e))?;
+
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<Result<String, String>>(100);
+
+    let sid_short = if stream_id.len() >= 8 { &stream_id[..8] } else { &stream_id };
+    std::thread::Builder::new()
+        .name(format!("opencode-ssh-{}", sid_short))
+        .spawn(move || {
+            let mut reader = StdBufReader::new(ch);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if line_tx.blocking_send(Ok(line.clone())).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = line_tx.blocking_send(Err(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        })
+        .map_err(|e| format!("Failed to spawn reader thread: {}", e))?;
+
+    let mut had_reasoning = false;
+    let mut reasoning_done = false;
+    let mut last_error_msg: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            _ = &mut cancel_rx => {
+                let _ = sess.disconnect(Some(ssh2::DisconnectCode::ByApplication), "Cancelled", None);
+                return Ok(());
+            }
+            item = line_rx.recv() => {
+                match item {
+                    Some(Ok(line)) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        if let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) {
+                            match parsed.event_type.as_deref() {
+                                Some("reasoning") => {
+                                    if let Some(part) = parsed.part {
+                                        if let Some(text) = part.text {
+                                            if !text.is_empty() {
+                                                if !had_reasoning {
+                                                    had_reasoning = true;
+                                                    let _ = channel.send(AiStreamEvent::Data {
+                                                        text: "💭 *Thinking…*\n> ".to_string(),
+                                                    });
+                                                }
+                                                let formatted = text.replace('\n', "\n> ");
+                                                if !emit_chunked_stream(&formatted, &channel, &mut cancel_rx).await {
+                                                    return Ok(());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Some("text") => {
+                                    if let Some(part) = parsed.part {
+                                        if let Some(text) = part.text {
+                                            if !text.is_empty() {
+                                                if had_reasoning && !reasoning_done {
+                                                    reasoning_done = true;
+                                                    let _ = channel.send(AiStreamEvent::Data {
+                                                        text: "\n\n---\n\n".to_string(),
+                                                    });
+                                                }
+                                                if !emit_chunked_stream(&text, &channel, &mut cancel_rx).await {
+                                                    return Ok(());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Some("tool_use") => {
+                                    if had_reasoning && !reasoning_done {
+                                        reasoning_done = true;
+                                        let _ = channel.send(AiStreamEvent::Data {
+                                            text: "\n\n---\n\n".to_string(),
+                                        });
+                                    }
+                                    if let Some(part) = &parsed.part {
+                                        if let Some(block) = format_tool_workflow_block(part) {
+                                            let _ = channel.send(AiStreamEvent::Data { text: block });
+                                        }
+                                    }
+                                }
+                                Some("error") => {
+                                    let msg = if let Some(err_val) = &parsed.error {
+                                        if let Some(s) = err_val.as_str() {
+                                            s.to_string()
+                                        } else if let Some(o) = err_val.as_object() {
+                                            o.get("message")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("Unknown OpenCode error")
+                                                .to_string()
+                                        } else {
+                                            err_val.to_string()
+                                        }
+                                    } else {
+                                        "Unknown OpenCode error".to_string()
+                                    };
+                                    last_error_msg = Some(msg);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Some(Err(err)) => {
+                        return Err(format!("Remote OpenCode read error: {}", err));
+                    }
+                    None => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(err) = last_error_msg {
+        return Err(format!("Remote OpenCode error: {}", err));
+    }
+
+    Ok(())
+}
+
+/// Stream OpenCode execution locally in isolated scratch workspace.
+async fn opencode_stream_local(
+    prompt: String,
+    model: String,
+    autonomous: bool,
+    channel: tauri::ipc::Channel<AiStreamEvent>,
+    mut cancel_rx: oneshot::Receiver<()>,
+) -> Result<(), String> {
+    let bin_path = find_opencode_binary().ok_or_else(|| {
+        "OpenCode binary not found on this system. Please verify ~/.opencode/bin/opencode or PATH.".to_string()
+    })?;
+
+    let workspace = ai_workspace_dir();
+    std::fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
+
+    let permission: serde_json::Value = if autonomous {
+        serde_json::from_str(r#"{
+            "permission": {
+                "edit": "deny",
+                "webfetch": "deny",
+                "bash": {
+                    "*": "allow",
+                    "rm *": "deny",
+                    "/bin/rm *": "deny",
+                    "/usr/bin/rm *": "deny",
+                    "sudo *": "deny",
+                    "doas *": "deny",
+                    "su *": "deny",
+                    "pkexec *": "deny",
+                    "curl *": "deny",
+                    "wget *": "deny",
+                    "ssh *": "deny",
+                    "scp *": "deny",
+                    "sftp *": "deny",
+                    "rsync *": "deny",
+                    "nc *": "deny",
+                    "ncat *": "deny",
+                    "netcat *": "deny",
+                    "socat *": "deny",
+                    "dd *": "deny",
+                    "mkfs*": "deny",
+                    "chmod *": "deny",
+                    "chown *": "deny",
+                    "chgrp *": "deny",
+                    "kill *": "deny",
+                    "killall *": "deny",
+                    "pkill *": "deny",
+                    "bash *": "deny",
+                    "sh *": "deny",
+                    "zsh *": "deny",
+                    "dash *": "deny",
+                    "/bin/*": "deny",
+                    "/usr/bin/*": "deny",
+                    "env *": "deny",
+                    "xargs *": "deny",
+                    "find * -delete*": "deny",
+                    "find * -exec*": "deny",
+                    "python *": "deny",
+                    "python3 *": "deny",
+                    "perl *": "deny",
+                    "ruby *": "deny",
+                    "node *": "deny",
+                    "php *": "deny",
+                    "eval *": "deny",
+                    "exec *": "deny"
+                }
+            }
+        }"#).unwrap_or_default()
+    } else {
         serde_json::json!({
             "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
         })
@@ -493,15 +852,12 @@ pub async fn opencode_stream(
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // If this future is dropped (e.g. the UI closes the stream), don't leave an orphaned OpenCode process behind.
     cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn OpenCode process: {}", e))?;
 
-    // L5: drain stderr concurrently. Reading it only after stdout closes deadlocks when the child fills
-    // the stderr pipe before exiting. Keep at most 16 KB for the error message, but keep reading to EOF.
     let stderr_task = child.stderr.take().map(|mut stderr| {
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
@@ -521,7 +877,6 @@ pub async fn opencode_stream(
         })
     });
 
-    // Determine model key mask badge
     let key_mask = if is_free_model(&model) {
         "Free (Local OpenCode)".to_string()
     } else {
@@ -529,13 +884,11 @@ pub async fn opencode_stream(
         format!("OpenCode ({})", provider)
     };
 
-    // Send meta event informing frontend of local runner and provider
     let _ = channel.send(AiStreamEvent::Meta {
         key_mask: Some(key_mask),
         proxy_mask: None,
     });
 
-    // Write prompt to stdin and close stdin so OpenCode proceeds
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
             let _ = child.kill().await;
@@ -618,29 +971,26 @@ pub async fn opencode_stream(
                                 }
                                 Some("error") => {
                                     let msg = if let Some(err_val) = &parsed.error {
-                                        if let Some(m) = err_val.get("message").and_then(|v| v.as_str()) {
-                                            m.to_string()
-                                        } else if let Some(s) = err_val.as_str() {
+                                        if let Some(s) = err_val.as_str() {
                                             s.to_string()
+                                        } else if let Some(o) = err_val.as_object() {
+                                            o.get("message")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("Unknown OpenCode error")
+                                                .to_string()
                                         } else {
                                             err_val.to_string()
                                         }
-                                    } else if let Some(part) = &parsed.part {
-                                        part.text.clone().unwrap_or_else(|| trimmed.to_string())
                                     } else {
-                                        trimmed.to_string()
+                                        "Unknown OpenCode error".to_string()
                                     };
                                     last_error_msg = Some(msg);
-                                }
-                                Some("step_finish") => {
-                                    // Finished step successfully
                                 }
                                 _ => {}
                             }
                         }
                     }
                     Ok(None) => {
-                        // EOF
                         break;
                     }
                     Err(e) => {
@@ -673,4 +1023,66 @@ pub async fn opencode_stream(
     }
 
     Ok(())
+}
+
+/// Run inference via OpenCode CLI and stream tokens over Tauri Channel.
+/// Dynamically routes to remote OpenCode on the active host if installed,
+/// otherwise falls back to local execution.
+#[tauri::command]
+pub async fn opencode_stream(
+    prompt: String,
+    model: String,
+    cwd: Option<String>,
+    stream_id: Option<String>,
+    autonomous: Option<bool>,
+    session_id: Option<String>,
+    host_id: Option<String>,
+    channel: tauri::ipc::Channel<AiStreamEvent>,
+    ssh: State<'_, SshManager>,
+    vault: State<'_, Vault>,
+) -> Result<(), String> {
+    let s_id = stream_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    cancel_channels().lock().insert(s_id.clone(), cancel_tx);
+    let _guard = CancelGuard(Some(s_id.clone()));
+
+    let autonomous = autonomous.unwrap_or(false);
+
+    // Resolve target remote host either via explicit host_id or via active session_id
+    let target_host_id = host_id
+        .filter(|h| h != "__local__" && !h.starts_with("local") && !h.starts_with("serial_"))
+        .or_else(|| {
+            session_id.as_deref().and_then(|sid| ssh.host_of(sid).ok())
+        });
+
+    if let Some(ref hid) = target_host_id {
+        // Check if remote OpenCode is installed on that host
+        if let Ok(Some(_remote_bin)) = detect_remote_opencode(hid, &vault).await {
+            let (host, secret) = vault.host_with_secret(hid).map_err(|e| e.to_string())?;
+            return opencode_stream_remote(
+                host,
+                secret,
+                model,
+                prompt,
+                cwd,
+                autonomous,
+                s_id,
+                channel,
+                cancel_rx,
+                &vault,
+            )
+            .await;
+        } else {
+            // OpenCode is not installed on the remote host — notify UI of local fallback
+            if let Ok((host, _)) = vault.host_with_secret(hid) {
+                let _ = channel.send(AiStreamEvent::Meta {
+                    key_mask: Some(format!("Local Agent (OpenCode not on {})", host.label)),
+                    proxy_mask: None,
+                });
+            }
+        }
+    }
+
+    // Fall back to local OpenCode execution
+    opencode_stream_local(prompt, model, autonomous, channel, cancel_rx).await
 }

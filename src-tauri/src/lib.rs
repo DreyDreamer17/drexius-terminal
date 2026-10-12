@@ -177,6 +177,7 @@ pub fn run() {
             // local filesystem operations for agent
             // opencode integration
             opencode::opencode_detect,
+            opencode::opencode_detect_session,
             opencode::opencode_stream,
             opencode::opencode_stream_cancel,
         ])

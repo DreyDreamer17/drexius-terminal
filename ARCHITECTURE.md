@@ -167,7 +167,7 @@ ai_client::ai_stream_proxy
 
 ## 6. OpenCode agent & serial UART
 
-* **OpenCode CLI (`opencode.rs`):** executes background inference and multi-step tool workflows via local `opencode` binary. Runs inside an isolated scratch workspace (`~/NexusTerminal/ai-workspace`), never in the user's home directory. Emits live token streams and formatted `opencode_workflow` activity blocks. In read-only mode, tools default to non-interactive reject; in autonomous mode, shell commands are protected by an extensive denylist against subshell escapes, dangerous binaries, and privilege escalation.
+* **OpenCode CLI (`opencode.rs`):** executes background inference and multi-step tool workflows via local or remote `opencode` binary. When connected to an active SSH session, NexusTerminal detects whether OpenCode is installed on the remote host (`opencode_detect_session`). If installed on the remote machine, it executes natively over an SSH exec channel streaming structured JSON events from the server; if not detected on the host, it gracefully falls back to local execution and presents a notice with a one-click host installer (`curl -fsSL https://opencode.ai/install.sh | bash`). Local runs operate inside an isolated scratch workspace (`~/NexusTerminal/ai-workspace`). In read-only mode, tools default to non-interactive reject; in autonomous mode, shell commands are protected by an extensive denylist against subshell escapes, dangerous binaries, and privilege escalation.
 * **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
 **Known limitations**
