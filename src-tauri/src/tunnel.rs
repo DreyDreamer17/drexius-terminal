@@ -631,6 +631,14 @@ fn proxy_remote_channel(
     bytes_up: Arc<AtomicU64>,
     bytes_down: Arc<AtomicU64>,
 ) {
-    // Traffic directions flipped: channel->local is "up", local->channel is "down".
-    proxy_bidirectional(local, channel, stop, bytes_down, bytes_up);
+    // In remote forwarding, the direction is inverted relative to local forwarding:
+    //   • channel -> local: remote client inbound request (displayed as "up" in UI)
+    //   • local -> channel: local service response (displayed as "down" in UI)
+    // In proxy_bidirectional:
+    //   • param 4 tracks local -> channel
+    //   • param 5 tracks channel -> local
+    // Therefore, we pass (bytes_down, bytes_up) so the UI counters reflect actual traffic accurately.
+    let local_to_channel_counter = bytes_down;
+    let channel_to_local_counter = bytes_up;
+    proxy_bidirectional(local, channel, stop, local_to_channel_counter, channel_to_local_counter);
 }

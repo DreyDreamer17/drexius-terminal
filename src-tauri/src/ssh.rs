@@ -127,8 +127,17 @@ const OS_MAP: &[(&str, &[&str])] = &[
 fn normalize_os_id(id: &str) -> Option<String> {
     let s = id.trim().to_lowercase();
     for (key, tokens) in OS_MAP {
-        if tokens.iter().any(|tok| s.contains(tok) || s == *tok) {
-            return Some((*key).to_string());
+        for &tok in *tokens {
+            // Short identifiers ("mac", "arch", "linux") require exact match or word-token match
+            // to prevent false positives like "machine", "research", or "hierarchy".
+            let matched = if tok == "mac" || tok == "arch" || tok == "linux" {
+                s == tok || s.split(&[' ', '-', '_', '/', '.'][..]).any(|w| w == tok)
+            } else {
+                s.contains(tok) || s == tok
+            };
+            if matched {
+                return Some((*key).to_string());
+            }
         }
     }
     None

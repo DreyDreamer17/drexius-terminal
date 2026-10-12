@@ -355,17 +355,17 @@ export default function App() {
   }, [hostMap]);
 
   const closeTab = useCallback((id: string) => {
-    const target = tabs.find((t) => t.id === id);
-    if (target) {
-      target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
-    }
-    const i = tabs.findIndex((t) => t.id === id);
-    if (id === activeTabId) {
-      const remaining = tabs.filter((t) => t.id !== id);
-      setActiveTabId(remaining[Math.max(0, i - 1)]?.id ?? null);
-    }
-    setTabs((ts) => ts.filter((t) => t.id !== id));
-  }, [tabs, activeTabId]);
+    setTabs((ts) => {
+      const i = ts.findIndex((t) => t.id === id);
+      const target = ts[i];
+      if (target) {
+        target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
+      }
+      const remaining = ts.filter((t) => t.id !== id);
+      setActiveTabId((curr) => (curr === id ? remaining[Math.max(0, i - 1)]?.id ?? null : curr));
+      return remaining;
+    });
+  }, []);
 
   const focusPane = useCallback((tabId: string, paneId: string) => {
     setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
