@@ -393,15 +393,65 @@ fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppRes
             out.push(r.map_err(AppError::Db)?);
         }
     }
+
+    // Also include deletion tombstones from sync_log so peer devices receive deletions
+    if let Ok(mut del_stmt) = conn.prepare("SELECT record_id, tbl, hlc FROM sync_log WHERE deleted = 1") {
+        if let Ok(del_rows) = del_stmt.query_map([], |row| {
+            Ok(SyncRecord {
+                table: row.get(1)?,
+                id: row.get(0)?,
+                hlc: row.get(2)?,
+                deleted: true,
+                body: serde_json::Value::Null,
+            })
+        }) {
+            for r in del_rows.flatten() {
+                out.push(r);
+            }
+        }
+    }
+
     Ok(out)
 }
 
 /// Apply a remote SyncRecord to the local database using HLC last-writer-wins.
 fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResult<()> {
     if rec.deleted {
-        // Soft delete is not implemented per-table; just leave as-is for safety.
+        match rec.table.as_str() {
+            "hosts" => {
+                let _ = conn.execute("DELETE FROM hosts WHERE id=?1", [&rec.id]);
+            }
+            "snippets" => {
+                let _ = conn.execute("DELETE FROM snippets WHERE id=?1", [&rec.id]);
+            }
+            "keychain" => {
+                let _ = conn.execute("DELETE FROM keychain WHERE id=?1", [&rec.id]);
+                let _ = conn.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&rec.id]);
+            }
+            "tunnels" => {
+                let _ = conn.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id]);
+            }
+            "vaults" => {
+                if rec.id != "personal" {
+                    let _ = conn.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = conn.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = conn.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = conn.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = conn.execute("DELETE FROM vaults WHERE id=?1", [&rec.id]);
+                }
+            }
+            _ => {}
+        }
+        let _ = conn.execute(
+            "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 1)
+             ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
+            rusqlite::params![rec.id, rec.table, rec.hlc],
+        );
         return Ok(());
     }
+
+    let _ = conn.execute("DELETE FROM sync_log WHERE record_id=?1", [&rec.id]);
+
     let obj = match &rec.body {
         serde_json::Value::Object(o) => o,
         _ => return Ok(()),
@@ -615,19 +665,29 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     let mut pulled = 0usize;
     vault.with(|conn| -> AppResult<()> {
         for (_blob_id, (remote, _cur)) in remote_blobs {
-            let local_ts: Option<i64> = match remote.table.as_str() {
-                "hosts" | "snippets" | "keychain" | "tunnels" => conn
-                    .query_row(
-                        &format!("SELECT updated_at FROM {} WHERE id=?1", remote.table),
-                        [&remote.id],
-                        |r| r.get(0),
-                    )
-                    .ok(),
-                _ => None,
-            };
-            let local_hlc = match local_ts {
-                Some(ts) if ts > 0 => format!("{}:0:{}", ts * 1000, device_id),
-                _ => "0:0:".to_string(),
+            let local_tombstone_hlc: Option<String> = conn
+                .query_row("SELECT hlc FROM sync_log WHERE record_id=?1 AND deleted=1", [&remote.id], |r| r.get(0))
+                .ok();
+            let local_hlc = if let Some(thlc) = local_tombstone_hlc {
+                thlc
+            } else {
+                let local_ts: Option<i64> = match remote.table.as_str() {
+                    "hosts" | "snippets" | "keychain" | "tunnels" => conn
+                        .query_row(
+                            &format!("SELECT updated_at FROM {} WHERE id=?1", remote.table),
+                            [&remote.id],
+                            |r| r.get(0),
+                        )
+                        .ok(),
+                    "vaults" => conn
+                        .query_row("SELECT created_at FROM vaults WHERE id=?1", [&remote.id], |r| r.get(0))
+                        .ok(),
+                    _ => None,
+                };
+                match local_ts {
+                    Some(ts) if ts > 0 => format!("{}:0:{}", ts * 1000, device_id),
+                    _ => "0:0:".to_string(),
+                }
             };
             if hlc_wins(&remote.hlc, &local_hlc) {
                 apply_remote_record(conn, &remote)?;

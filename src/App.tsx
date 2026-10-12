@@ -407,24 +407,39 @@ export default function App() {
   // ── Shortcuts ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setQuick(false); setShowThemes(false); setPanel(null); setModal(null); return; }
+      if (e.key === 'Escape') {
+        if (quick || showThemes || panel || modal || showAutoLockMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          setQuick(false);
+          setShowThemes(false);
+          setPanel(null);
+          setModal(null);
+          setShowAutoLockMenu(false);
+        }
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      if (isInput) return;
+
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
-      if (!e.shiftKey && k === 't') { e.preventDefault(); openLocalTerminal(); return; }
-      if (k === 'k') { e.preventDefault(); toggleQuick(); return; }
+      if (!e.shiftKey && k === 't') { e.preventDefault(); e.stopPropagation(); openLocalTerminal(); return; }
+      if (k === 'k') { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
       if (!e.shiftKey) return;
-      if (k === 'i') { e.preventDefault(); setBroadcast((b) => !b); }
-      else if (k === 'd') { e.preventDefault(); splitActive('vertical'); }
-      else if (k === 'e') { e.preventDefault(); splitActive('horizontal'); }
-      else if (k === 'a') { e.preventDefault(); setShowAI((v) => !v); }
-      else if (k === 'f') { e.preventDefault(); setShowSftp((v) => !v); }
-      else if (k === 'z') { e.preventDefault(); setZen((v) => !v); }
-      else if (k === 'b') { e.preventDefault(); setShowRail((v) => !v); }
-      else if (k === '/') { e.preventDefault(); setShowStatusBar((v) => !v); }
+      if (k === 'i') { e.preventDefault(); e.stopPropagation(); setBroadcast((b) => !b); }
+      else if (k === 'd') { e.preventDefault(); e.stopPropagation(); splitActive('vertical'); }
+      else if (k === 'e') { e.preventDefault(); e.stopPropagation(); splitActive('horizontal'); }
+      else if (k === 'a') { e.preventDefault(); e.stopPropagation(); setShowAI((v) => !v); }
+      else if (k === 'f') { e.preventDefault(); e.stopPropagation(); setShowSftp((v) => !v); }
+      else if (k === 'z') { e.preventDefault(); e.stopPropagation(); setZen((v) => !v); }
+      else if (k === 'b') { e.preventDefault(); e.stopPropagation(); setShowRail((v) => !v); }
+      else if (k === '/') { e.preventDefault(); e.stopPropagation(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal, broadcast, tabs]);
+  }, [toggleQuick, openLocalTerminal, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret) => { await bridge.saveHost(h, s); setModal(null); toast(`Saved ${h.label} to vault`); refresh(); };
