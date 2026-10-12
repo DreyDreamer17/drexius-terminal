@@ -468,6 +468,171 @@ async fn emit_chunked_stream(
     true
 }
 
+const AUTONOMOUS_PERMISSION_JSON: &str = r#"{
+    "permission": {
+        "edit": "deny",
+        "webfetch": "deny",
+        "bash": {
+            "*": "allow",
+            "rm *": "deny",
+            "/bin/rm *": "deny",
+            "/usr/bin/rm *": "deny",
+            "sudo *": "deny",
+            "doas *": "deny",
+            "su *": "deny",
+            "pkexec *": "deny",
+            "curl *": "deny",
+            "wget *": "deny",
+            "ssh *": "deny",
+            "scp *": "deny",
+            "sftp *": "deny",
+            "rsync *": "deny",
+            "nc *": "deny",
+            "ncat *": "deny",
+            "netcat *": "deny",
+            "socat *": "deny",
+            "dd *": "deny",
+            "mkfs*": "deny",
+            "chmod *": "deny",
+            "chown *": "deny",
+            "chgrp *": "deny",
+            "kill *": "deny",
+            "killall *": "deny",
+            "pkill *": "deny",
+            "bash *": "deny",
+            "sh *": "deny",
+            "zsh *": "deny",
+            "dash *": "deny",
+            "/bin/*": "deny",
+            "/usr/bin/*": "deny",
+            "env *": "deny",
+            "xargs *": "deny",
+            "find * -delete*": "deny",
+            "find * -exec*": "deny",
+            "python *": "deny",
+            "python3 *": "deny",
+            "perl *": "deny",
+            "ruby *": "deny",
+            "node *": "deny",
+            "php *": "deny",
+            "eval *": "deny",
+            "exec *": "deny"
+        }
+    }
+}"#;
+
+fn get_permission_config(autonomous: bool) -> serde_json::Value {
+    if autonomous {
+        serde_json::from_str(AUTONOMOUS_PERMISSION_JSON).unwrap_or_default()
+    } else {
+        serde_json::json!({
+            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
+        })
+    }
+}
+
+struct OpenCodeStreamState {
+    had_reasoning: bool,
+    reasoning_done: bool,
+    last_error_msg: Option<String>,
+}
+
+impl OpenCodeStreamState {
+    fn new() -> Self {
+        Self {
+            had_reasoning: false,
+            reasoning_done: false,
+            last_error_msg: None,
+        }
+    }
+
+    async fn handle_line(
+        &mut self,
+        line: &str,
+        channel: &tauri::ipc::Channel<AiStreamEvent>,
+        cancel_rx: &mut oneshot::Receiver<()>,
+    ) -> Result<bool, ()> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(true);
+        }
+        let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) else {
+            return Ok(true);
+        };
+
+        match parsed.event_type.as_deref() {
+            Some("reasoning") => {
+                if let Some(part) = parsed.part {
+                    if let Some(text) = part.text {
+                        if !text.is_empty() {
+                            if !self.had_reasoning {
+                                self.had_reasoning = true;
+                                let _ = channel.send(AiStreamEvent::Data {
+                                    text: "💭 *Thinking…*\n> ".to_string(),
+                                });
+                            }
+                            let formatted = text.replace('\n', "\n> ");
+                            if !emit_chunked_stream(&formatted, channel, cancel_rx).await {
+                                return Err(());
+                            }
+                        }
+                    }
+                }
+            }
+            Some("text") => {
+                if let Some(part) = parsed.part {
+                    if let Some(text) = part.text {
+                        if !text.is_empty() {
+                            if self.had_reasoning && !self.reasoning_done {
+                                self.reasoning_done = true;
+                                let _ = channel.send(AiStreamEvent::Data {
+                                    text: "\n\n---\n\n".to_string(),
+                                });
+                            }
+                            if !emit_chunked_stream(&text, channel, cancel_rx).await {
+                                return Err(());
+                            }
+                        }
+                    }
+                }
+            }
+            Some("tool_use") => {
+                if self.had_reasoning && !self.reasoning_done {
+                    self.reasoning_done = true;
+                    let _ = channel.send(AiStreamEvent::Data {
+                        text: "\n\n---\n\n".to_string(),
+                    });
+                }
+                if let Some(part) = &parsed.part {
+                    if let Some(block) = format_tool_workflow_block(part) {
+                        let _ = channel.send(AiStreamEvent::Data { text: block });
+                    }
+                }
+            }
+            Some("error") => {
+                let msg = if let Some(err_val) = &parsed.error {
+                    if let Some(s) = err_val.as_str() {
+                        s.to_string()
+                    } else if let Some(o) = err_val.as_object() {
+                        o.get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown OpenCode error")
+                            .to_string()
+                    } else {
+                        err_val.to_string()
+                    }
+                } else {
+                    "Unknown OpenCode error".to_string()
+                };
+                self.last_error_msg = Some(msg);
+            }
+            _ => {}
+        }
+
+        Ok(true)
+    }
+}
+
 /// Stream OpenCode execution remotely over SSH.
 async fn opencode_stream_remote(
     host: HostProfile,
@@ -493,64 +658,7 @@ async fn opencode_stream_remote(
         proxy_mask: None,
     });
 
-    let permission: serde_json::Value = if autonomous {
-        serde_json::from_str(r#"{
-            "permission": {
-                "edit": "deny",
-                "webfetch": "deny",
-                "bash": {
-                    "*": "allow",
-                    "rm *": "deny",
-                    "/bin/rm *": "deny",
-                    "/usr/bin/rm *": "deny",
-                    "sudo *": "deny",
-                    "doas *": "deny",
-                    "su *": "deny",
-                    "pkexec *": "deny",
-                    "curl *": "deny",
-                    "wget *": "deny",
-                    "ssh *": "deny",
-                    "scp *": "deny",
-                    "sftp *": "deny",
-                    "rsync *": "deny",
-                    "nc *": "deny",
-                    "ncat *": "deny",
-                    "netcat *": "deny",
-                    "socat *": "deny",
-                    "dd *": "deny",
-                    "mkfs*": "deny",
-                    "chmod *": "deny",
-                    "chown *": "deny",
-                    "chgrp *": "deny",
-                    "kill *": "deny",
-                    "killall *": "deny",
-                    "pkill *": "deny",
-                    "bash *": "deny",
-                    "sh *": "deny",
-                    "zsh *": "deny",
-                    "dash *": "deny",
-                    "/bin/*": "deny",
-                    "/usr/bin/*": "deny",
-                    "env *": "deny",
-                    "xargs *": "deny",
-                    "find * -delete*": "deny",
-                    "find * -exec*": "deny",
-                    "python *": "deny",
-                    "python3 *": "deny",
-                    "perl *": "deny",
-                    "ruby *": "deny",
-                    "node *": "deny",
-                    "php *": "deny",
-                    "eval *": "deny",
-                    "exec *": "deny"
-                }
-            }
-        }"#).unwrap_or_default()
-    } else {
-        serde_json::json!({
-            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
-        })
-    };
+    let permission = get_permission_config(autonomous);
 
     let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
         .map_err(|e| format!("Failed to authenticate SSH for remote OpenCode: {}", e))?;
@@ -561,7 +669,6 @@ async fn opencode_stream_remote(
         .map_err(|e| format!("Failed to open remote exec channel: {}", e))?;
 
     let perm_json = permission.to_string();
-    let escaped_perm = perm_json.replace('\'', "'\\''");
     let auto_flag = if autonomous { " --auto" } else { "" };
     let dir_flag = if let Some(ref d) = cwd {
         if !d.trim().is_empty() {
@@ -576,8 +683,8 @@ async fn opencode_stream_remote(
     let cmd = format!(
         "export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \
          BIN=$(command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\") || echo \"opencode\"); \
-         OPENCODE_CONFIG_CONTENT='{}' \"$BIN\" run --format json --thinking --pure{} -m {}{}",
-        escaped_perm,
+         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure{} -m {}{}",
+        crate::ssh::shell_quote(&perm_json),
         auto_flag,
         crate::ssh::shell_quote(&model),
         dir_flag,
@@ -618,9 +725,7 @@ async fn opencode_stream_remote(
         })
         .map_err(|e| format!("Failed to spawn reader thread: {}", e))?;
 
-    let mut had_reasoning = false;
-    let mut reasoning_done = false;
-    let mut last_error_msg: Option<String> = None;
+    let mut state = OpenCodeStreamState::new();
 
     loop {
         tokio::select! {
@@ -631,79 +736,8 @@ async fn opencode_stream_remote(
             item = line_rx.recv() => {
                 match item {
                     Some(Ok(line)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) {
-                            match parsed.event_type.as_deref() {
-                                Some("reasoning") => {
-                                    if let Some(part) = parsed.part {
-                                        if let Some(text) = part.text {
-                                            if !text.is_empty() {
-                                                if !had_reasoning {
-                                                    had_reasoning = true;
-                                                    let _ = channel.send(AiStreamEvent::Data {
-                                                        text: "💭 *Thinking…*\n> ".to_string(),
-                                                    });
-                                                }
-                                                let formatted = text.replace('\n', "\n> ");
-                                                if !emit_chunked_stream(&formatted, &channel, &mut cancel_rx).await {
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Some("text") => {
-                                    if let Some(part) = parsed.part {
-                                        if let Some(text) = part.text {
-                                            if !text.is_empty() {
-                                                if had_reasoning && !reasoning_done {
-                                                    reasoning_done = true;
-                                                    let _ = channel.send(AiStreamEvent::Data {
-                                                        text: "\n\n---\n\n".to_string(),
-                                                    });
-                                                }
-                                                if !emit_chunked_stream(&text, &channel, &mut cancel_rx).await {
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Some("tool_use") => {
-                                    if had_reasoning && !reasoning_done {
-                                        reasoning_done = true;
-                                        let _ = channel.send(AiStreamEvent::Data {
-                                            text: "\n\n---\n\n".to_string(),
-                                        });
-                                    }
-                                    if let Some(part) = &parsed.part {
-                                        if let Some(block) = format_tool_workflow_block(part) {
-                                            let _ = channel.send(AiStreamEvent::Data { text: block });
-                                        }
-                                    }
-                                }
-                                Some("error") => {
-                                    let msg = if let Some(err_val) = &parsed.error {
-                                        if let Some(s) = err_val.as_str() {
-                                            s.to_string()
-                                        } else if let Some(o) = err_val.as_object() {
-                                            o.get("message")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("Unknown OpenCode error")
-                                                .to_string()
-                                        } else {
-                                            err_val.to_string()
-                                        }
-                                    } else {
-                                        "Unknown OpenCode error".to_string()
-                                    };
-                                    last_error_msg = Some(msg);
-                                }
-                                _ => {}
-                            }
+                        if state.handle_line(&line, &channel, &mut cancel_rx).await.is_err() {
+                            return Ok(());
                         }
                     }
                     Some(Err(err)) => {
@@ -717,7 +751,7 @@ async fn opencode_stream_remote(
         }
     }
 
-    if let Some(err) = last_error_msg {
+    if let Some(err) = state.last_error_msg {
         return Err(format!("Remote OpenCode error: {}", err));
     }
 
@@ -740,64 +774,7 @@ async fn opencode_stream_local(
     std::fs::create_dir_all(&workspace)
         .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
 
-    let permission: serde_json::Value = if autonomous {
-        serde_json::from_str(r#"{
-            "permission": {
-                "edit": "deny",
-                "webfetch": "deny",
-                "bash": {
-                    "*": "allow",
-                    "rm *": "deny",
-                    "/bin/rm *": "deny",
-                    "/usr/bin/rm *": "deny",
-                    "sudo *": "deny",
-                    "doas *": "deny",
-                    "su *": "deny",
-                    "pkexec *": "deny",
-                    "curl *": "deny",
-                    "wget *": "deny",
-                    "ssh *": "deny",
-                    "scp *": "deny",
-                    "sftp *": "deny",
-                    "rsync *": "deny",
-                    "nc *": "deny",
-                    "ncat *": "deny",
-                    "netcat *": "deny",
-                    "socat *": "deny",
-                    "dd *": "deny",
-                    "mkfs*": "deny",
-                    "chmod *": "deny",
-                    "chown *": "deny",
-                    "chgrp *": "deny",
-                    "kill *": "deny",
-                    "killall *": "deny",
-                    "pkill *": "deny",
-                    "bash *": "deny",
-                    "sh *": "deny",
-                    "zsh *": "deny",
-                    "dash *": "deny",
-                    "/bin/*": "deny",
-                    "/usr/bin/*": "deny",
-                    "env *": "deny",
-                    "xargs *": "deny",
-                    "find * -delete*": "deny",
-                    "find * -exec*": "deny",
-                    "python *": "deny",
-                    "python3 *": "deny",
-                    "perl *": "deny",
-                    "ruby *": "deny",
-                    "node *": "deny",
-                    "php *": "deny",
-                    "eval *": "deny",
-                    "exec *": "deny"
-                }
-            }
-        }"#).unwrap_or_default()
-    } else {
-        serde_json::json!({
-            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
-        })
-    };
+    let permission = get_permission_config(autonomous);
 
     let mut cmd = tokio::process::Command::new(&bin_path);
     cmd.arg("run")
@@ -866,9 +843,7 @@ async fn opencode_stream_local(
     let stdout = child.stdout.take().ok_or("Failed to capture OpenCode stdout")?;
     let mut lines = BufReader::new(stdout).lines();
 
-    let mut had_reasoning = false;
-    let mut reasoning_done = false;
-    let mut last_error_msg: Option<String> = None;
+    let mut state = OpenCodeStreamState::new();
 
     loop {
         tokio::select! {
@@ -879,81 +854,9 @@ async fn opencode_stream_local(
             line_res = lines.next_line() => {
                 match line_res {
                     Ok(Some(line)) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) {
-                            match parsed.event_type.as_deref() {
-                                Some("reasoning") => {
-                                    if let Some(part) = parsed.part {
-                                        if let Some(text) = part.text {
-                                            if !text.is_empty() {
-                                                if !had_reasoning {
-                                                    had_reasoning = true;
-                                                    let _ = channel.send(AiStreamEvent::Data {
-                                                        text: "💭 *Thinking…*\n> ".to_string(),
-                                                    });
-                                                }
-                                                let formatted = text.replace('\n', "\n> ");
-                                                if !emit_chunked_stream(&formatted, &channel, &mut cancel_rx).await {
-                                                    let _ = child.kill().await;
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Some("text") => {
-                                    if let Some(part) = parsed.part {
-                                        if let Some(text) = part.text {
-                                            if !text.is_empty() {
-                                                if had_reasoning && !reasoning_done {
-                                                    reasoning_done = true;
-                                                    let _ = channel.send(AiStreamEvent::Data {
-                                                        text: "\n\n---\n\n".to_string(),
-                                                    });
-                                                }
-                                                if !emit_chunked_stream(&text, &channel, &mut cancel_rx).await {
-                                                    let _ = child.kill().await;
-                                                    return Ok(());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Some("tool_use") => {
-                                    if had_reasoning && !reasoning_done {
-                                        reasoning_done = true;
-                                        let _ = channel.send(AiStreamEvent::Data {
-                                            text: "\n\n---\n\n".to_string(),
-                                        });
-                                    }
-                                    if let Some(part) = &parsed.part {
-                                        if let Some(block) = format_tool_workflow_block(part) {
-                                            let _ = channel.send(AiStreamEvent::Data { text: block });
-                                        }
-                                    }
-                                }
-                                Some("error") => {
-                                    let msg = if let Some(err_val) = &parsed.error {
-                                        if let Some(s) = err_val.as_str() {
-                                            s.to_string()
-                                        } else if let Some(o) = err_val.as_object() {
-                                            o.get("message")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("Unknown OpenCode error")
-                                                .to_string()
-                                        } else {
-                                            err_val.to_string()
-                                        }
-                                    } else {
-                                        "Unknown OpenCode error".to_string()
-                                    };
-                                    last_error_msg = Some(msg);
-                                }
-                                _ => {}
-                            }
+                        if state.handle_line(&line, &channel, &mut cancel_rx).await.is_err() {
+                            let _ = child.kill().await;
+                            return Ok(());
                         }
                     }
                     Ok(None) => {
@@ -975,7 +878,7 @@ async fn opencode_stream_local(
 
     if !status.success() {
         let mut err_msg = format!("OpenCode exited with status {}", status);
-        if let Some(err_text) = last_error_msg {
+        if let Some(err_text) = state.last_error_msg {
             err_msg = format!("{}: {}", err_msg, err_text);
         }
         if let Some(task) = stderr_task {

@@ -195,9 +195,8 @@ fn select(
         let best = cands
             .iter()
             .copied()
-            .min_by_key(|i| stat(&mut p, is_key, i).cooldown_until)
-            .unwrap();
-        return Some(best.clone());
+            .min_by_key(|i| stat(&mut p, is_key, i).cooldown_until);
+        return best.cloned();
     }
     if avail.len() == 1 {
         return Some(avail[0].clone());
@@ -437,6 +436,19 @@ fn build_client(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<re
     builder.build().map_err(|e| e.to_string())
 }
 
+/// Cache client instances by (proxy, timeout) to preserve HTTP connection pools and TLS session caches.
+fn client_for(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
+    static CLIENT_CACHE: OnceLock<Mutex<HashMap<(Option<String>, Option<u64>), reqwest::Client>>> = OnceLock::new();
+    let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string), timeout_secs);
+    if let Some(c) = cache.lock().get(&key) {
+        return Ok(c.clone());
+    }
+    let c = build_client(proxy_url, timeout_secs)?;
+    cache.lock().insert(key, c.clone());
+    Ok(c)
+}
+
 fn format_reqwest_error(e: reqwest::Error) -> String {
     let mut chain = String::new();
     let mut source = std::error::Error::source(&e);
@@ -528,7 +540,7 @@ async fn send_with_failover(
             }
         };
 
-        let client = match build_client(proxy.as_deref(), timeout_secs) {
+        let client = match client_for(proxy.as_deref(), timeout_secs) {
             Ok(c) => c,
             Err(e) => {
                 if let Some(p) = &proxy {
@@ -573,7 +585,10 @@ async fn send_with_failover(
                                 "Quota hit in current region. Rotating proxy...".to_string(),
                                 mask_proxy(p),
                             ),
-                            _ => unreachable!(),
+                            _ => (
+                                "Rate limit encountered. Retrying with next available route...".to_string(),
+                                String::new(),
+                            ),
                         };
                         emit(AiStreamEvent::Failover { reason, next });
                         continue;

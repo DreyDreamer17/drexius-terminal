@@ -165,7 +165,7 @@ pub struct HostProfile {
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
-#[derive(Default, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Default, Clone, Deserialize, Zeroize, ZeroizeOnDrop)]
 #[serde(rename_all = "camelCase")]
 pub struct HostSecret {
     pub password: Option<String>,

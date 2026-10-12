@@ -107,38 +107,31 @@ impl SshManager {
 // Connection helpers (shared with sftp.rs)
 // ─────────────────────────────────────────────────────────────────────────────
 
+const OS_MAP: &[(&str, &[&str])] = &[
+    ("ubuntu", &["ubuntu"]),
+    ("debian", &["debian", "raspbian"]),
+    ("arch", &["arch", "manjaro", "endeavour"]),
+    ("fedora", &["fedora"]),
+    ("centos", &["centos", "rhel", "red hat"]),
+    ("rocky", &["rocky", "alma"]),
+    ("alpine", &["alpine"]),
+    ("amazon", &["amazon"]),
+    ("suse", &["opensuse", "suse"]),
+    ("macos", &["darwin", "macos", "mac"]),
+    ("windows", &["windows", "mingw", "msys", "cygwin"]),
+    ("linux", &["linux", "gnu/linux"]),
+];
+
 /// Normalize a distro id (`/etc/os-release` ID= / banner token) to a short key
 /// the frontend maps to an icon. Unknown → None (UI shows generic server).
 fn normalize_os_id(id: &str) -> Option<String> {
     let s = id.trim().to_lowercase();
-    let key = if s.contains("ubuntu") {
-        "ubuntu"
-    } else if s.contains("debian") || s.contains("raspbian") {
-        "debian"
-    } else if s.contains("arch") || s.contains("manjaro") || s.contains("endeavour") {
-        "arch"
-    } else if s.contains("fedora") {
-        "fedora"
-    } else if s.contains("centos") || s.contains("rhel") || s.contains("red hat") {
-        "centos"
-    } else if s.contains("rocky") || s.contains("alma") {
-        "rocky"
-    } else if s.contains("alpine") {
-        "alpine"
-    } else if s.contains("amazon") {
-        "amazon"
-    } else if s.contains("opensuse") || s.contains("suse") {
-        "suse"
-    } else if s.contains("darwin") || s.contains("macos") || s == "mac" {
-        "macos"
-    } else if s.contains("windows") || s.contains("mingw") || s.contains("msys") || s.contains("cygwin") {
-        "windows"
-    } else if s == "linux" || s.contains("gnu/linux") {
-        "linux"
-    } else {
-        return None;
-    };
-    Some(key.to_string())
+    for (key, tokens) in OS_MAP {
+        if tokens.iter().any(|tok| s.contains(tok) || s == *tok) {
+            return Some((*key).to_string());
+        }
+    }
+    None
 }
 
 fn parse_os_release(text: &str) -> Option<String> {
@@ -205,74 +198,67 @@ fn open_authenticated_inner(
         )));
     }
 
-    let tcp = if let Some(jump_id) = &host.jump_host_id {
-        let trimmed_jump = jump_id.trim();
-        if !trimmed_jump.is_empty() {
-            if !visited.insert(trimmed_jump.to_string()) {
-                return Err(AppError::Other(format!(
-                    "Jump host cycle detected involving host ID '{trimmed_jump}'"
-                )));
-            }
-            // Retrieve Jump Host profile and secret
-            let (jump_host, jump_secret) = vault.host_with_secret(trimmed_jump)?;
-            // Authenticate jump session (handles nested jumps with cycle prevention)
-            let (jump_sess, _) = open_authenticated_inner(&jump_host, &jump_secret, vault, visited, depth + 1)?;
+    let tcp = if let Some(trimmed_jump) = host.jump_host_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !visited.insert(trimmed_jump.to_string()) {
+            return Err(AppError::Other(format!(
+                "Jump host cycle detected involving host ID '{trimmed_jump}'"
+            )));
+        }
+        // Retrieve Jump Host profile and secret
+        let (jump_host, jump_secret) = vault.host_with_secret(trimmed_jump)?;
+        // Authenticate jump session (handles nested jumps with cycle prevention)
+        let (jump_sess, _) = open_authenticated_inner(&jump_host, &jump_secret, vault, visited, depth + 1)?;
 
-            // Bind ephemeral loopback listener
-            let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                .map_err(|e| AppError::Network(format!("Failed to bind jump proxy listener: {e}")))?;
-            let local_addr = listener.local_addr()?;
-            let target_host = host.hostname.clone();
-            let target_port = host.port;
-            let jump_sess_clone = jump_sess.clone();
+        // Bind ephemeral loopback listener
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| AppError::Network(format!("Failed to bind jump proxy listener: {e}")))?;
+        let local_addr = listener.local_addr()?;
+        let target_host = host.hostname.clone();
+        let target_port = host.port;
+        let jump_sess_clone = jump_sess.clone();
 
-            // Run proxy for the direct-tcpip channel
-            std::thread::Builder::new()
-                .name(format!("jump-proxy-{}", &host.id[..8.min(host.id.len())]))
-                .spawn(move || {
-                    if let Ok((mut client_stream, _)) = listener.accept() {
-                        let _ = client_stream.set_nodelay(true);
-                        if let Ok(mut channel) = jump_sess_clone.channel_direct_tcpip(&target_host, target_port, None) {
-                            let mut client_clone = match client_stream.try_clone() {
-                                Ok(c) => c,
-                                Err(_) => return,
-                            };
-                            let mut channel_clone = channel.clone();
-                            std::thread::spawn(move || {
-                                let mut buf = [0u8; 8192];
-                                while let Ok(n) = channel_clone.read(&mut buf) {
-                                    if n == 0 || client_clone.write_all(&buf[..n]).is_err() {
-                                        break;
-                                    }
-                                }
-                            });
+        // Run proxy for the direct-tcpip channel
+        std::thread::Builder::new()
+            .name(format!("jump-proxy-{}", &host.id[..8.min(host.id.len())]))
+            .spawn(move || {
+                if let Ok((mut client_stream, _)) = listener.accept() {
+                    let _ = client_stream.set_nodelay(true);
+                    if let Ok(mut channel) = jump_sess_clone.channel_direct_tcpip(&target_host, target_port, None) {
+                        let mut client_clone = match client_stream.try_clone() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        let mut channel_clone = channel.clone();
+                        std::thread::spawn(move || {
                             let mut buf = [0u8; 8192];
-                            while let Ok(n) = client_stream.read(&mut buf) {
-                                if n == 0 || channel.write_all(&buf[..n]).is_err() {
+                            while let Ok(n) = channel_clone.read(&mut buf) {
+                                if n == 0 || client_clone.write_all(&buf[..n]).is_err() {
                                     break;
                                 }
                             }
+                        });
+                        let mut buf = [0u8; 8192];
+                        while let Ok(n) = client_stream.read(&mut buf) {
+                            if n == 0 || channel.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
                         }
                     }
-                })
-                .map_err(|e| AppError::Io(e))?;
+                }
+            })
+            .map_err(AppError::Io)?;
 
-            // Connect local TcpStream to the forwarded loopback port
-            let tcp = TcpStream::connect_timeout(&local_addr, Duration::from_secs(10))
-                .map_err(|e| AppError::Network(format!("Failed to connect to jump proxy: {e}")))?;
-            tcp.set_nodelay(true)?;
-            tcp
-        } else {
-            let addr = (host.hostname.as_str(), host.port)
-                .to_socket_addrs()
-                .map_err(|e| AppError::Network(format!("DNS lookup failed: {e}")))?
-                .next()
-                .ok_or_else(|| AppError::Network("no address resolved".into()))?;
-
-            let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-                .map_err(|e| AppError::Network(format!("{addr}: {e}")))?;
-            tcp.set_nodelay(true)?;
-            tcp
+        // Connect local TcpStream to the forwarded loopback port
+        match TcpStream::connect_timeout(&local_addr, Duration::from_secs(10)) {
+            Ok(s) => {
+                s.set_nodelay(true)?;
+                s
+            }
+            Err(e) => {
+                // Connect failed - poke listener so thread doesn't hang indefinitely
+                let _ = TcpStream::connect(&local_addr);
+                return Err(AppError::Network(format!("Failed to connect to jump proxy: {e}")));
+            }
         }
     } else {
         let addr = (host.hostname.as_str(), host.port)
@@ -608,6 +594,11 @@ impl Osc7Parser {
                 (4, b) if self.acc.len() < 4096 => {
                     self.acc.push(b);
                     4
+                }
+                (4, _) => {
+                    // Overflow cap reached (> 4KB cwd) - reset accumulator cleanly
+                    self.acc.clear();
+                    0
                 }
                 (_, 0x1b) => 1,
                 _ => 0,

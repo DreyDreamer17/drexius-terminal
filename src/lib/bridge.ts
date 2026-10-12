@@ -45,6 +45,9 @@ const uid = () => crypto.randomUUID();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function b64ToBytes(b64: string): Uint8Array {
+  if (typeof (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array }).fromBase64 === 'function') {
+    return (Uint8Array as unknown as { fromBase64: (s: string) => Uint8Array }).fromBase64(b64);
+  }
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -126,13 +129,19 @@ async function deriveDemoKey(password: string, salt: Uint8Array) {
 }
 
 const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const fromB64 = (s: string) => b64ToBytes(s);
 
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
 async function persistDemo() {
   if (!demo || !demoKey) return;
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
-  localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+  if (persistTimer !== null) return;
+  persistTimer = setTimeout(async () => {
+    persistTimer = null;
+    if (!demo || !demoKey) return;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
+    localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+  }, 100);
 }
 
 function need(): DemoState {
