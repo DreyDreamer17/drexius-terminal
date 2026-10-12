@@ -339,6 +339,19 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+fn add_column_if_missing(conn: &Connection, table: &str, col: &str, col_type: &str) -> rusqlite::Result<()> {
+    let pragma_sql = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&pragma_sql)?;
+    let col_exists: bool = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|name| name.eq_ignore_ascii_case(col));
+    if !col_exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {col_type}"), [])?;
+    }
+    Ok(())
+}
+
 impl Vault {
     pub fn new(path: PathBuf) -> Self {
         Self { path, inner: Mutex::new(None) }
@@ -389,32 +402,35 @@ impl Vault {
             .map_err(|_| AppError::BadMasterPassword)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         conn.execute_batch(SCHEMA)?;
+
         // Migrations: gated by SQLite user_version so ALTER TABLE statements only run once
         let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
         if user_version < 2 {
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS vaults (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal', color TEXT, description TEXT, created_at INTEGER NOT NULL)", []);
-            let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
-            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
-            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
-            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
-            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN startup_command TEXT", []);
-            let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-            let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-            let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", []);
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", []);
-            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN use_proxies INTEGER NOT NULL DEFAULT 0", []);
-            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_urls TEXT NOT NULL DEFAULT '[]'", []);
-            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_strategy TEXT NOT NULL DEFAULT 'p2c'", []);
-            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_proxy INTEGER NOT NULL DEFAULT 0", []);
-            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_host_id TEXT", []);
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []);
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS command_history (id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0)", []);
-            let _ = conn.execute("CREATE TABLE IF NOT EXISTS clipboard_history (id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL, line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)", []);
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("CREATE TABLE IF NOT EXISTS vaults (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal', color TEXT, description TEXT, created_at INTEGER NOT NULL)", [])?;
+            tx.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", [])?;
+            add_column_if_missing(&tx, "hosts", "os", "TEXT")?;
+            add_column_if_missing(&tx, "hosts", "keychain_id", "TEXT")?;
+            add_column_if_missing(&tx, "hosts", "jump_host_id", "TEXT")?;
+            add_column_if_missing(&tx, "hosts", "vault_id", "TEXT DEFAULT 'personal'")?;
+            add_column_if_missing(&tx, "hosts", "startup_command", "TEXT")?;
+            add_column_if_missing(&tx, "keychain", "vault_id", "TEXT DEFAULT 'personal'")?;
+            add_column_if_missing(&tx, "tunnels", "vault_id", "TEXT DEFAULT 'personal'")?;
+            add_column_if_missing(&tx, "snippets", "vault_id", "TEXT DEFAULT 'personal'")?;
+            tx.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", [])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", [])?;
+            add_column_if_missing(&tx, "ai_configs", "use_proxies", "INTEGER NOT NULL DEFAULT 0")?;
+            add_column_if_missing(&tx, "ai_configs", "proxy_urls", "TEXT NOT NULL DEFAULT '[]'")?;
+            add_column_if_missing(&tx, "ai_configs", "proxy_strategy", "TEXT NOT NULL DEFAULT 'p2c'")?;
+            add_column_if_missing(&tx, "ai_configs", "auto_ssh_proxy", "INTEGER NOT NULL DEFAULT 0")?;
+            add_column_if_missing(&tx, "ai_configs", "auto_ssh_host_id", "TEXT")?;
+            tx.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS command_history (id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0)", [])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS clipboard_history (id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL, line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)", [])?;
             // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
-            let _ = import_hosts_keys_internal(&conn);
-            let _ = conn.execute("PRAGMA user_version = 2", []);
+            let _ = import_hosts_keys_internal(&tx);
+            tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
         } else {
             let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
         }
@@ -777,19 +793,67 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
                 params![profile.id, s.password, s.private_key, s.passphrase],
             )?;
         }
-        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&profile.id]);
+        let _ = log_sync_mutation(c, "hosts", &profile.id);
         Ok(profile.id.clone())
     })
 }
 
+/// Advances HLC monotonically and logs a mutation in `sync_log`.
+pub fn log_sync_mutation(conn: &Connection, tbl: &str, record_id: &str) -> rusqlite::Result<()> {
+    let prev_hlc: Option<String> = conn
+        .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [record_id], |r| r.get(0))
+        .ok();
+    let (prev_ms, prev_ctr) = if let Some(ref h) = prev_hlc {
+        let mut p = h.splitn(3, ':');
+        let ms = p.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let ctr = p.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        (ms, ctr)
+    } else {
+        (0, 0)
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let (next_ms, next_ctr) = if now_ms > prev_ms {
+        (now_ms, 0)
+    } else if now_ms == prev_ms {
+        (now_ms, prev_ctr + 1)
+    } else {
+        (prev_ms, prev_ctr + 1)
+    };
+    let next_hlc = format!("{next_ms}:{next_ctr}:local");
+    conn.execute(
+        "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 0)
+         ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=0",
+        params![record_id, tbl, next_hlc],
+    )?;
+    Ok(())
+}
+
 /// Records a deletion tombstone in `sync_log` so sync engines propagate the removal to peers.
 pub fn log_sync_deletion(conn: &Connection, tbl: &str, record_id: &str) -> rusqlite::Result<()> {
+    let prev_hlc: Option<String> = conn
+        .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [record_id], |r| r.get(0))
+        .ok();
+    let (prev_ms, prev_ctr) = if let Some(ref h) = prev_hlc {
+        let mut p = h.splitn(3, ':');
+        let ms = p.next().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        let ctr = p.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        (ms, ctr)
+    } else {
+        (0, 0)
+    };
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let hlc = format!("{now_ms}:0:local");
+    let (next_ms, next_ctr) = if now_ms > prev_ms {
+        (now_ms, 0)
+    } else if now_ms == prev_ms {
+        (now_ms, prev_ctr + 1)
+    } else {
+        (prev_ms, prev_ctr + 1)
+    };
+    let next_hlc = format!("{next_ms}:{next_ctr}:local");
     conn.execute(
         "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 1)
          ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
-        params![record_id, tbl, hlc],
+        params![record_id, tbl, next_hlc],
     )?;
     Ok(())
 }
@@ -845,7 +909,7 @@ pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult
                 input.password, input.private_key, input.passphrase, input.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
-        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&id]);
+        let _ = log_sync_mutation(c, "keychain", &id);
         Ok(id)
     })
 }
@@ -1712,7 +1776,7 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
                 tunnel.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
-        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&tunnel.id]);
+        let _ = log_sync_mutation(c, "tunnels", &tunnel.id);
         Ok(tunnel.id.clone())
     })
 }
@@ -1761,7 +1825,7 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
                 snippet.vault_id.unwrap_or_else(|| "personal".into()), now()
             ],
         )?;
-        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&snippet.id]);
+        let _ = log_sync_mutation(c, "snippets", &snippet.id);
         Ok(snippet.id.clone())
     })
 }
@@ -1820,7 +1884,7 @@ pub fn vault_save(mut record: VaultRecord, vault: State<'_, Vault>) -> AppResult
              ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
             params![record.id, record.name, record.kind, record.color, record.description, record.created_at],
         )?;
-        let _ = c.execute("DELETE FROM sync_log WHERE record_id=?1", [&record.id]);
+        let _ = log_sync_mutation(c, "vaults", &record.id);
         Ok(record.id)
     })
 }
@@ -2014,40 +2078,46 @@ pub async fn team_vault_import(
 
         let vault = app.state::<Vault>();
         vault.with(|c| {
-            c.execute(
+            let tx = c.unchecked_transaction()?;
+
+            tx.execute(
                 "INSERT INTO vaults(id, name, kind, color, description, created_at)
                  VALUES(?1, ?2, 'team', ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
                 params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
             )?;
 
+            // Pass 1: determine mapped IDs for ALL incoming hosts before writing any records
+            // to ensure forward references in jump_host_id can never resolve to unrelated local hosts.
             let mut host_id_map: HashMap<String, String> = HashMap::new();
-
             for h in &payload.hosts {
-                // Check if this host id already exists in a different vault or has an attached secret
-                let is_collision = c.query_row(
+                let is_collision = tx.query_row(
                     "SELECT vault_id FROM hosts WHERE id = ?1",
                     [&h.id],
                     |r| r.get::<_, String>(0),
                 ).optional()?;
 
-                let has_secret: bool = c.query_row(
+                let has_secret: bool = tx.query_row(
                     "SELECT 1 FROM secrets WHERE host_id = ?1",
                     [&h.id],
                     |_| Ok(true),
                 ).optional()?.unwrap_or(false);
 
                 let host_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
-                    let new_id = uuid::Uuid::new_v4().to_string();
-                    host_id_map.insert(h.id.clone(), new_id.clone());
-                    new_id
+                    uuid::Uuid::new_v4().to_string()
                 } else {
                     h.id.clone()
                 };
+                host_id_map.insert(h.id.clone(), host_id);
+            }
+
+            // Pass 2: write host records with internal references fully mapped
+            for h in &payload.hosts {
+                let host_id = host_id_map.get(&h.id).cloned().unwrap_or_else(|| h.id.clone());
 
                 // Imported hosts should only bind to keychains that exist within this team vault
                 let safe_keychain_id = if let Some(ref kid) = h.keychain_id {
-                    let exists: bool = c.query_row(
+                    let exists: bool = tx.query_row(
                         "SELECT 1 FROM keychain WHERE id = ?1 AND vault_id = ?2",
                         params![kid, payload.vault.id],
                         |_| Ok(true),
@@ -2057,11 +2127,11 @@ pub async fn team_vault_import(
                     None
                 };
 
-                let jump_id = h.jump_host_id.as_ref().map(|jid| {
-                    host_id_map.get(jid).cloned().unwrap_or_else(|| jid.clone())
+                let jump_id = h.jump_host_id.as_ref().and_then(|jid| {
+                    host_id_map.get(jid).cloned()
                 });
 
-                c.execute(
+                tx.execute(
                     "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                      ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
@@ -2078,7 +2148,7 @@ pub async fn team_vault_import(
             }
 
             for s in &payload.snippets {
-                let snip_collision = c.query_row(
+                let snip_collision = tx.query_row(
                     "SELECT vault_id FROM snippets WHERE id = ?1",
                     [&s.id],
                     |r| r.get::<_, String>(0),
@@ -2089,7 +2159,7 @@ pub async fn team_vault_import(
                     s.id.clone()
                 };
 
-                c.execute(
+                tx.execute(
                     "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
@@ -2097,7 +2167,7 @@ pub async fn team_vault_import(
             }
 
             for t in &payload.tunnels {
-                let tun_collision = c.query_row(
+                let tun_collision = tx.query_row(
                     "SELECT vault_id FROM tunnels WHERE id = ?1",
                     [&t.id],
                     |r| r.get::<_, String>(0),
@@ -2109,7 +2179,7 @@ pub async fn team_vault_import(
                 };
                 let mapped_host_id = host_id_map.get(&t.host_id).cloned().unwrap_or_else(|| t.host_id.clone());
 
-                c.execute(
+                tx.execute(
                     "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                      ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
@@ -2124,6 +2194,7 @@ pub async fn team_vault_import(
             // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's
             // API keys, and importing must never overwrite this user's own AI settings.
 
+            tx.commit()?;
             Ok(payload.vault.id)
         })
     })

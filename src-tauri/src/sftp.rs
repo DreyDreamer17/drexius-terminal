@@ -117,21 +117,37 @@ pub async fn sftp_download(
         let c = conn.lock();
         let mut src = c.sftp.open(Path::new(&remote))?;
         let total = src.stat()?.size.unwrap_or(0);
-        let mut dst = std::fs::File::create(&local)?;
+        let temp_local = format!("{}.nexus-{}.part", local, uuid::Uuid::new_v4());
+        let mut dst = std::fs::File::create(&temp_local)?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
+        let loop_result: AppResult<()> = (|| {
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+                done += n as u64;
+                if last_emit.elapsed().as_millis() >= 50 || done == total {
+                    let _ = on_progress.send(TransferProgress { transferred: done, total });
+                    last_emit = Instant::now();
+                }
             }
-            dst.write_all(&buf[..n])?;
-            done += n as u64;
-            if last_emit.elapsed().as_millis() >= 50 || done == total {
-                let _ = on_progress.send(TransferProgress { transferred: done, total });
-                last_emit = Instant::now();
-            }
+            dst.sync_all()?;
+            Ok(())
+        })();
+
+        if let Err(e) = loop_result {
+            let _ = std::fs::remove_file(&temp_local);
+            return Err(e);
+        }
+        drop(dst);
+
+        if let Err(e) = std::fs::rename(&temp_local, &local) {
+            let _ = std::fs::remove_file(&temp_local);
+            return Err(AppError::Io(e));
         }
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -156,21 +172,41 @@ pub async fn sftp_upload(
         let c = conn.lock();
         let mut src = std::fs::File::open(&local)?;
         let total = src.metadata()?.len();
-        let mut dst = c.sftp.create(Path::new(&remote))?;
+        let temp_remote = format!("{}.nexus-{}.part", remote, uuid::Uuid::new_v4());
+        let mut dst = c.sftp.create(Path::new(&temp_remote))?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
+        let loop_result: AppResult<()> = (|| {
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+                done += n as u64;
+                if last_emit.elapsed().as_millis() >= 50 || done == total {
+                    let _ = on_progress.send(TransferProgress { transferred: done, total });
+                    last_emit = Instant::now();
+                }
             }
-            dst.write_all(&buf[..n])?;
-            done += n as u64;
-            if last_emit.elapsed().as_millis() >= 50 || done == total {
-                let _ = on_progress.send(TransferProgress { transferred: done, total });
-                last_emit = Instant::now();
-            }
+            dst.flush()?;
+            Ok(())
+        })();
+
+        if let Err(e) = loop_result {
+            let _ = c.sftp.unlink(Path::new(&temp_remote));
+            return Err(e);
+        }
+        drop(dst);
+
+        if let Err(e) = c.sftp.rename(
+            Path::new(&temp_remote),
+            Path::new(&remote),
+            Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
+        ) {
+            let _ = c.sftp.unlink(Path::new(&temp_remote));
+            return Err(AppError::from(e));
         }
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -211,17 +247,23 @@ pub fn sftp_read_text(
     ssh: State<'_, SshManager>,
     vault: State<'_, Vault>,
 ) -> AppResult<String> {
+    const MAX_EDITOR_BYTES: usize = 5 * 1024 * 1024;
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
     let mut file = c.sftp.open(Path::new(&path))?;
     let stat = file.stat()?;
     if let Some(sz) = stat.size {
-        if sz > 5 * 1024 * 1024 {
+        if sz > MAX_EDITOR_BYTES as u64 {
             return Err(AppError::Other("File is too large to open in editor (maximum 5 MB)".into()));
         }
     }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let capacity = stat.size.unwrap_or(0).min(MAX_EDITOR_BYTES as u64) as usize;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut limited = file.take((MAX_EDITOR_BYTES + 1) as u64);
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_EDITOR_BYTES {
+        return Err(AppError::Other("File is too large to open in editor (maximum 5 MB)".into()));
+    }
     let text = String::from_utf8(bytes)
         .map_err(|e| AppError::Other(format!("File is not valid UTF-8 text: {e}")))?;
     Ok(text)
@@ -238,9 +280,20 @@ pub fn sftp_write_text(
 ) -> AppResult<()> {
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
-    let mut file = c.sftp.create(Path::new(&path))?;
-    file.write_all(content.as_bytes())?;
-    file.flush()?;
+    let temp_remote = format!("{}.nexus-{}.part", path, uuid::Uuid::new_v4());
+    {
+        let mut file = c.sftp.create(Path::new(&temp_remote))?;
+        file.write_all(content.as_bytes())?;
+        file.flush()?;
+    }
+    if let Err(e) = c.sftp.rename(
+        Path::new(&temp_remote),
+        Path::new(&path),
+        Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
+    ) {
+        let _ = c.sftp.unlink(Path::new(&temp_remote));
+        return Err(AppError::from(e));
+    }
     Ok(())
 }
 
