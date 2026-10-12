@@ -66,8 +66,26 @@ const LOCAL_HOST: Host = {
   os: 'linux',
 };
 
+/** Auto-lock timeouts in minutes. 0 means off. */
+const AUTO_LOCK_OPTIONS = [0, 5, 15, 30, 60] as const;
+const AUTO_LOCK_STORAGE_KEY = 'nx.autolock_minutes';
+const AUTO_LOCK_DEFAULT = 15;
+
+function readAutoLockMinutes(): number {
+  try {
+    const raw = Number(localStorage.getItem(AUTO_LOCK_STORAGE_KEY));
+    if (localStorage.getItem(AUTO_LOCK_STORAGE_KEY) !== null && (AUTO_LOCK_OPTIONS as readonly number[]).includes(raw)) {
+      return raw;
+    }
+  } catch {
+    /* storage unavailable: fall through to default */
+  }
+  return AUTO_LOCK_DEFAULT;
+}
+
 export default function App() {
   const [unlocked, setUnlocked] = useState(false);
+  const [autoLockMinutes, setAutoLockMinutes] = useState<number>(readAutoLockMinutes);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
@@ -413,7 +431,37 @@ export default function App() {
 
   const lock = async () => { setTabs([]); setActiveTabId(null); await bridge.lock(); setUnlocked(false); };
 
-  if (!unlocked) return <LockScreen onUnlocked={() => setUnlocked(true)} theme={theme} />;
+  // M6: auto-lock after a period with no user input (mouse, touch, scroll or key press in the app).
+  // Only the vault is locked: root key cleared, tabs and SSH sessions left running, and the same
+  // screen is shown on return. Terminal output doesn't count as input, so a long build can't keep it open.
+  // The timeout is user-configurable (0 = off). It's stored in localStorage: it isn't secret, and the vault is locked at startup.
+  const autoLock = async () => {
+    await bridge.lock();
+    setUnlocked(false);
+  };
+
+  useEffect(() => {
+    if (!unlocked || autoLockMinutes <= 0) return;
+    const AUTO_LOCK_MS = autoLockMinutes * 60 * 1000;
+    const events = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart'] as const;
+    let timer: number | undefined;
+    const arm = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void autoLock();
+      }, AUTO_LOCK_MS);
+    };
+    events.forEach((e) => window.addEventListener(e, arm, { passive: true }));
+    arm();
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      events.forEach((e) => window.removeEventListener(e, arm));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlocked, autoLockMinutes]);
+
+  // The app stays mounted while locked, so terminals, SSH sessions and open tabs survive a lock.
+  // The lock screen covers it and the app is made inert, so nothing underneath can be focused or typed into.
 
   const live = registry.all();
   const connected = live.filter((p) => p.status === 'connected').length;
@@ -431,7 +479,14 @@ export default function App() {
   ];
 
   return (
+    <>
+    {!unlocked && (
+      <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
+        <LockScreen onUnlocked={() => setUnlocked(true)} theme={theme} />
+      </div>
+    )}
     <div
+      inert={!unlocked}
       className="flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
       style={{ background: theme.xterm.background }}
     >
@@ -669,6 +724,22 @@ export default function App() {
                 <QrCode className="h-4 w-4" />
               </button>
               <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
+              <select
+                title="Auto-lock after inactivity"
+                aria-label="Auto-lock after inactivity"
+                value={autoLockMinutes}
+                onChange={(e) => {
+                  const m = Number(e.target.value);
+                  setAutoLockMinutes(m);
+                  try { localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(m)); } catch { /* storage unavailable */ }
+                }}
+                className="h-8 rounded-xl border border-white/5 bg-white/[0.04] px-2 text-[11px] text-slate-300 focus:outline-none"
+              >
+                <option value={0}>Auto-lock: off</option>
+                {AUTO_LOCK_OPTIONS.filter((m) => m > 0).map((m) => (
+                  <option key={m} value={m}>Auto-lock: {m} min</option>
+                ))}
+              </select>
               <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
             </div>
           </nav>
@@ -1080,6 +1151,7 @@ export default function App() {
       )}
       {toastMsg && <div className="nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>
+    </>
   );
 }
 

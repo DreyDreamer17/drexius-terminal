@@ -307,6 +307,14 @@ impl Drop for CancelGuard {
     }
 }
 
+/// Dedicated scratch directory for OpenCode runs (created on demand).
+fn ai_workspace_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("NexusTerminal")
+        .join("ai-workspace")
+}
+
 /// Cancel an ongoing OpenCode stream if running.
 #[tauri::command]
 pub async fn opencode_stream_cancel(stream_id: String) -> Result<(), String> {
@@ -374,8 +382,12 @@ pub async fn opencode_stream(
     model: String,
     cwd: Option<String>,
     stream_id: Option<String>,
+    autonomous: Option<bool>,
     channel: tauri::ipc::Channel<AiStreamEvent>,
 ) -> Result<(), String> {
+    // Autonomous mode (--auto) is opt-in. Without it, edits, web fetches and shell commands are
+    // denied outright; with it, they run unless an explicit deny rule matches.
+    let autonomous = autonomous.unwrap_or(false);
     let bin_path = find_opencode_binary().ok_or_else(|| {
         "OpenCode binary not found on this system. Please verify ~/.opencode/bin/opencode or PATH.".to_string()
     })?;
@@ -386,43 +398,91 @@ pub async fn opencode_stream(
 
     let _guard = CancelGuard(Some(s_id));
 
+    // Every run happens in a dedicated scratch workspace, never in the user's home directory.
+    // The `cwd` argument from the UI refers to the remote/pane shell and is intentionally ignored here.
+    let _ = cwd;
+    let workspace = ai_workspace_dir();
+    std::fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
+
+    // Per-run permission config, passed inline so no config file is written.
+    // Rule syntax follows OpenCode's `permission` config (edit/webfetch/bash, with pattern maps for bash).
+    let permission = if autonomous {
+        serde_json::json!({
+            "permission": {
+                "edit": "deny",
+                "webfetch": "deny",
+                "bash": {
+                    "*": "allow",
+                    "rm *": "deny",
+                    "sudo *": "deny",
+                    "curl *": "deny",
+                    "wget *": "deny",
+                    "ssh *": "deny",
+                    "scp *": "deny",
+                    "nc *": "deny",
+                    "dd *": "deny",
+                    "mkfs*": "deny",
+                    "chmod *": "deny",
+                    "chown *": "deny",
+                    "kill *": "deny",
+                    "killall *": "deny",
+                    "pkill *": "deny"
+                }
+            }
+        })
+    } else {
+        serde_json::json!({
+            "permission": { "edit": "deny", "webfetch": "deny", "bash": "deny" }
+        })
+    };
+
     let mut cmd = tokio::process::Command::new(&bin_path);
     cmd.arg("run")
         .arg("--format")
         .arg("json")
         .arg("--thinking")
-        .arg("--auto")
-        .arg("-m")
-        .arg(&model);
-
-    let target_dir = match &cwd {
-        Some(dir) => {
-            let expanded = if dir.starts_with("~/") {
-                dirs::home_dir().map(|h| h.join(&dir[2..])).unwrap_or_else(|| PathBuf::from(dir))
-            } else {
-                PathBuf::from(dir)
-            };
-            if expanded.is_dir() {
-                Some(expanded)
-            } else {
-                dirs::home_dir()
-            }
-        }
-        None => dirs::home_dir(),
-    };
-
-    if let Some(dir) = &target_dir {
-        cmd.arg("--dir").arg(dir);
-        cmd.current_dir(dir);
+        .arg("--pure");
+    if autonomous {
+        cmd.arg("--auto");
     }
+    cmd.arg("-m")
+        .arg(&model)
+        .env("OPENCODE_CONFIG_CONTENT", permission.to_string())
+        .arg("--dir")
+        .arg(&workspace)
+        .current_dir(&workspace);
 
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // If this future is dropped (e.g. the UI closes the stream), don't leave an orphaned OpenCode process behind.
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn OpenCode process: {}", e))?;
+
+    // L5: drain stderr concurrently. Reading it only after stdout closes deadlocks when the child fills
+    // the stderr pipe before exiting. Keep at most 16 KB for the error message, but keep reading to EOF.
+    let stderr_task = child.stderr.take().map(|mut stderr| {
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut kept: Vec<u8> = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                match stderr.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if kept.len() < 16 * 1024 {
+                            kept.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                }
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        })
+    });
 
     // Determine model key mask badge
     let key_mask = if is_free_model(&model) {
@@ -545,11 +605,11 @@ pub async fn opencode_stream(
 
     if !status.success() {
         let mut err_msg = format!("OpenCode exited with status {}", status);
-        if let Some(mut stderr) = child.stderr.take() {
-            let mut err_buf = String::new();
-            use tokio::io::AsyncReadExt;
-            if stderr.read_to_string(&mut err_buf).await.is_ok() && !err_buf.trim().is_empty() {
-                err_msg = format!("{}: {}", err_msg, err_buf.trim());
+        if let Some(task) = stderr_task {
+            if let Ok(err_buf) = task.await {
+                if !err_buf.trim().is_empty() {
+                    err_msg = format!("{}: {}", err_msg, err_buf.trim());
+                }
             }
         }
         return Err(err_msg);

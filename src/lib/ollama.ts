@@ -949,6 +949,16 @@ export function formatMessagesForOpencode(messages: ChatMsg[]): string {
   return parts.join('\n\n');
 }
 
+/** Autonomous (`--auto`) OpenCode mode is opt-in and off unless the user enabled it in the AI panel. */
+export const OPENCODE_AUTONOMOUS_KEY = 'nx.ai.opencode_autonomous';
+export function isOpencodeAutonomous(): boolean {
+  try {
+    return localStorage.getItem(OPENCODE_AUTONOMOUS_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 async function streamOpencodeRunner(
   config: AiProviderConfig,
   messages: ChatMsg[],
@@ -963,6 +973,7 @@ async function streamOpencodeRunner(
       prompt,
       model,
       cwd,
+      autonomous: isOpencodeAutonomous(),
     },
     callbacks.onToken,
     signal,

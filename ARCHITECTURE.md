@@ -108,10 +108,13 @@ every 10 s. On reconnect with `resume: true`, the session replays `cd <cwd>`.
 * **Multi-vault:** rows carry a `vault_id` (default `personal`); team vaults are exported as an
   encrypted bundle (`EncryptedTeamVaultBundle`, XChaCha20-Poly1305 under a passphrase-derived
   key). Bundles contain hosts, keychain, tunnels and snippets — **not** AI settings.
-* **Device pairing (`pairing.rs`):** Device A shows a QR code + 6-digit PIN and runs an ephemeral
-  listener (port 48291, falling back to an OS-assigned port). Device B connects with the PIN,
-  performs an X25519 key exchange (HKDF → XChaCha20-Poly1305) and clones the vault archive
-  directly over the LAN. Because this is *your own* device, the archive does include AI configs.
+* **Device pairing (`pairing.rs`):** Device A shows a pairing link (`nxpair://host:port?pin=…&pk=…`) with a
+  6-digit PIN and its X25519 public key, and runs an ephemeral listener (port 48291, falling back to an
+  OS-assigned port). Device B pastes the link. The `pk` is pinned, not taken from the wire. B sends its
+  ephemeral key plus an HMAC proof of PIN knowledge, bound to the ECDH secret and both public keys. The PIN
+  is only the HKDF salt and is never sent. A checks the proof (constant-time), then returns the vault archive
+  under an XChaCha20-Poly1305 key derived from the same secret. Plain HTTP carries only proof and ciphertext,
+  and the pairing responses send no CORS headers. Because this is *your own* device, the archive includes AI configs.
 * **Cloud sync (`sync.rs`):** end-to-end encrypted push/pull sync. The crypto core uses `K_sync`/`K_index` derived via HKDF from the master vault key, HMAC-blinded record IDs, 256-byte padded sealed CBOR blobs (`XChaCha20-Poly1305`), and Hybrid Logical Clocks (HLC last-writer-wins). Pushes and pulls run over `HttpRelay` with optional bearer authentication; credentials and tokens are persisted securely in the encrypted SQLCipher vault, and the relay only ever sees ciphertext.
 
 ## 5. AI assistant
@@ -129,9 +132,10 @@ listed in `RETIRED_MODELS` are migrated on load.
 
 ```
 AIPanel.ask()
-  ├─ last 80 terminal lines → sanitizeContext() (regex redaction; also applied to cwd,
-  │    last command, user prompts and history when "scrub secrets" is on)
-  ├─ messages: system prompt · user-role "UNTRUSTED terminal data" block · last 10 turns
+  ├─ terminal output is opt-in: only ```terminal blocks the user attached (+ menu, up to the
+  │    user's context-lines setting) or quick actions that request it are sent; sanitizeContext()
+  │    applies when "scrub secrets" is on. cwd and last command are not sent by default.
+  ├─ messages: system prompt · user-role UNTRUSTED-data note · last 10 turns
   └─ chatStreamMultiProvider → bridge.streamAiProxy({ providerId, auth, url, body })
         │  (no key in the request)
         ▼

@@ -1222,6 +1222,17 @@ pub struct CommandHistoryItem {
     pub starred: bool,
 }
 
+/// Heuristic for commands that probably carry a credential. Shared by command history and the snapshot path,
+/// so no recording path can disagree about what is secret.
+pub fn looks_sensitive_command(cmd: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "password", "passwd", "passphrase", "passcode", "token", "secret", "api_key", "apikey", "api-key",
+        "private_key", "credential", "bearer ", "authorization:",
+    ];
+    let lower = cmd.to_lowercase();
+    KEYWORDS.iter().any(|k| lower.contains(k))
+}
+
 #[tauri::command]
 pub fn command_history_add(
     host_id: Option<String>,
@@ -1233,6 +1244,9 @@ pub fn command_history_add(
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return Err(AppError::Other("Empty command".into()));
+    }
+    if looks_sensitive_command(trimmed) {
+        return Err(AppError::Other("Not recorded: the command looks like it contains a credential.".into()));
     }
     let item = CommandHistoryItem {
         id: uuid::Uuid::new_v4().to_string(),
@@ -1866,6 +1880,13 @@ pub fn team_vault_import(
     let payload: TeamVaultPayload = serde_json::from_slice(&plaintext)
         .map_err(|e| AppError::Other(format!("Failed to parse decrypted bundle: {e}")))?;
 
+    // M4: a bundle must never write into the user's personal vault. Hosts with matching IDs would be overwritten.
+    if payload.vault.id == "personal" {
+        return Err(AppError::Other(
+            "This bundle targets the personal vault and was rejected. Team bundles must use a team vault id.".into(),
+        ));
+    }
+
     vault.with(|c| {
         c.execute(
             "INSERT INTO vaults(id, name, kind, color, description, created_at)
@@ -1918,12 +1939,13 @@ pub fn team_vault_import(
                 "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
+                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?15",
                 params![
                     host_id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
                     h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
                     h.color, h.os, safe_keychain_id, jump_id, payload.vault.id,
-                    h.startup_command,
+                    // M1: startup commands are never imported from a bundle. Auto-run on connect is code execution.
+                    Option::<String>::None,
                     now()
                 ],
             )?;

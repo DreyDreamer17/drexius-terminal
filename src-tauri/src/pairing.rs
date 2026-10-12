@@ -19,11 +19,14 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use parking_lot::Mutex;
 use rand::{Rng, RngCore};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -68,8 +71,11 @@ pub struct LocalDeviceInfo {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HandshakeRequest {
-    pub pin: String,
+    /// Client's ephemeral X25519 public key (hex).
     pub client_public_key: String,
+    /// HMAC proof of PIN knowledge, bound to the ECDH secret and both public keys (hex).
+    /// The PIN itself is never sent on the wire.
+    pub client_proof: String,
     pub client_device_name: String,
     pub client_os: String,
 }
@@ -136,6 +142,38 @@ pub fn get_device_name() -> String {
         });
     let os = std::env::consts::OS;
     format!("{} ({})", host, os)
+}
+
+/// Derives the proof key and the session key from the ECDH secret, salted with the PIN.
+/// Only a party holding the matching X25519 secret can derive either key.
+fn derive_pairing_keys(pin: &str, shared: &[u8; 32]) -> AppResult<([u8; 32], [u8; 32])> {
+    let hk = Hkdf::<Sha256>::new(Some(pin.as_bytes()), shared);
+    let mut auth_key = [0u8; 32];
+    let mut session_key = [0u8; 32];
+    hk.expand(b"nexus/pair/v2/auth", &mut auth_key)
+        .map_err(|e| AppError::Crypto(e.to_string()))?;
+    hk.expand(b"nexus/pair/v2/session", &mut session_key)
+        .map_err(|e| AppError::Crypto(e.to_string()))?;
+    Ok((auth_key, session_key))
+}
+
+/// MAC over the handshake transcript, keyed by the auth key. The client uses it to prove PIN knowledge.
+fn client_proof_mac(auth_key: &[u8; 32], client_pk: &[u8], server_pk: &[u8]) -> AppResult<HmacSha256> {
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(auth_key).map_err(|e| AppError::Crypto(e.to_string()))?;
+    mac.update(b"nexus/pair/v2/client-proof");
+    mac.update(client_pk);
+    mac.update(server_pk);
+    Ok(mac)
+}
+
+fn parse_x25519_public(hex_str: &str) -> AppResult<PublicKey> {
+    let raw = hex::decode(hex_str.trim()).map_err(|_| AppError::Crypto("Invalid public key hex".into()))?;
+    if raw.len() != 32 {
+        return Err(AppError::Crypto("Public key must be 32 bytes".into()));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&raw);
+    Ok(PublicKey::from(arr))
 }
 
 fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchive> {
@@ -325,7 +363,8 @@ fn restore_full_vault(
                 c.execute(
                     "INSERT INTO secrets(host_id, password, private_key, passphrase)
                      VALUES(?1, ?2, ?3, ?4)
-                     ON CONFLICT(host_id) DO UPDATE SET password=?2, private_key=?3, passphrase=?4",
+                     ON CONFLICT(host_id) DO UPDATE SET password=COALESCE(?2, password),
+                     private_key=COALESCE(?3, private_key), passphrase=COALESCE(?4, passphrase)",
                     params![h.id, s.password, s.private_key, s.passphrase],
                 )?;
             }
@@ -341,7 +380,9 @@ fn restore_full_vault(
             c.execute(
                 "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at, vault_id)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4, password=?5, private_key=?6, passphrase=?7, updated_at=?8, vault_id=?9",
+                 ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+                     password=COALESCE(?5, password), private_key=COALESCE(?6, private_key),
+                     passphrase=COALESCE(?7, passphrase), updated_at=?8, vault_id=?9",
                 params![
                     k.id, k.label, k.username, k.auth_method.as_str(), pwd, pkey, pass,
                     k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
@@ -564,7 +605,8 @@ async fn handle_incoming_pairing(
         if let Some(pos) = buf[..n_total].windows(4).position(|w| w == b"\r\n\r\n") {
             let headers_str = String::from_utf8_lossy(&buf[..pos]);
             if headers_str.starts_with("OPTIONS") {
-                let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n";
+                // No CORS headers: this is a native-client protocol, not a browser API.
+                let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
                 stream.write_all(resp.as_bytes()).await.map_err(|e| AppError::Other(e.to_string()))?;
                 return Ok(());
             }
@@ -590,7 +632,24 @@ async fn handle_incoming_pairing(
                     return Ok(());
                 }
 
-                if req.pin != expected_pin {
+                // Derive keys from the ECDH secret, salted with the PIN. The client must prove PIN knowledge
+                // with a MAC over the transcript. A MITM without the host's secret can't produce a valid proof.
+                let client_public = parse_x25519_public(&req.client_public_key)?;
+                let shared = server_secret.diffie_hellman(&client_public);
+                if shared.as_bytes().iter().all(|b| *b == 0) {
+                    return Err(AppError::Crypto("Rejected low-order client public key".into()));
+                }
+                let (auth_key, session_key) = derive_pairing_keys(expected_pin, shared.as_bytes())?;
+
+                let server_public = PublicKey::from(server_secret);
+                let proof_ok = match hex::decode(&req.client_proof) {
+                    Ok(proof) => client_proof_mac(&auth_key, client_public.as_bytes(), server_public.as_bytes())?
+                        .verify_slice(&proof)
+                        .is_ok(),
+                    Err(_) => false,
+                };
+
+                if !proof_ok {
                     let count = failed_attempts.fetch_add(1, Ordering::SeqCst) + 1;
                     let remaining = MAX_PAIRING_ATTEMPTS.saturating_sub(count);
                     let err_resp = if count >= MAX_PAIRING_ATTEMPTS {
@@ -603,7 +662,7 @@ async fn handle_incoming_pairing(
                         "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing locked out.\"}".to_string()
                     } else {
                         format!(
-                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"error\":\"Invalid PIN. {} attempts remaining.\"}}",
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"error\":\"Invalid pairing code. {} attempts remaining.\"}}",
                             remaining
                         )
                     };
@@ -611,30 +670,12 @@ async fn handle_incoming_pairing(
                     return Ok(());
                 }
 
-                // PIN matches! Derive shared secret
-                let client_pk_raw = hex::decode(&req.client_public_key)
-                    .map_err(|_| AppError::Crypto("Invalid client public key hex".into()))?;
-                if client_pk_raw.len() != 32 {
-                    return Err(AppError::Crypto("Client public key must be 32 bytes".into()));
-                }
-                let mut client_pk_arr = [0u8; 32];
-                client_pk_arr.copy_from_slice(&client_pk_raw);
-                let client_public = PublicKey::from(client_pk_arr);
-
-                let shared_secret = server_secret.diffie_hellman(&client_public);
-
-                // HKDF-SHA256(pin, shared_secret) -> XChaCha20 session key
-                let hk = Hkdf::<Sha256>::new(Some(expected_pin.as_bytes()), shared_secret.as_bytes());
-                let mut session_key = [0u8; 32];
-                hk.expand(b"nexus/pair/v1", &mut session_key)
-                    .map_err(|e| AppError::Crypto(e.to_string()))?;
-
                 // Dump current vault archive
                 let archive = dump_full_vault(vault, server_name)?;
                 let archive_json = serde_json::to_vec(&archive)
                     .map_err(|e| AppError::Other(format!("Archive serialize error: {e}")))?;
 
-                // Encrypt with session key
+                // Encrypt with session key. The client can only decrypt if it derived the same DH secret.
                 let cipher = XChaCha20Poly1305::new((&session_key).into());
                 let mut nonce_bytes = [0u8; 24];
                 rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -668,7 +709,7 @@ async fn handle_incoming_pairing(
                     .map_err(|e| AppError::Other(e.to_string()))?;
 
                 let http_resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     resp_body.len()
                 );
 
@@ -714,21 +755,42 @@ pub async fn pairing_join_client(
     target_host: String,
     port: u16,
     pin: String,
+    server_public_key: String,
     device_name: Option<String>,
     vault: State<'_, Vault>,
 ) -> AppResult<PairingJoinResult> {
     let clean_pin = pin.replace('-', "").trim().to_string();
+    if clean_pin.len() != 6 || !clean_pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::Other("The pairing code must be 6 digits.".into()));
+    }
+
+    // The host's public key comes from the pairing link, obtained out of band. It is pinned, not taken from the wire.
+    let server_public = parse_x25519_public(&server_public_key)
+        .map_err(|_| AppError::Other("The pairing link has an invalid host key.".into()))?;
+    let server_pk_hex = hex::encode(server_public.as_bytes());
+
     let my_device_name = device_name.unwrap_or_else(get_device_name);
 
     // 1. Generate client X25519 keypair
-    let (client_secret, client_pk_hex) = {
+    let client_secret = {
         let mut rng = rand::thread_rng();
-        let sec = StaticSecret::random_from_rng(&mut rng);
-        let pubk = PublicKey::from(&sec);
-        (sec, hex::encode(pubk.as_bytes()))
+        StaticSecret::random_from_rng(&mut rng)
     };
+    let client_public = PublicKey::from(&client_secret);
+    let client_pk_hex = hex::encode(client_public.as_bytes());
 
-    // 2. Connect to host
+    // 2. Derive keys and compute the PIN proof. The PIN itself never leaves this device.
+    let shared = client_secret.diffie_hellman(&server_public);
+    if shared.as_bytes().iter().all(|b| *b == 0) {
+        return Err(AppError::Crypto("Rejected low-order host public key".into()));
+    }
+    let (auth_key, session_key) = derive_pairing_keys(&clean_pin, shared.as_bytes())?;
+    let proof = client_proof_mac(&auth_key, client_public.as_bytes(), server_public.as_bytes())?
+        .finalize()
+        .into_bytes();
+
+    // 3. Send the handshake. Plain HTTP is acceptable here because the proof and the AEAD-encrypted
+    //    archive are bound to the pinned host key, so a network attacker can't impersonate the host.
     let url = format!("http://{}:{}/pair/handshake", target_host, port);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -736,8 +798,8 @@ pub async fn pairing_join_client(
         .map_err(|e| AppError::Network(e.to_string()))?;
 
     let req_body = HandshakeRequest {
-        pin: clean_pin.clone(),
         client_public_key: client_pk_hex,
+        client_proof: hex::encode(proof),
         client_device_name: my_device_name,
         client_os: std::env::consts::OS.to_string(),
     };
@@ -750,7 +812,9 @@ pub async fn pairing_join_client(
         .map_err(|e| AppError::Network(format!("Failed to connect to host {target_host}:{port} — {e}")))?;
 
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        return Err(AppError::Other("Incorrect 6-digit PIN code. Please verify the code displayed on your host device.".into()));
+        return Err(AppError::Other(
+            "Pairing refused. Check the 6-digit code, or copy the pairing link again from the host.".into(),
+        ));
     }
 
     if !resp.status().is_success() {
@@ -762,25 +826,14 @@ pub async fn pairing_join_client(
         .await
         .map_err(|e| AppError::Network(format!("Failed to read handshake response: {e}")))?;
 
-    // 3. Compute shared secret
-    let server_pk_raw = hex::decode(&handshake_resp.server_public_key)
-        .map_err(|_| AppError::Crypto("Invalid server public key".into()))?;
-    if server_pk_raw.len() != 32 {
-        return Err(AppError::Crypto("Server public key must be 32 bytes".into()));
+    // 4. The responder must be the pinned host
+    if !handshake_resp.server_public_key.eq_ignore_ascii_case(&server_pk_hex) {
+        return Err(AppError::Crypto(
+            "Host identity mismatch: the host key does not match the pairing link.".into(),
+        ));
     }
-    let mut server_pk_arr = [0u8; 32];
-    server_pk_arr.copy_from_slice(&server_pk_raw);
-    let server_public = PublicKey::from(server_pk_arr);
 
-    let shared_secret = client_secret.diffie_hellman(&server_public);
-
-    // 4. Derive session key using HKDF-SHA256(pin, shared_secret)
-    let hk = Hkdf::<Sha256>::new(Some(clean_pin.as_bytes()), shared_secret.as_bytes());
-    let mut session_key = [0u8; 32];
-    hk.expand(b"nexus/pair/v1", &mut session_key)
-        .map_err(|e| AppError::Crypto(e.to_string()))?;
-
-    // 5. Decrypt archive
+    // 5. Decrypt the archive. AEAD success proves the responder holds the pinned host secret.
     let nonce_raw = hex::decode(&handshake_resp.nonce)
         .map_err(|_| AppError::Crypto("Invalid nonce hex".into()))?;
     if nonce_raw.len() != 24 {

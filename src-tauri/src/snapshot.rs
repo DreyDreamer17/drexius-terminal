@@ -53,9 +53,8 @@ impl SnapshotStore {
     }
 
     pub fn record_command(&self, host_id: &str, session_id: &str, cmd: &str) {
-        // Never persist commands that look like they contain secrets.
-        let lower = cmd.to_lowercase();
-        if ["password", "passwd", "token", "secret", "api_key", "apikey"].iter().any(|k| lower.contains(k)) {
+        // Never persist commands that look like they contain secrets (shared filter with command history).
+        if crate::vault::looks_sensitive_command(cmd) {
             return;
         }
         self.upsert(host_id, session_id, |s| s.last_command = Some(cmd.to_string()));

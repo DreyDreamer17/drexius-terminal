@@ -279,6 +279,19 @@ pub fn sync_status(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_,
     out
 }
 
+/// M5: the device token is sent as a bearer credential, so relays must use https.
+/// Plain http is accepted only for loopback (local development relays).
+pub fn relay_url_is_allowed(url: &str) -> bool {
+    match reqwest::Url::parse(url.trim()) {
+        Ok(u) => match u.scheme() {
+            "https" => true,
+            "http" => matches!(u.host_str(), Some("localhost") | Some("127.0.0.1") | Some("[::1]")),
+            _ => false,
+        },
+        Err(_) => false,
+    }
+}
+
 #[tauri::command]
 pub fn sync_configure(
     relay_url: Option<String>,
@@ -286,6 +299,14 @@ pub fn sync_configure(
     engine: tauri::State<'_, SyncEngine>,
     vault: tauri::State<'_, Vault>,
 ) {
+    if let Some(ref url) = relay_url {
+        if !relay_url_is_allowed(url) {
+            let mut s = engine.status.lock();
+            s.enabled = false;
+            s.last_error = Some("Sync relay must use https:// (http:// is allowed only for localhost).".into());
+            return;
+        }
+    }
     let mut s = engine.status.lock();
     s.enabled = relay_url.is_some();
     s.relay_url = relay_url.clone();

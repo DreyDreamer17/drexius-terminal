@@ -175,9 +175,6 @@ pub fn run() {
             pairing::pairing_revoke_device,
             pairing::pairing_get_local_info,
             // local filesystem operations for agent
-            local_pty::local_read_file,
-            local_pty::local_write_file,
-            local_pty::local_edit_file,
             // opencode integration
             opencode::opencode_detect,
             opencode::opencode_stream,

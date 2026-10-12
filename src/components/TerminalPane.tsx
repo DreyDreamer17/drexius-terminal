@@ -174,6 +174,26 @@ export function TerminalPane({
     [matchRegex, matchWholeWord, matchCase]
   );
 
+  /**
+   * True when the cursor sits after a password-style prompt ("Password:", "[sudo] password for x:", "Enter passphrase:").
+   * Keystrokes typed there are secrets, so they must never reach history or snapshots.
+   * Checked at Enter, before the shell's echo arrives, so the prompt is still on the cursor line.
+   */
+  const isPasswordPromptActive = useCallback((): boolean => {
+    const term = termRef.current;
+    if (!term) return false;
+    try {
+      const buffer = term.buffer.active;
+      if (buffer.type === 'alternate') return false;
+      const lineObj = buffer.getLine(buffer.cursorY + buffer.baseY);
+      if (!lineObj) return false;
+      const upToCursor = lineObj.translateToString(false, 0, buffer.cursorX);
+      return /(pass(word|phrase|code)?|passcode|otp|token|secret|pin)\b[^:：\n]{0,80}[:：]\s*$/i.test(upToCursor);
+    } catch {
+      return false;
+    }
+  }, []);
+
   const getCurrentCommandLine = useCallback((): string => {
     const term = termRef.current;
     if (!term) return lineRef.current;
@@ -780,7 +800,9 @@ export function TerminalPane({
             resyncTimerRef.current = null;
           }
           dirtyRef.current = false;
-          if (cmd) {
+          // Lines typed at a password prompt are secrets: skip them everywhere, including in-memory history.
+          const typedSecret = !!cmd && isPasswordPromptActive();
+          if (cmd && !typedSecret) {
             update({ lastCommand: cmd });
             if (!isLocal) {
               bridge.recordSnapshot(host.id, sid, { lastCommand: cmd });
