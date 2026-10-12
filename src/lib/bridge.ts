@@ -844,8 +844,14 @@ export const bridge = {
     if (isTauri) return invoke('pairing_stop_host');
   },
 
-  async pairingJoinClient(targetHost: string, port: number, pin: string, deviceName?: string): Promise<PairingJoinResult> {
-    if (isTauri) return invoke('pairing_join_client', { targetHost, port, pin, deviceName: deviceName ?? null });
+  async pairingJoinClient(
+    targetHost: string,
+    port: number,
+    pin: string,
+    serverPublicKey: string,
+    deviceName?: string
+  ): Promise<PairingJoinResult> {
+    if (isTauri) return invoke('pairing_join_client', { targetHost, port, pin, serverPublicKey, deviceName: deviceName ?? null });
     return {
       success: true,
       serverDeviceName: 'Simulated Desktop',
@@ -1024,25 +1030,6 @@ export const bridge = {
     return true;
   },
 
-  async localReadFile(path: string, offset?: number, limit?: number, raw?: boolean): Promise<string> {
-    if (isTauri) {
-      return await invoke<string>('local_read_file', { path, offset, limit, raw });
-    }
-    return `[Demo mode: localReadFile not available in browser]`;
-  },
-
-  async localWriteFile(path: string, content: string): Promise<void> {
-    if (isTauri) {
-      return await invoke<void>('local_write_file', { path, content });
-    }
-  },
-
-  async localEditFile(path: string, oldString: string, newString: string, replaceAll?: boolean): Promise<void> {
-    if (isTauri) {
-      return await invoke<void>('local_edit_file', { path, oldString, newString, replaceAll });
-    }
-  },
-
   async detectOpencode(): Promise<{ installed: boolean; binaryPath?: string; models: string[] }> {
     if (isTauri) {
       try {
@@ -1061,6 +1048,8 @@ export const bridge = {
       model: string;
       cwd?: string;
       streamId?: string;
+      /** Opt-in `--auto` (auto-approve anything not explicitly denied). Default false. */
+      autonomous?: boolean;
     },
     onToken: (text: string) => void,
     signal?: AbortSignal,
@@ -1085,6 +1074,7 @@ export const bridge = {
           model: options.model,
           cwd: options.cwd ?? null,
           streamId,
+          autonomous: options.autonomous === true,
           channel,
         });
         return;

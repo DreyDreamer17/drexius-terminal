@@ -63,9 +63,6 @@ pub struct AiProxyRequest {
     pub method: String,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
-    /// Explicit proxy override (used for the local SSH SOCKS5 tunnel). When absent and the
-    /// provider has proxy routing enabled, a proxy is picked from the vault pool.
-    pub proxy_url: Option<String>,
     /// Optional id so the frontend can cancel an in-flight stream via `ai_stream_cancel`.
     #[serde(default)]
     pub stream_id: Option<String>,
@@ -321,12 +318,14 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
 
     let wants_injection =
         !provider_id.is_empty() && req.auth != AiAuth::None && !has_explicit_auth(&req.headers);
+    // Any credential-bearing request (pooled key or WebView-supplied header) must target the provider's endpoint.
+    let carries_auth = wants_injection || has_explicit_auth(&req.headers);
 
     if let Some(cfg) = &cfg {
         route.name = cfg.name.clone();
         route.key_strategy = cfg.balance_strategy.clone();
         route.proxy_strategy = cfg.proxy_strategy.clone();
-        if wants_injection {
+        if carries_auth {
             // Destination allowlist: pooled keys are only ever sent to the provider's own
             // configured endpoint, never to an arbitrary URL supplied by the webview.
             let origin = |u: &reqwest::Url| {
@@ -342,7 +341,8 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
                     base.host_str().unwrap_or("?")
                 ));
             }
-
+        }
+        if wants_injection {
             let mut seen = HashSet::new();
             route.keys = cfg
                 .api_keys
@@ -362,8 +362,11 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
     }
     route.inject = wants_injection;
 
-    if let Some(p) = req.proxy_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        route.proxies = vec![p.to_string()];
+    // Proxies come only from the provider's configured pool (or the SSH tunnel proxy stored in that config).
+    // The WebView cannot pick a proxy per request, so a keyed request can't be sent through an arbitrary hop.
+
+    if carries_auth && cfg.is_none() {
+        return Err("Requests that carry credentials must name a configured provider.".into());
     }
 
     if route.inject && route.keys.is_empty() {
@@ -394,7 +397,10 @@ fn validate_request(request: &AiProxyRequest) -> Result<(), String> {
 /// `timeout_secs = None` means no total deadline (used for streaming, where a long
 /// generation must not be cut off; stalls are caught by `STREAM_IDLE_TIMEOUT` instead).
 fn build_client(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(20));
+    // Never follow redirects: a provider redirect could otherwise carry pooled keys to another host.
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none());
     if let Some(t) = timeout_secs {
         builder = builder.timeout(Duration::from_secs(t));
     }

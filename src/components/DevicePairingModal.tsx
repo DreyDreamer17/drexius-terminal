@@ -19,6 +19,25 @@ import { listen } from '@tauri-apps/api/event';
 import type { LocalDeviceInfo, PairedDevice, PairingHostInfo, PairingJoinResult } from '../lib/types';
 import { bridge, isTauri } from '../lib/bridge';
 import { cn } from '../utils/cn';
+
+interface ParsedPairingLink {
+  host: string;
+  port: number;
+  pin: string;
+  serverPublicKey: string;
+}
+
+/** Parses an nxpair:// link: host, port, 6-digit PIN, and the host's pinned X25519 public key (hex). */
+function parsePairingLink(link: string): ParsedPairingLink {
+  const m = link.trim().match(/^nxpair:\/\/([^:/?#\s]+):(\d{1,5})\?(\S+)$/);
+  if (!m) throw new Error('That is not a valid pairing link. Copy it from the host device.');
+  const params = new URLSearchParams(m[3]);
+  const pin = (params.get('pin') || '').replace(/\D/g, '');
+  const pk = (params.get('pk') || '').trim();
+  if (pin.length !== 6) throw new Error('The pairing link does not contain a valid 6-digit code.');
+  if (!/^[0-9a-fA-F]{64}$/.test(pk)) throw new Error('The pairing link does not contain a valid host key.');
+  return { host: m[1], port: parseInt(m[2], 10), pin, serverPublicKey: pk.toLowerCase() };
+}
 import { THEMES, type NexusTheme } from '../lib/themes';
 
 interface Props {
@@ -51,9 +70,7 @@ export function DevicePairingModal({
   const [copiedUrl, setCopiedUrl] = useState(false);
 
   // Join (Client) state
-  const [joinIp, setJoinIp] = useState('');
-  const [joinPort, setJoinPort] = useState(48291);
-  const [joinPin, setJoinPin] = useState('');
+  const [joinLink, setJoinLink] = useState('');
   const [myDeviceName, setMyDeviceName] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinResult, setJoinResult] = useState<PairingJoinResult | null>(null);
@@ -155,24 +172,31 @@ export function DevicePairingModal({
 
   const handleCopyUrl = () => {
     if (!hostInfo) return;
-    const url = `http://${hostInfo.ip}:${hostInfo.port}`;
-    navigator.clipboard.writeText(url);
+    // The link carries the host's public key, which the joiner pins. Copying only the IP would not be enough.
+    navigator.clipboard.writeText(hostInfo.qrPayload);
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!joinIp.trim() || !joinPin.trim()) return;
+    let parsed: ParsedPairingLink;
+    try {
+      parsed = parsePairingLink(joinLink);
+    } catch (err: any) {
+      setJoinError(err?.message || 'Invalid pairing link');
+      return;
+    }
     setJoining(true);
     setJoinError(null);
     setJoinResult(null);
 
     try {
       const res = await bridge.pairingJoinClient(
-        joinIp.trim(),
-        joinPort,
-        joinPin.trim(),
+        parsed.host,
+        parsed.port,
+        parsed.pin,
+        parsed.serverPublicKey,
         myDeviceName.trim() || undefined
       );
       setJoinResult(res);
@@ -342,7 +366,7 @@ export function DevicePairingModal({
                     className="flex items-center gap-1 text-[10px] text-cyan-300 hover:underline"
                   >
                     {copiedUrl ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                    <span>{copiedUrl ? 'Copied' : 'Copy IP'}</span>
+                    <span>{copiedUrl ? 'Copied' : 'Copy link'}</span>
                   </button>
                 </div>
 
@@ -431,46 +455,22 @@ export function DevicePairingModal({
               </div>
             )}
 
-            <div className="grid grid-cols-[1fr_90px] gap-3">
-              <div>
-                <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                  Host Device IP Address
-                </label>
-                <input
-                  required
-                  value={joinIp}
-                  onChange={(e) => setJoinIp(e.target.value)}
-                  placeholder="e.g. 192.168.1.105"
-                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-medium text-slate-300 mb-1">Port</label>
-                <input
-                  type="number"
-                  value={joinPort}
-                  onChange={(e) => setJoinPort(parseInt(e.target.value) || 48291)}
-                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 focus:border-cyan-400/40 focus:outline-none"
-                />
-              </div>
-            </div>
-
             <div>
               <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                6-Digit Pairing PIN
+                Pairing Link (copy it from the host device)
               </label>
               <input
                 required
-                maxLength={7}
-                value={joinPin}
-                onChange={(e) => {
-                  let v = e.target.value.replace(/[^0-9]/g, '');
-                  if (v.length > 3) v = `${v.slice(0, 3)}-${v.slice(3, 6)}`;
-                  setJoinPin(v);
-                }}
-                placeholder="e.g. 842-915"
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-lg tracking-widest text-cyan-300 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none text-center"
+                value={joinLink}
+                onChange={(e) => setJoinLink(e.target.value)}
+                placeholder="nxpair://192.168.1.105:48291?pin=…&pk=…"
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none"
               />
+              <p className="mt-1 text-[10px] text-slate-500">
+                The link includes the host's key, so the connection is checked against that key, not just the PIN.
+              </p>
             </div>
 
             <div>
@@ -495,7 +495,7 @@ export function DevicePairingModal({
               </button>
               <button
                 type="submit"
-                disabled={joining || !joinIp.trim() || !joinPin.trim()}
+                disabled={joining || !joinLink.trim()}
                 className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-50 shadow-lg"
                 style={{
                   backgroundColor: accentColor,
