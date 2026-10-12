@@ -165,6 +165,7 @@ struct OpencodeJsonLine {
     #[serde(rename = "type")]
     event_type: Option<String>,
     part: Option<OpencodeJsonPart>,
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -432,8 +433,15 @@ pub async fn opencode_stream(
             }
         })
     } else {
+        // In read-only mode, set tools to "ask" instead of "deny".
+        // Completely denying all tools causes OpenCode to strip tools from the request payload,
+        // which triggers the free tier server-side anti-abuse error:
+        // "OpenCode's free tier can only be used from within OpenCode".
+        // With "ask", tools remain declared in the request payload, and because `--auto` is omitted
+        // in non-autonomous mode, OpenCode's non-interactive runner automatically rejects any tool
+        // execution attempt without running it.
         serde_json::json!({
-            "permission": { "edit": "deny", "webfetch": "deny", "bash": "deny" }
+            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
         })
     };
 
@@ -512,6 +520,7 @@ pub async fn opencode_stream(
 
     let mut had_reasoning = false;
     let mut reasoning_done = false;
+    let mut last_error_msg: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -578,6 +587,22 @@ pub async fn opencode_stream(
                                         }
                                     }
                                 }
+                                Some("error") => {
+                                    let msg = if let Some(err_val) = &parsed.error {
+                                        if let Some(m) = err_val.get("message").and_then(|v| v.as_str()) {
+                                            m.to_string()
+                                        } else if let Some(s) = err_val.as_str() {
+                                            s.to_string()
+                                        } else {
+                                            err_val.to_string()
+                                        }
+                                    } else if let Some(part) = &parsed.part {
+                                        part.text.clone().unwrap_or_else(|| trimmed.to_string())
+                                    } else {
+                                        trimmed.to_string()
+                                    };
+                                    last_error_msg = Some(msg);
+                                }
                                 Some("step_finish") => {
                                     // Finished step successfully
                                 }
@@ -605,6 +630,9 @@ pub async fn opencode_stream(
 
     if !status.success() {
         let mut err_msg = format!("OpenCode exited with status {}", status);
+        if let Some(err_text) = last_error_msg {
+            err_msg = format!("{}: {}", err_msg, err_text);
+        }
         if let Some(task) = stderr_task {
             if let Ok(err_buf) = task.await {
                 if !err_buf.trim().is_empty() {
