@@ -1058,6 +1058,7 @@ export default function App() {
           onClose={() => setShowAI(false)}
           theme={theme}
           newConnectionNonce={newConnNonce}
+          visible={showAI}
         />
       </aside>
       </div>

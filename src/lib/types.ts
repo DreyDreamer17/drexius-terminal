@@ -287,3 +287,11 @@ export interface ClipboardItem {
   copiedAt: number;
   pinned: boolean;
 }
+
+export interface OpencodeHostStatus {
+  isRemote: boolean;
+  hostId?: string | null;
+  hostLabel?: string | null;
+  installed: boolean;
+  binaryPath?: string | null;
+}

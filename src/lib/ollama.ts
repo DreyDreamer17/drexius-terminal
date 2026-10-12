@@ -750,7 +750,9 @@ export async function chatStreamMultiProvider(
   messages: ChatMsg[],
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
-  cwd?: string
+  cwd?: string,
+  sessionId?: string | null,
+  hostId?: string | null
 ): Promise<void> {
   const providerSpec = KNOWN_PROVIDERS.find((p) => p.id === config.providerId);
   const type = providerSpec?.type ?? 'openai';
@@ -764,7 +766,7 @@ export async function chatStreamMultiProvider(
   }
 
   if (type === 'opencode' || config.providerId === 'opencode') {
-    return streamOpencodeRunner(config, messages, callbacks, signal, cwd);
+    return streamOpencodeRunner(config, messages, callbacks, signal, cwd, sessionId, hostId);
   }
 
   // Desktop app: the backend owns key/proxy selection, auth injection and failover.
@@ -964,7 +966,9 @@ async function streamOpencodeRunner(
   messages: ChatMsg[],
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
-  cwd?: string
+  cwd?: string,
+  sessionId?: string | null,
+  hostId?: string | null
 ): Promise<void> {
   const prompt = formatMessagesForOpencode(messages);
   const model = config.selectedModel || 'opencode/nemotron-3-ultra-free';
@@ -974,6 +978,8 @@ async function streamOpencodeRunner(
       model,
       cwd,
       autonomous: isOpencodeAutonomous(),
+      sessionId,
+      hostId,
     },
     callbacks.onToken,
     signal,

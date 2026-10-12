@@ -25,6 +25,7 @@ import type {
   KeychainItem,
   KnownHost,
   LocalDeviceInfo,
+  OpencodeHostStatus,
   PairedDevice,
   PairingHostInfo,
   PairingJoinResult,
@@ -1042,6 +1043,33 @@ export const bridge = {
     return { installed: false, models: [] };
   },
 
+  async detectOpencodeSession(
+    sessionId?: string | null,
+    hostId?: string | null,
+    force = false
+  ): Promise<OpencodeHostStatus> {
+    if (isTauri) {
+      try {
+        return await invoke<OpencodeHostStatus>('opencode_detect_session', {
+          sessionId: sessionId ?? null,
+          hostId: hostId ?? null,
+          force,
+        });
+      } catch (err: unknown) {
+        console.warn('detectOpencodeSession error:', err);
+        return {
+          isRemote: false,
+          installed: false,
+        };
+      }
+    }
+    return {
+      isRemote: false,
+      installed: true,
+      binaryPath: '/usr/local/bin/opencode',
+    };
+  },
+
   async streamOpencode(
     options: {
       prompt: string;
@@ -1050,6 +1078,8 @@ export const bridge = {
       streamId?: string;
       /** Opt-in `--auto` (auto-approve anything not explicitly denied). Default false. */
       autonomous?: boolean;
+      sessionId?: string | null;
+      hostId?: string | null;
     },
     onToken: (text: string) => void,
     signal?: AbortSignal,
@@ -1075,6 +1105,8 @@ export const bridge = {
           cwd: options.cwd ?? null,
           streamId,
           autonomous: options.autonomous === true,
+          sessionId: options.sessionId ?? null,
+          hostId: options.hostId ?? null,
           channel,
         });
         return;
