@@ -2,6 +2,20 @@ import { useEffect, useState } from 'react';
 import { Lock, Loader2, ShieldCheck, Cpu, Cloud, Eye, EyeOff, Fingerprint, Check } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
+function getPasswordStrength(p: string): { score: number; label: string; color: string } {
+  if (!p) return { score: 0, label: '', color: 'transparent' };
+  let score = 0;
+  if (p.length >= 8) score++;
+  if (p.length >= 12) score++;
+  if (/[a-z]/.test(p) && /[A-Z]/.test(p)) score++;
+  if (/\d/.test(p)) score++;
+  if (/[^a-zA-Z0-9]/.test(p)) score++;
+
+  if (score <= 1) return { score: 1, label: 'Weak', color: '#f43f5e' };
+  if (score <= 2) return { score: 2, label: 'Fair', color: '#f97316' };
+  if (score <= 3) return { score: 3, label: 'Good', color: '#eab308' };
+  return { score: 4, label: 'Strong', color: '#10b981' };
+}
 
 export function LockScreen({
   onUnlocked,
@@ -234,6 +248,28 @@ export function LockScreen({
                 {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
+            {initialized === false && pw.length > 0 && (() => {
+              const strength = getPasswordStrength(pw);
+              return (
+                <div className="space-y-1.5 px-0.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400">Strength</span>
+                    <span className="font-medium" style={{ color: strength.color }}>{strength.label}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 h-1">
+                    {[1, 2, 3, 4].map((step) => (
+                      <div
+                        key={step}
+                        className="h-full rounded-full transition-colors duration-200"
+                        style={{
+                          backgroundColor: step <= strength.score ? strength.color : 'rgba(255, 255, 255, 0.1)',
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             {initialized === false && (
               <input
                 type={show ? 'text' : 'password'}

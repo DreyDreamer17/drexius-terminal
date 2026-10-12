@@ -19,7 +19,7 @@ use ssh2::{Channel, ExtendedData, HashType, MethodType, Session};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
@@ -76,7 +76,7 @@ enum Cmd {
 }
 
 struct SessionHandle {
-    tx: Sender<Cmd>,
+    tx: SyncSender<Cmd>,
     info: SessionInfo,
 }
 
@@ -99,7 +99,12 @@ impl SshManager {
         let h = guard
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.into()))?;
-        h.tx.send(cmd).map_err(|_| AppError::SessionNotFound(session_id.into()))
+        h.tx.try_send(cmd).map_err(|e| match e {
+            mpsc::TrySendError::Full(_) =>
+                AppError::Other("terminal input queue is full; try again in a moment".into()),
+            mpsc::TrySendError::Disconnected(_) =>
+                AppError::SessionNotFound(session_id.into()),
+        })
     }
 }
 
@@ -371,7 +376,7 @@ pub fn ssh_connect(
     sess.set_blocking(false);
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = mpsc::channel::<Cmd>();
+    let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
 
     // Login bootstrap: OSC-7 hook + optional resume of snapshotted cwd.
     let mut init = String::from(OSC7_HOOK);
@@ -380,7 +385,7 @@ pub fn ssh_connect(
             init.push_str(&format!(" cd {} 2>/dev/null; clear\n", shell_quote(&snap.cwd)));
         }
     }
-    let _ = tx.send(Cmd::Write(init.into_bytes()));
+    let _ = tx.try_send(Cmd::Write(init.into_bytes()));
 
     let info = SessionInfo {
         session_id: session_id.clone(),
@@ -401,7 +406,7 @@ pub fn ssh_connect(
     let sid = session_id.clone();
     let snaps = snaps.inner().clone();
     let host_id = host.id.clone();
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(format!("ssh-io-{}", &sid[..8]))
         .spawn(move || {
             let (reason, resumable) = io_loop(sess, channel, rx, &on_event, &snaps, &host_id, &sid);
@@ -409,7 +414,12 @@ pub fn ssh_connect(
             let _ = on_event.send(SshEvent::Disconnected { reason, resumable });
             app.state::<SshManager>().sessions.lock().remove(&sid);
             app.state::<crate::sftp::SftpManager>().close(&sid);
-        })?;
+        })
+    {
+        // Spawn failed — remove stale manager entry (Finding #30).
+        mgr.sessions.lock().remove(&session_id);
+        return Err(AppError::Io(e));
+    }
 
     Ok(session_id)
 }
@@ -478,8 +488,8 @@ fn io_loop(
     loop {
         let mut idle = true;
 
-        // 1. Drain UI commands.
-        loop {
+        // 1. Drain UI commands (capped per tick to prevent starvation).
+        for _ in 0..32 {
             match rx.try_recv() {
                 Ok(Cmd::Write(bytes)) => {
                     idle = false;

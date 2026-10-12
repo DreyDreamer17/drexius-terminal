@@ -28,7 +28,7 @@ use serde::Deserialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 use tauri::State;
@@ -95,7 +95,7 @@ enum Cmd {
 }
 
 struct SessionHandle {
-    tx: Sender<Cmd>,
+    tx: SyncSender<Cmd>,
 }
 
 #[derive(Clone)]
@@ -117,7 +117,12 @@ impl SerialManager {
         let h = guard
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.into()))?;
-        h.tx.send(cmd).map_err(|_| AppError::SessionNotFound(session_id.into()))
+        h.tx.try_send(cmd).map_err(|e| match e {
+            mpsc::TrySendError::Full(_) =>
+                AppError::Other("terminal input queue is full; try again in a moment".into()),
+            mpsc::TrySendError::Disconnected(_) =>
+                AppError::SessionNotFound(session_id.into()),
+        })
     }
 }
 
@@ -244,7 +249,7 @@ pub fn serial_open(
     let _ = port.write_data_terminal_ready(true);
 
     let session_id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = mpsc::channel::<Cmd>();
+    let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
 
     mgr.sessions.lock().insert(
         session_id.clone(),
@@ -283,7 +288,7 @@ pub fn serial_open(
     let sid = session_id.clone();
     let event_ch = on_event.clone();
     let sessions = mgr.sessions.clone();
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(format!("serial-{}", &sid[..8]))
         .spawn(move || {
             let reason = serial_io_loop(&mut *port, rx, &event_ch);
@@ -293,7 +298,11 @@ pub fn serial_open(
             });
             sessions.lock().remove(&sid);
         })
-        .map_err(|e| AppError::Io(e))?;
+    {
+        // Spawn failed — remove stale manager entry (Finding #30).
+        mgr.sessions.lock().remove(&session_id);
+        return Err(AppError::Io(e));
+    }
 
     // Let the user know we're connected via a small in-band banner the
     // same way the local shell does. We use a dim-gray ANSI style.
@@ -319,8 +328,8 @@ fn serial_io_loop(
     let mut buf = vec![0u8; 4096];
 
     loop {
-        // 1. Drain pending UI commands.
-        loop {
+        // 1. Drain pending UI commands (capped per tick to prevent starvation).
+        for _ in 0..32 {
             match rx.try_recv() {
                 Ok(Cmd::Write(bytes)) => {
                     if let Err(e) = port.write_all(&bytes) {
