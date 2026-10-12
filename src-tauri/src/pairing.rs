@@ -35,7 +35,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::error::{AppError, AppResult};
 use crate::vault::{
-    AiProviderConfig, AuthMethod, HostProfile, HostSecret, KeychainItem, PairedDevice, Snippet,
+    AiProviderConfig, AuthMethod, HostProfile, KeychainItem, PairedDevice, Snippet,
     TunnelConfig, Vault, VaultRecord,
 };
 
@@ -90,14 +90,22 @@ struct HandshakeResponse {
     pub server_device_name: String,
 }
 
+#[derive(Default, Clone, Serialize, Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+struct PairingSecretDto {
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub passphrase: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FullVaultArchive {
     pub version: u32,
     pub sender_device: String,
     pub vaults: Vec<VaultRecord>,
-    pub hosts: Vec<(HostProfile, Option<HostSecret>)>,
-    pub keychain: Vec<(KeychainItem, Option<HostSecret>)>,
+    pub hosts: Vec<(HostProfile, Option<PairingSecretDto>)>,
+    pub keychain: Vec<(KeychainItem, Option<PairingSecretDto>)>,
     pub snippets: Vec<Snippet>,
     pub tunnels: Vec<TunnelConfig>,
     #[serde(default)]
@@ -226,7 +234,7 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
                 let key: Option<String> = r.get(15)?;
                 let pass: Option<String> = r.get(16)?;
                 let secret = if pwd.is_some() || key.is_some() || pass.is_some() {
-                    Some(HostSecret {
+                    Some(PairingSecretDto {
                         password: pwd,
                         private_key: key,
                         passphrase: pass,
@@ -259,7 +267,7 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
                     vault_id: r.get(8)?,
                 };
                 let secret = if has_secret {
-                    Some(HostSecret {
+                    Some(PairingSecretDto {
                         password: pwd,
                         private_key: key,
                         passphrase: pass,
@@ -598,6 +606,9 @@ async fn handle_incoming_pairing(
 ) -> AppResult<()> {
     let mut buf = vec![0u8; 65536];
     let mut n_total = 0;
+    let mut scan_from = 0usize;
+    let mut header_pos = None;
+    let mut content_len = 0;
 
     while n_total < buf.len() {
         let n = stream
@@ -609,24 +620,33 @@ async fn handle_incoming_pairing(
         }
         n_total += n;
 
-        if let Some(pos) = buf[..n_total].windows(4).position(|w| w == b"\r\n\r\n") {
-            let headers_str = String::from_utf8_lossy(&buf[..pos]);
-            if headers_str.starts_with("OPTIONS") {
-                // No CORS headers: this is a native-client protocol, not a browser API.
-                let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-                stream.write_all(resp.as_bytes()).await.map_err(|e| AppError::Other(e.to_string()))?;
-                return Ok(());
-            }
-
-            let mut content_len = 0;
-            for line in headers_str.lines() {
-                if line.to_ascii_lowercase().starts_with("content-length:") {
-                    if let Some(len_str) = line.split(':').nth(1) {
-                        content_len = len_str.trim().parse().unwrap_or(0);
+        if header_pos.is_none() {
+            if n_total >= 4 && scan_from + 3 <= n_total {
+                if let Some(pos_rel) = buf[scan_from..n_total].windows(4).position(|w| w == b"\r\n\r\n") {
+                    let pos = scan_from + pos_rel;
+                    header_pos = Some(pos);
+                    let headers_str = String::from_utf8_lossy(&buf[..pos]);
+                    if headers_str.starts_with("OPTIONS") {
+                        // No CORS headers: this is a native-client protocol, not a browser API.
+                        let resp = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+                        stream.write_all(resp.as_bytes()).await.map_err(|e| AppError::Other(e.to_string()))?;
+                        return Ok(());
                     }
+
+                    for line in headers_str.lines() {
+                        if line.to_ascii_lowercase().starts_with("content-length:") {
+                            if let Some(len_str) = line.split(':').nth(1) {
+                                content_len = len_str.trim().parse().unwrap_or(0);
+                            }
+                        }
+                    }
+                } else {
+                    scan_from = n_total.saturating_sub(3);
                 }
             }
+        }
 
+        if let Some(pos) = header_pos {
             let body_start = pos + 4;
             if n_total - body_start >= content_len {
                 let body_slice = &buf[body_start..body_start + content_len];

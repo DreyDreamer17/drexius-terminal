@@ -625,78 +625,12 @@ fn proxy_bidirectional(
 ///   • SSH channel  →  local TCP stream  = remote client's request ("up" in the UI)
 ///   • Local stream →  SSH channel       = local service's response ("down" in the UI)
 fn proxy_remote_channel(
-    mut local: TcpStream,
-    mut channel: ssh2::Channel,
+    local: TcpStream,
+    channel: ssh2::Channel,
     stop: Arc<AtomicBool>,
     bytes_up: Arc<AtomicU64>,
     bytes_down: Arc<AtomicU64>,
 ) {
-    let _ = local.set_nonblocking(true);
-
-    let mut chan_buf = [0u8; 16 * 1024];
-    let mut local_buf = [0u8; 16 * 1024];
-
-    while !stop.load(Ordering::Relaxed) {
-        let mut had_activity = false;
-
-        // 1. SSH Channel → Local service (inbound from remote client; "up")
-        match channel.read(&mut chan_buf) {
-            Ok(0) => {
-                if channel.eof() {
-                    break;
-                }
-            }
-            Ok(n) => {
-                had_activity = true;
-                bytes_up.fetch_add(n as u64, Ordering::Relaxed);
-                let mut written = 0;
-                while written < n {
-                    match local.write(&chan_buf[written..n]) {
-                        Ok(0) => break,
-                        Ok(w) => written += w,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(2));
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if written < n {
-                    break;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
-        }
-
-        // 2. Local service → SSH Channel (response back to remote client; "down")
-        match local.read(&mut local_buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                had_activity = true;
-                bytes_down.fetch_add(n as u64, Ordering::Relaxed);
-                let mut written = 0;
-                while written < n {
-                    match channel.write(&local_buf[written..n]) {
-                        Ok(0) => break,
-                        Ok(w) => written += w,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(2));
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if written < n {
-                    break;
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => break,
-        }
-
-        if !had_activity {
-            thread::sleep(Duration::from_millis(15));
-        }
-    }
-
-    let _ = channel.send_eof();
+    // Traffic directions flipped: channel->local is "up", local->channel is "down".
+    proxy_bidirectional(local, channel, stop, bytes_down, bytes_up);
 }

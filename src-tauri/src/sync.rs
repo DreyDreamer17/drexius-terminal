@@ -40,6 +40,7 @@ pub struct SyncRecord {
     pub body: serde_json::Value,
 }
 
+#[derive(Clone)]
 pub struct SyncKeys {
     enc: Zeroizing<[u8; 32]>,
     index: Zeroizing<[u8; 32]>,
@@ -116,6 +117,7 @@ pub trait SyncTransport: Send + Sync {
 
 /// Reference HTTP relay transport. Works against any server exposing
 /// `PUT/GET /blobs/:id` and `GET /changes?since=&device=`.
+#[derive(Clone)]
 pub struct HttpRelay {
     pub base_url: String,
     pub client: reqwest::Client,
@@ -650,15 +652,25 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     let mut remote_blobs: HashMap<String, (SyncRecord, u64)> = HashMap::new();
     let mut remote_hlcs: HashMap<(String, String), String> = HashMap::new();
     let mut max_cursor: u64 = 0;
+    for (_blob_id, cur) in &ids_to_fetch {
+        max_cursor = max_cursor.max(*cur);
+    }
+
+    let mut fetch_set = tokio::task::JoinSet::new();
     for (blob_id, cur) in ids_to_fetch {
-        max_cursor = max_cursor.max(cur);
-        let bytes = match relay.get(&blob_id).await {
-            Ok(Some(b)) => b,
-            _ => continue,
-        };
-        if let Ok(rec) = keys.open(&blob_id, &bytes) {
-            remote_hlcs.insert((rec.table.clone(), rec.id.clone()), rec.hlc.clone());
-            remote_blobs.insert(blob_id, (rec, cur));
+        let relay = relay.clone();
+        fetch_set.spawn(async move {
+            let res = relay.get(&blob_id).await;
+            (blob_id, cur, res)
+        });
+    }
+
+    while let Some(res) = fetch_set.join_next().await {
+        if let Ok((blob_id, cur, Ok(Some(bytes)))) = res {
+            if let Ok(rec) = keys.open(&blob_id, &bytes) {
+                remote_hlcs.insert((rec.table.clone(), rec.id.clone()), rec.hlc.clone());
+                remote_blobs.insert(blob_id, (rec, cur));
+            }
         }
     }
 
@@ -700,7 +712,8 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
     // 2. Collect local records AFTER merge and push ONLY records that are locally newer than the relay
     let post_merge_local_records = vault.with(|conn| collect_local_records(conn, &device_id))?;
     let mut pushed = 0usize;
-    for rec in &post_merge_local_records {
+    let mut push_set = tokio::task::JoinSet::new();
+    for rec in post_merge_local_records {
         // If the relay already has this record with equal or newer HLC, skip pushing to avoid clobbering
         if let Some(r_hlc) = remote_hlcs.get(&(rec.table.clone(), rec.id.clone())) {
             if !hlc_wins(&rec.hlc, r_hlc) {
@@ -709,13 +722,30 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
         }
 
         let blob_id = keys.blind_id(&rec.table, &rec.id);
-        let blob = keys.seal(rec)?;
-        match relay.put(&blob_id, blob).await {
-            Ok(()) => pushed += 1,
-            Err(e) => {
+        let blob = keys.seal(&rec)?;
+        let relay = relay.clone();
+        let table = rec.table.clone();
+        let id = rec.id.clone();
+        push_set.spawn(async move {
+            let res = relay.put(&blob_id, blob).await;
+            (table, id, res)
+        });
+    }
+
+    while let Some(res) = push_set.join_next().await {
+        match res {
+            Ok((_table, _id, Ok(()))) => {
+                pushed += 1;
+            }
+            Ok((table, id, Err(e))) => {
                 let mut s = engine.status.lock();
-                s.last_error = Some(format!("push failed for {}/{}: {e}", rec.table, rec.id));
+                s.last_error = Some(format!("push failed for {table}/{id}: {e}"));
                 return Err(e);
+            }
+            Err(join_err) => {
+                let mut s = engine.status.lock();
+                s.last_error = Some(format!("push task error: {join_err}"));
+                return Err(AppError::Other(join_err.to_string()));
             }
         }
     }

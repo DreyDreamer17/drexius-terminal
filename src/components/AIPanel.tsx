@@ -63,6 +63,7 @@ import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
 
 interface Msg {
+  id?: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
   offline?: boolean;
@@ -70,6 +71,8 @@ interface Msg {
   keyUsed?: string;
   proxyUsed?: string;
 }
+
+const createMsgId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
 const sanitizeConfigsForStorage = (cfgs: AiProviderConfig[]): AiProviderConfig[] => {
   return cfgs.map((c) => ({
@@ -1110,8 +1113,8 @@ export function AIPanel({
         `If you need the terminal output, ask the user to attach it with the + button.`;
 
     const currentMsgs = msgsRef.current;
-    const history: Msg[] = [...currentMsgs, { role: 'user', content: fullPrompt }];
-    const initialAssistantMsgs: Msg[] = [...history, { role: 'assistant', content: '', modelUsed: activeConfig.selectedModel }];
+    const history: Msg[] = [...currentMsgs, { id: createMsgId(), role: 'user', content: fullPrompt }];
+    const initialAssistantMsgs: Msg[] = [...history, { id: createMsgId(), role: 'assistant', content: '', modelUsed: activeConfig.selectedModel }];
     setMsgs(initialAssistantMsgs);
     msgsRef.current = initialAssistantMsgs;
     setInput('');
@@ -2146,7 +2149,7 @@ export function AIPanel({
 
         {msgs.map((m, i) => (
           <div
-            key={i}
+            key={m.id || `msg-${i}`}
             className={cn(
               'group relative text-[12.5px] leading-relaxed',
               m.role === 'user'

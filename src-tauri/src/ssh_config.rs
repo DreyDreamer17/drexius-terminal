@@ -47,50 +47,43 @@ pub fn ssh_config_detect() -> AppResult<Option<String>> {
     Ok(None)
 }
 
-/// Parse SSH config text into a structured list of host entries.
-pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
-    let mut results: Vec<ParsedSshHost> = Vec::new();
+#[derive(Default)]
+struct HostAcc {
+    aliases: Vec<String>,
+    hostname: Option<String>,
+    user: Option<String>,
+    port: Option<u16>,
+    identity: Option<String>,
+    jump: Option<String>,
+}
 
-    // Default global directives applied if not overridden
-    let mut global_user: Option<String> = None;
-    let mut global_port: Option<u16> = None;
-    let mut global_identity: Option<String> = None;
+#[derive(Default)]
+struct Globals {
+    user: Option<String>,
+    port: Option<u16>,
+    identity: Option<String>,
+}
 
-    // Current host working accumulator
-    let mut current_aliases: Vec<String> = Vec::new();
-    let mut current_hostname: Option<String> = None;
-    let mut current_user: Option<String> = None;
-    let mut current_port: Option<u16> = None;
-    let mut current_identity: Option<String> = None;
-    let mut current_jump: Option<String> = None;
-
-    let flush_current = |results: &mut Vec<ParsedSshHost>,
-                         aliases: &mut Vec<String>,
-                         hostname: &mut Option<String>,
-                         user: &mut Option<String>,
-                         port: &mut Option<u16>,
-                         identity: &mut Option<String>,
-                         jump: &mut Option<String>,
-                         g_user: &Option<String>,
-                         g_port: &Option<u16>,
-                         g_ident: &Option<String>| {
-        if aliases.is_empty() {
+impl HostAcc {
+    fn flush_into(&mut self, results: &mut Vec<ParsedSshHost>, g: &Globals) {
+        if self.aliases.is_empty() {
             return;
         }
 
-        for alias in aliases.drain(..) {
+        for alias in self.aliases.drain(..) {
             // Skip wildcards
             if alias.contains('*') || alias.contains('?') || alias.starts_with('!') {
                 continue;
             }
 
-            let effective_host = hostname.clone().unwrap_or_else(|| alias.clone());
-            let effective_user = user
+            let effective_host = self.hostname.clone().unwrap_or_else(|| alias.clone());
+            let effective_user = self
+                .user
                 .clone()
-                .or_else(|| g_user.clone())
+                .or_else(|| g.user.clone())
                 .unwrap_or_else(|| "root".to_string());
-            let effective_port = port.or(*g_port).unwrap_or(22);
-            let effective_identity = identity.clone().or_else(|| g_ident.clone());
+            let effective_port = self.port.or(g.port).unwrap_or(22);
+            let effective_identity = self.identity.clone().or_else(|| g.identity.clone());
 
             results.push(ParsedSshHost {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -99,17 +92,24 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
                 port: effective_port,
                 username: effective_user,
                 identity_file: effective_identity,
-                proxy_jump: jump.clone(),
+                proxy_jump: self.jump.clone(),
                 group: Some("SSH Config".to_string()),
             });
         }
 
-        *hostname = None;
-        *user = None;
-        *port = None;
-        *identity = None;
-        *jump = None;
-    };
+        self.hostname = None;
+        self.user = None;
+        self.port = None;
+        self.identity = None;
+        self.jump = None;
+    }
+}
+
+/// Parse SSH config text into a structured list of host entries.
+pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
+    let mut results: Vec<ParsedSshHost> = Vec::new();
+    let mut globals = Globals::default();
+    let mut current = HostAcc::default();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -137,18 +137,7 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
 
         if key_lower == "host" {
             // New Host block
-            flush_current(
-                &mut results,
-                &mut current_aliases,
-                &mut current_hostname,
-                &mut current_user,
-                &mut current_port,
-                &mut current_identity,
-                &mut current_jump,
-                &global_user,
-                &global_port,
-                &global_identity,
-            );
+            current.flush_into(&mut results, &globals);
 
             let patterns: Vec<String> = val
                 .split_whitespace()
@@ -159,44 +148,33 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
             // If pattern is just `*`, it's a global config section
             if patterns.len() == 1 && patterns[0] == "*" {
                 // Future directives update globals
-                current_aliases = Vec::new();
+                current.aliases = Vec::new();
             } else {
-                current_aliases = patterns;
+                current.aliases = patterns;
             }
-        } else if current_aliases.is_empty() {
+        } else if current.aliases.is_empty() {
             // Directives outside or under Host * apply globally
             match key_lower.as_str() {
-                "user" => global_user = Some(val.to_string()),
-                "port" => global_port = val.parse::<u16>().ok(),
-                "identityfile" => global_identity = Some(val.to_string()),
+                "user" => globals.user = Some(val.to_string()),
+                "port" => globals.port = val.parse::<u16>().ok(),
+                "identityfile" => globals.identity = Some(val.to_string()),
                 _ => {}
             }
         } else {
             // Inside a specific Host block
             match key_lower.as_str() {
-                "hostname" => current_hostname = Some(val.to_string()),
-                "user" => current_user = Some(val.to_string()),
-                "port" => current_port = val.parse::<u16>().ok(),
-                "identityfile" => current_identity = Some(val.to_string()),
-                "proxyjump" => current_jump = Some(val.to_string()),
+                "hostname" => current.hostname = Some(val.to_string()),
+                "user" => current.user = Some(val.to_string()),
+                "port" => current.port = val.parse::<u16>().ok(),
+                "identityfile" => current.identity = Some(val.to_string()),
+                "proxyjump" => current.jump = Some(val.to_string()),
                 _ => {}
             }
         }
     }
 
     // Flush last block
-    flush_current(
-        &mut results,
-        &mut current_aliases,
-        &mut current_hostname,
-        &mut current_user,
-        &mut current_port,
-        &mut current_identity,
-        &mut current_jump,
-        &global_user,
-        &global_port,
-        &global_identity,
-    );
+    current.flush_into(&mut results, &globals);
 
     results
 }
