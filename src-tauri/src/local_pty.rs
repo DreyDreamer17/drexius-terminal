@@ -9,11 +9,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
+
+/// Maximum number of buffered input commands before back-pressure kicks in.
+/// Prevents unbounded memory growth when the UI sends a large paste faster
+/// than the PTY can consume it.
+const INPUT_QUEUE_CAP: usize = 256;
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
@@ -47,7 +52,12 @@ enum PtyCmd {
 }
 
 struct LocalSessionHandle {
-    tx: Sender<PtyCmd>,
+    tx: SyncSender<PtyCmd>,
+    /// Shared handle to the child process so `local_pty_close` can send
+    /// SIGKILL / TerminateProcess before the master fd is dropped.
+    /// Guarantees the reader thread's `read()` call unblocks even when
+    /// the shell is blocked on I/O and would otherwise ignore EOF.
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -61,7 +71,12 @@ impl LocalPtyManager {
         let h = guard
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.into()))?;
-        h.tx.send(cmd).map_err(|_| AppError::SessionNotFound(session_id.into()))
+        h.tx.try_send(cmd).map_err(|e| match e {
+            mpsc::TrySendError::Full(_) =>
+                AppError::Other("terminal input queue is full; try again in a moment".into()),
+            mpsc::TrySendError::Disconnected(_) =>
+                AppError::SessionNotFound(session_id.into()),
+        })
     }
 }
 
@@ -102,19 +117,25 @@ pub fn local_pty_spawn(
         .unwrap_or_else(|| std::path::PathBuf::from("/"));
     cmd.cwd(work_dir.clone());
 
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| AppError::Other(format!("Failed to spawn shell '{shell_path}': {e}")))?;
 
     drop(pair.slave); // Ensure EOF is seen when child exits
 
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = mpsc::channel::<PtyCmd>();
+    // Wrap child in Arc<Mutex<…>> so local_pty_close can kill it from another
+    // thread while the I/O thread is blocked in reader.read().
+    let child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>> =
+        Arc::new(Mutex::new(child));
 
-    mgr.sessions
-        .lock()
-        .insert(session_id.clone(), LocalSessionHandle { tx });
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::sync_channel::<PtyCmd>(INPUT_QUEUE_CAP);
+
+    mgr.sessions.lock().insert(
+        session_id.clone(),
+        LocalSessionHandle { tx, child: child.clone() },
+    );
 
     let sid = session_id.clone();
     let os_name = if cfg!(target_os = "macos") {
@@ -137,18 +158,24 @@ pub fn local_pty_spawn(
     });
 
     let sid_thread = session_id.clone();
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(format!("local-pty-{}", &sid[..8]))
         .spawn(move || {
             pty_io_loop(pair.master, rx, &on_event);
-            let _ = child.wait(); // Reaps the child process so exited shells don't linger as zombies
+            // Reap the child so exited shells don't linger as zombies.
+            let _ = child.lock().wait();
             let _ = on_event.send(PtyEvent::Disconnected {
                 reason: "shell process exited".into(),
                 resumable: false,
             });
             app.state::<LocalPtyManager>().sessions.lock().remove(&sid_thread);
         })
-        .map_err(|e| AppError::Io(e))?;
+    {
+        // Spawn failed — remove the handle we just inserted so the session
+        // slot doesn't stay occupied forever (Finding #30).
+        mgr.sessions.lock().remove(&session_id);
+        return Err(AppError::Io(e));
+    }
 
     Ok(session_id)
 }
@@ -165,7 +192,19 @@ pub fn local_pty_resize(session_id: String, cols: u32, rows: u32, mgr: State<'_,
 
 #[tauri::command]
 pub fn local_pty_close(session_id: String, mgr: State<'_, LocalPtyManager>) -> AppResult<()> {
-    mgr.send(&session_id, PtyCmd::Close)
+    // Remove the handle from the map first so no further commands can be queued.
+    let handle = mgr.sessions.lock().remove(&session_id);
+    if let Some(h) = handle {
+        // Kill the child process (SIGKILL on Unix, TerminateProcess on Windows).
+        // This causes the PTY master to return EOF on the next read, unblocking
+        // the reader thread immediately without waiting for the shell to exit
+        // cleanly. Descendants are also killed via the PTY session.
+        let _ = h.child.lock().kill();
+        // Tell the write thread to stop (best-effort; it also exits when the
+        // Receiver is dropped because the SyncSender becomes Disconnected).
+        let _ = h.tx.try_send(PtyCmd::Close);
+    }
+    Ok(())
 }
 
 fn pty_io_loop(
