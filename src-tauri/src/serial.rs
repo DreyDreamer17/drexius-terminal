@@ -90,6 +90,7 @@ enum Cmd {
     Close,
     /// Re-apply DTR (e.g. after an Arduino auto-reset cycle); optional
     /// convenience for microcontroller work.
+    #[allow(dead_code)]
     PulseDtr,
 }
 

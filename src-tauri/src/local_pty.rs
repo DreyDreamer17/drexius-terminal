@@ -224,7 +224,7 @@ fn pty_io_loop(
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5));
+                thread::sleep(Duration::from_millis(10));
             }
             Err(_) => break,
         }

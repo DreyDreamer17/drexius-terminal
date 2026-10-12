@@ -361,12 +361,21 @@ impl Vault {
     pub fn unlock(&self, master_password: &str) -> AppResult<()> {
         let salt = match std::fs::read(self.salt_path()) {
             Ok(s) if s.len() == 16 => s,
-            _ => {
+            Ok(s) => return Err(AppError::Crypto(format!("vault salt file is corrupt ({} bytes, expected 16)", s.len()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if self.path.exists() {
+                    return Err(AppError::Crypto(
+                        "Vault database exists but its salt file (nexus.vault.salt) is missing. \
+                         Refusing to generate a new salt to prevent permanent data loss. \
+                         Please restore nexus.vault.salt or delete the vault database to reset.".into()
+                    ));
+                }
                 let mut s = vec![0u8; 16];
                 rand::thread_rng().fill_bytes(&mut s);
                 std::fs::write(self.salt_path(), &s)?;
                 s
             }
+            Err(e) => return Err(AppError::Io(e)),
         };
         let key = Self::derive_key(master_password, &salt)?;
         let conn = Connection::open(&self.path)?;
@@ -380,29 +389,35 @@ impl Vault {
             .map_err(|_| AppError::BadMasterPassword)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         conn.execute_batch(SCHEMA)?;
-        // Migrations
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS vaults (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal', color TEXT, description TEXT, created_at INTEGER NOT NULL)", []);
-        let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
-        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
-        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-        let _ = conn.execute("ALTER TABLE hosts ADD COLUMN startup_command TEXT", []);
-        let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-        let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-        let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", []);
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", []);
-        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN use_proxies INTEGER NOT NULL DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_urls TEXT NOT NULL DEFAULT '[]'", []);
-        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_strategy TEXT NOT NULL DEFAULT 'p2c'", []);
-        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_proxy INTEGER NOT NULL DEFAULT 0", []);
-        let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_host_id TEXT", []);
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []);
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS command_history (id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0)", []);
-        let _ = conn.execute("CREATE TABLE IF NOT EXISTS clipboard_history (id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL, line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)", []);
-        // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
-        let _ = import_hosts_keys_internal(&conn);
+        // Migrations: gated by SQLite user_version so ALTER TABLE statements only run once
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+        if user_version < 2 {
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS vaults (id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'personal', color TEXT, description TEXT, created_at INTEGER NOT NULL)", []);
+            let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
+            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT", []);
+            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN keychain_id TEXT", []);
+            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN jump_host_id TEXT", []);
+            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+            let _ = conn.execute("ALTER TABLE hosts ADD COLUMN startup_command TEXT", []);
+            let _ = conn.execute("ALTER TABLE keychain ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+            let _ = conn.execute("ALTER TABLE tunnels ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+            let _ = conn.execute("ALTER TABLE snippets ADD COLUMN vault_id TEXT DEFAULT 'personal'", []);
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", []);
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", []);
+            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN use_proxies INTEGER NOT NULL DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_urls TEXT NOT NULL DEFAULT '[]'", []);
+            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN proxy_strategy TEXT NOT NULL DEFAULT 'p2c'", []);
+            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_proxy INTEGER NOT NULL DEFAULT 0", []);
+            let _ = conn.execute("ALTER TABLE ai_configs ADD COLUMN auto_ssh_host_id TEXT", []);
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS ai_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []);
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS command_history (id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0)", []);
+            let _ = conn.execute("CREATE TABLE IF NOT EXISTS clipboard_history (id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL, line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0)", []);
+            // Auto-detect and import keys from existing hosts into keychain (idempotent, only imports unlinked)
+            let _ = import_hosts_keys_internal(&conn);
+            let _ = conn.execute("PRAGMA user_version = 2", []);
+        } else {
+            let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
+        }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
         Ok(())
     }
@@ -607,20 +622,25 @@ fn row_to_host(r: &rusqlite::Row) -> rusqlite::Result<HostProfile> {
 
 // ─────────────────────────── Commands ───────────────────────────
 
-use tauri::State;
+use tauri::{Manager, State};
 
 #[tauri::command]
 pub fn vault_status(vault: State<'_, Vault>) -> VaultStatus {
     VaultStatus { initialized: vault.path.exists(), unlocked: vault.inner.lock().is_some() }
 }
 
-#[tauri::command(async)]
-pub fn vault_unlock(master_password: String, vault: State<'_, Vault>) -> AppResult<()> {
+#[tauri::command]
+pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> AppResult<()> {
     if master_password.len() < 4 {
         return Err(AppError::Other("Master password must be at least 4 characters".into()));
     }
     let pw = Zeroizing::new(master_password);
-    vault.unlock(&pw)
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = app.state::<Vault>();
+        vault.unlock(&pw)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 #[tauri::command]
@@ -643,37 +663,42 @@ pub fn vault_lock(vault: State<'_, Vault>) {
 // flag); we don't provide a "probe" backend command because probing would
 // itself trigger a biometric prompt on some platforms.
 
-#[tauri::command(async)]
-pub fn os_keychain_unlock(vault: State<'_, Vault>) -> AppResult<()> {
-    // Read the master password from the OS keychain and unlock the vault.
-    // On macOS this triggers a Touch ID / Apple Watch prompt via the
-    // Security framework; on Windows it opens a Windows Hello consent
-    // dialog if the credential is protected. The user has explicitly
-    // tapped the biometric-unlock button before this is called.
-    let pw = match keychain_entry()?.get_password() {
-        Ok(p) => Zeroizing::new(p),
-        Err(keyring::Error::NoEntry) => {
-            return Err(AppError::Other(
-                "No master password stored in OS keychain".into(),
-            ))
-        }
-        Err(keyring::Error::NoStorageAccess(e)) => {
-            return Err(AppError::Other(format!(
-                "OS keychain unavailable: {e}"
-            )))
-        }
-        Err(keyring::Error::PlatformFailure(e)) => {
-            return Err(AppError::Other(format!(
-                "Biometric prompt failed: {e}"
-            )))
-        }
-        Err(e) => {
-            return Err(AppError::Other(format!(
-                "OS keychain denied access: {e}"
-            )))
-        }
-    };
-    vault.unlock(&pw)
+#[tauri::command]
+pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Read the master password from the OS keychain and unlock the vault.
+        // On macOS this triggers a Touch ID / Apple Watch prompt via the
+        // Security framework; on Windows it opens a Windows Hello consent
+        // dialog if the credential is protected. The user has explicitly
+        // tapped the biometric-unlock button before this is called.
+        let pw = match keychain_entry()?.get_password() {
+            Ok(p) => Zeroizing::new(p),
+            Err(keyring::Error::NoEntry) => {
+                return Err(AppError::Other(
+                    "No master password stored in OS keychain".into(),
+                ))
+            }
+            Err(keyring::Error::NoStorageAccess(e)) => {
+                return Err(AppError::Other(format!(
+                    "OS keychain unavailable: {e}"
+                )))
+            }
+            Err(keyring::Error::PlatformFailure(e)) => {
+                return Err(AppError::Other(format!(
+                    "Biometric prompt failed: {e}"
+                )))
+            }
+            Err(e) => {
+                return Err(AppError::Other(format!(
+                    "OS keychain denied access: {e}"
+                )))
+            }
+        };
+        let vault = app.state::<Vault>();
+        vault.unlock(&pw)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 #[tauri::command]
@@ -1115,8 +1140,7 @@ pub struct GeneratedKeyPair {
     pub fingerprint: String,
 }
 
-#[tauri::command]
-pub fn keychain_generate_key(
+fn keychain_generate_key_sync(
     algorithm: String,
     bits: Option<u32>,
     comment: Option<String>,
@@ -1210,15 +1234,31 @@ pub fn keychain_generate_key(
     })
 }
 
+#[tauri::command]
+pub async fn keychain_generate_key(
+    algorithm: String,
+    bits: Option<u32>,
+    comment: Option<String>,
+    passphrase: Option<String>,
+) -> AppResult<GeneratedKeyPair> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keychain_generate_key_sync(algorithm, bits, comment, passphrase)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
 // ── Connection Logs ──
 
 #[tauri::command]
-pub fn logs_list(vault: State<'_, Vault>) -> AppResult<Vec<ConnectionLog>> {
+pub fn logs_list(limit: Option<usize>, vault: State<'_, Vault>) -> AppResult<Vec<ConnectionLog>> {
+    let lim = limit.unwrap_or(100).min(1000);
     vault.with(|c| {
-        let mut st = c.prepare(
+        let sql = format!(
             "SELECT id, host_id, host_label, username, hostname, started_at, ended_at, duration, status, saved
-             FROM connection_logs ORDER BY started_at DESC LIMIT 100",
-        )?;
+             FROM connection_logs ORDER BY started_at DESC LIMIT {lim}"
+        );
+        let mut st = c.prepare(&sql)?;
         let rows = st.query_map([], |r| {
             let saved_int: i64 = r.get(9)?;
             Ok(ConnectionLog {
@@ -1803,281 +1843,291 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
 // ── Zero-Knowledge Team Sharing (Encrypted .nxvault Bundles) ──
 
 #[tauri::command]
-pub fn team_vault_export(
+pub async fn team_vault_export(
     vault_id: String,
     passphrase: String,
-    vault: State<'_, Vault>,
+    app: tauri::AppHandle,
 ) -> AppResult<EncryptedTeamVaultBundle> {
     if passphrase.trim().is_empty() {
         return Err(AppError::Other("Passphrase cannot be empty".into()));
     }
 
-    let payload = vault.with(|c| {
-        let v_record: VaultRecord = c.query_row(
-            "SELECT id, name, kind, color, description, created_at FROM vaults WHERE id=?1",
-            [&vault_id],
-            |r| {
-                Ok(VaultRecord {
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = app.state::<Vault>();
+        let payload = vault.with(|c| {
+            let v_record: VaultRecord = c.query_row(
+                "SELECT id, name, kind, color, description, created_at FROM vaults WHERE id=?1",
+                [&vault_id],
+                |r| {
+                    Ok(VaultRecord {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        kind: r.get(2)?,
+                        color: r.get(3)?,
+                        description: r.get(4)?,
+                        created_at: r.get(5)?,
+                    })
+                },
+            ).unwrap_or_else(|_| VaultRecord {
+                id: vault_id.clone(),
+                name: "Team Vault".into(),
+                kind: "team".into(),
+                color: Some("#10b981".into()),
+                description: Some("Shared Team Vault".into()),
+                created_at: now(),
+            });
+
+            let mut st_hosts = c.prepare(
+                "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
+                        (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL)
+                 FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id
+                 WHERE h.vault_id = ?1",
+            )?;
+            let hosts = st_hosts.query_map([&vault_id], |r| {
+                let mut h = row_to_host(r)?;
+                h.has_secret = r.get(14)?;
+                Ok(h)
+            })?.collect::<Result<Vec<_>, _>>()?;
+
+            let mut st_snips = c.prepare("SELECT id, name, command, folder, tags, vault_id FROM snippets WHERE vault_id = ?1")?;
+            let snippets = st_snips.query_map([&vault_id], |r| {
+                let tags: String = r.get(4)?;
+                Ok(Snippet {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    kind: r.get(2)?,
-                    color: r.get(3)?,
-                    description: r.get(4)?,
-                    created_at: r.get(5)?,
+                    command: r.get(2)?,
+                    folder: r.get(3)?,
+                    tags: serde_json::from_str(&tags).unwrap_or_default(),
+                    vault_id: r.get(5)?,
                 })
-            },
-        ).unwrap_or_else(|_| VaultRecord {
-            id: vault_id.clone(),
-            name: "Team Vault".into(),
-            kind: "team".into(),
-            color: Some("#10b981".into()),
-            description: Some("Shared Team Vault".into()),
-            created_at: now(),
-        });
+            })?.collect::<Result<Vec<_>, _>>()?;
 
-        let mut st_hosts = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
-                    (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL)
-             FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id
-             WHERE h.vault_id = ?1",
-        )?;
-        let hosts = st_hosts.query_map([&vault_id], |r| {
-            let mut h = row_to_host(r)?;
-            h.has_secret = r.get(14)?;
-            Ok(h)
-        })?.collect::<Result<Vec<_>, _>>()?;
+            let mut st_tun = c.prepare("SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id FROM tunnels WHERE vault_id = ?1")?;
+            let tunnels = st_tun.query_map([&vault_id], |r| {
+                Ok(TunnelConfig {
+                    id: r.get(0)?,
+                    label: r.get(1)?,
+                    host_id: r.get(2)?,
+                    forward_type: r.get(3)?,
+                    local_host: r.get(4)?,
+                    local_port: r.get(5)?,
+                    remote_host: r.get(6)?,
+                    remote_port: r.get(7)?,
+                    updated_at: r.get(8)?,
+                    vault_id: r.get(9)?,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
 
-        let mut st_snips = c.prepare("SELECT id, name, command, folder, tags, vault_id FROM snippets WHERE vault_id = ?1")?;
-        let snippets = st_snips.query_map([&vault_id], |r| {
-            let tags: String = r.get(4)?;
-            Ok(Snippet {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                command: r.get(2)?,
-                folder: r.get(3)?,
-                tags: serde_json::from_str(&tags).unwrap_or_default(),
-                vault_id: r.get(5)?,
+            let mut st_kc = c.prepare("SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id FROM keychain WHERE vault_id = ?1")?;
+            let keychain = st_kc.query_map([&vault_id], |r| {
+                let auth: String = r.get(3)?;
+                Ok(KeychainItem {
+                    id: r.get(0)?,
+                    label: r.get(1)?,
+                    username: r.get(2)?,
+                    auth_method: AuthMethod::parse(&auth),
+                    has_secret: r.get(4)?,
+                    updated_at: r.get(5)?,
+                    vault_id: r.get(6)?,
+                })
+            })?.collect::<Result<Vec<_>, _>>()?;
+
+            // Personal AI provider keys / proxy credentials are never shared with a team.
+            let ai_configs: Vec<AiProviderConfig> = Vec::new();
+
+            Ok(TeamVaultPayload {
+                vault: v_record,
+                hosts,
+                keychain,
+                tunnels,
+                snippets,
+                ai_configs,
             })
-        })?.collect::<Result<Vec<_>, _>>()?;
+        })?;
 
-        let mut st_tun = c.prepare("SELECT id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id FROM tunnels WHERE vault_id = ?1")?;
-        let tunnels = st_tun.query_map([&vault_id], |r| {
-            Ok(TunnelConfig {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                host_id: r.get(2)?,
-                forward_type: r.get(3)?,
-                local_host: r.get(4)?,
-                local_port: r.get(5)?,
-                remote_host: r.get(6)?,
-                remote_port: r.get(7)?,
-                updated_at: r.get(8)?,
-                vault_id: r.get(9)?,
-            })
-        })?.collect::<Result<Vec<_>, _>>()?;
+        let json_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| AppError::Other(format!("Failed to serialize vault payload: {e}")))?;
 
-        let mut st_kc = c.prepare("SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id FROM keychain WHERE vault_id = ?1")?;
-        let keychain = st_kc.query_map([&vault_id], |r| {
-            let auth: String = r.get(3)?;
-            Ok(KeychainItem {
-                id: r.get(0)?,
-                label: r.get(1)?,
-                username: r.get(2)?,
-                auth_method: AuthMethod::parse(&auth),
-                has_secret: r.get(4)?,
-                updated_at: r.get(5)?,
-                vault_id: r.get(6)?,
-            })
-        })?.collect::<Result<Vec<_>, _>>()?;
+        let mut salt = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut salt);
+        let key = Vault::derive_key(&passphrase, &salt)?;
 
-        // Personal AI provider keys / proxy credentials are never shared with a team.
-        let ai_configs: Vec<AiProviderConfig> = Vec::new();
+        let mut nonce_bytes = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
 
-        Ok(TeamVaultPayload {
-            vault: v_record,
-            hosts,
-            keychain,
-            tunnels,
-            snippets,
-            ai_configs,
+        let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
+        let ciphertext = cipher
+            .encrypt(nonce, json_bytes.as_ref())
+            .map_err(|e| AppError::Crypto(format!("Encryption failed: {e}")))?;
+
+        Ok(EncryptedTeamVaultBundle {
+            version: 1,
+            format: "nexus-team-vault".into(),
+            vault_name: payload.vault.name,
+            salt: hex::encode(salt),
+            nonce: hex::encode(nonce_bytes),
+            ciphertext: B64.encode(ciphertext),
         })
-    })?;
-
-    let json_bytes = serde_json::to_vec(&payload)
-        .map_err(|e| AppError::Other(format!("Failed to serialize vault payload: {e}")))?;
-
-    let mut salt = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut salt);
-    let key = Vault::derive_key(&passphrase, &salt)?;
-
-    let mut nonce_bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
-
-    let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
-    let ciphertext = cipher
-        .encrypt(nonce, json_bytes.as_ref())
-        .map_err(|e| AppError::Crypto(format!("Encryption failed: {e}")))?;
-
-    Ok(EncryptedTeamVaultBundle {
-        version: 1,
-        format: "nexus-team-vault".into(),
-        vault_name: payload.vault.name,
-        salt: hex::encode(salt),
-        nonce: hex::encode(nonce_bytes),
-        ciphertext: B64.encode(ciphertext),
     })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 #[tauri::command]
-pub fn team_vault_import(
+pub async fn team_vault_import(
     bundle: EncryptedTeamVaultBundle,
     passphrase: String,
-    vault: State<'_, Vault>,
+    app: tauri::AppHandle,
 ) -> AppResult<String> {
-    let salt = hex::decode(&bundle.salt)
-        .map_err(|_| AppError::Crypto("Invalid salt format".into()))?;
-    let key = Vault::derive_key(&passphrase, &salt)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let salt = hex::decode(&bundle.salt)
+            .map_err(|_| AppError::Crypto("Invalid salt format".into()))?;
+        let key = Vault::derive_key(&passphrase, &salt)?;
 
-    let nonce_bytes = hex::decode(&bundle.nonce)
-        .map_err(|_| AppError::Crypto("Invalid nonce format".into()))?;
-    if nonce_bytes.len() != 24 {
-        return Err(AppError::Crypto("Invalid nonce length".into()));
-    }
-    let nonce = XNonce::from_slice(&nonce_bytes);
+        let nonce_bytes = hex::decode(&bundle.nonce)
+            .map_err(|_| AppError::Crypto("Invalid nonce format".into()))?;
+        if nonce_bytes.len() != 24 {
+            return Err(AppError::Crypto("Invalid nonce length".into()));
+        }
+        let nonce = XNonce::from_slice(&nonce_bytes);
 
-    let ciphertext = B64
-        .decode(&bundle.ciphertext)
-        .map_err(|_| AppError::Crypto("Invalid ciphertext format".into()))?;
+        let ciphertext = B64
+            .decode(&bundle.ciphertext)
+            .map_err(|_| AppError::Crypto("Invalid ciphertext format".into()))?;
 
-    let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext.as_ref())
-        .map_err(|_| AppError::Crypto("Invalid passphrase or corrupted vault bundle".into()))?;
+        let cipher = XChaCha20Poly1305::new((key.as_ref()).into());
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext.as_ref())
+            .map_err(|_| AppError::Crypto("Invalid passphrase or corrupted vault bundle".into()))?;
 
-    let payload: TeamVaultPayload = serde_json::from_slice(&plaintext)
-        .map_err(|e| AppError::Other(format!("Failed to parse decrypted bundle: {e}")))?;
+        let payload: TeamVaultPayload = serde_json::from_slice(&plaintext)
+            .map_err(|e| AppError::Other(format!("Failed to parse decrypted bundle: {e}")))?;
 
-    // M4: a bundle must never write into the user's personal vault. Hosts with matching IDs would be overwritten.
-    if payload.vault.id == "personal" {
-        return Err(AppError::Other(
-            "This bundle targets the personal vault and was rejected. Team bundles must use a team vault id.".into(),
-        ));
-    }
+        // M4: a bundle must never write into the user's personal vault. Hosts with matching IDs would be overwritten.
+        if payload.vault.id == "personal" {
+            return Err(AppError::Other(
+                "This bundle targets the personal vault and was rejected. Team bundles must use a team vault id.".into(),
+            ));
+        }
 
-    vault.with(|c| {
-        c.execute(
-            "INSERT INTO vaults(id, name, kind, color, description, created_at)
-             VALUES(?1, ?2, 'team', ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
-            params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
-        )?;
+        let vault = app.state::<Vault>();
+        vault.with(|c| {
+            c.execute(
+                "INSERT INTO vaults(id, name, kind, color, description, created_at)
+                 VALUES(?1, ?2, 'team', ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
+                params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
+            )?;
 
-        let mut host_id_map: HashMap<String, String> = HashMap::new();
+            let mut host_id_map: HashMap<String, String> = HashMap::new();
 
-        for h in &payload.hosts {
-            // Check if this host id already exists in a different vault or has an attached secret
-            let is_collision = c.query_row(
-                "SELECT vault_id FROM hosts WHERE id = ?1",
-                [&h.id],
-                |r| r.get::<_, String>(0),
-            ).optional()?;
+            for h in &payload.hosts {
+                // Check if this host id already exists in a different vault or has an attached secret
+                let is_collision = c.query_row(
+                    "SELECT vault_id FROM hosts WHERE id = ?1",
+                    [&h.id],
+                    |r| r.get::<_, String>(0),
+                ).optional()?;
 
-            let has_secret: bool = c.query_row(
-                "SELECT 1 FROM secrets WHERE host_id = ?1",
-                [&h.id],
-                |_| Ok(true),
-            ).optional()?.unwrap_or(false);
-
-            let host_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
-                let new_id = uuid::Uuid::new_v4().to_string();
-                host_id_map.insert(h.id.clone(), new_id.clone());
-                new_id
-            } else {
-                h.id.clone()
-            };
-
-            // Imported hosts should only bind to keychains that exist within this team vault
-            let safe_keychain_id = if let Some(ref kid) = h.keychain_id {
-                let exists: bool = c.query_row(
-                    "SELECT 1 FROM keychain WHERE id = ?1 AND vault_id = ?2",
-                    params![kid, payload.vault.id],
+                let has_secret: bool = c.query_row(
+                    "SELECT 1 FROM secrets WHERE host_id = ?1",
+                    [&h.id],
                     |_| Ok(true),
                 ).optional()?.unwrap_or(false);
-                if exists { Some(kid.clone()) } else { None }
-            } else {
-                None
-            };
 
-            let jump_id = h.jump_host_id.as_ref().map(|jid| {
-                host_id_map.get(jid).cloned().unwrap_or_else(|| jid.clone())
-            });
+                let host_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
+                    let new_id = uuid::Uuid::new_v4().to_string();
+                    host_id_map.insert(h.id.clone(), new_id.clone());
+                    new_id
+                } else {
+                    h.id.clone()
+                };
 
-            c.execute(
-                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?15",
-                params![
-                    host_id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
-                    h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
-                    h.color, h.os, safe_keychain_id, jump_id, payload.vault.id,
-                    // M1: startup commands are never imported from a bundle. Auto-run on connect is code execution.
-                    Option::<String>::None,
-                    now()
-                ],
-            )?;
-        }
+                // Imported hosts should only bind to keychains that exist within this team vault
+                let safe_keychain_id = if let Some(ref kid) = h.keychain_id {
+                    let exists: bool = c.query_row(
+                        "SELECT 1 FROM keychain WHERE id = ?1 AND vault_id = ?2",
+                        params![kid, payload.vault.id],
+                        |_| Ok(true),
+                    ).optional()?.unwrap_or(false);
+                    if exists { Some(kid.clone()) } else { None }
+                } else {
+                    None
+                };
 
-        for s in &payload.snippets {
-            let snip_collision = c.query_row(
-                "SELECT vault_id FROM snippets WHERE id = ?1",
-                [&s.id],
-                |r| r.get::<_, String>(0),
-            ).optional()?;
-            let snip_id = if snip_collision.is_some() && snip_collision.as_deref() != Some(&payload.vault.id) {
-                uuid::Uuid::new_v4().to_string()
-            } else {
-                s.id.clone()
-            };
+                let jump_id = h.jump_host_id.as_ref().map(|jid| {
+                    host_id_map.get(jid).cloned().unwrap_or_else(|| jid.clone())
+                });
 
-            c.execute(
-                "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
-            )?;
-        }
+                c.execute(
+                    "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
+                         grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?15",
+                    params![
+                        host_id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
+                        h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
+                        h.color, h.os, safe_keychain_id, jump_id, payload.vault.id,
+                        // M1: startup commands are never imported from a bundle. Auto-run on connect is code execution.
+                        Option::<String>::None,
+                        now()
+                    ],
+                )?;
+            }
 
-        for t in &payload.tunnels {
-            let tun_collision = c.query_row(
-                "SELECT vault_id FROM tunnels WHERE id = ?1",
-                [&t.id],
-                |r| r.get::<_, String>(0),
-            ).optional()?;
-            let tun_id = if tun_collision.is_some() && tun_collision.as_deref() != Some(&payload.vault.id) {
-                uuid::Uuid::new_v4().to_string()
-            } else {
-                t.id.clone()
-            };
-            let mapped_host_id = host_id_map.get(&t.host_id).cloned().unwrap_or_else(|| t.host_id.clone());
+            for s in &payload.snippets {
+                let snip_collision = c.query_row(
+                    "SELECT vault_id FROM snippets WHERE id = ?1",
+                    [&s.id],
+                    |r| r.get::<_, String>(0),
+                ).optional()?;
+                let snip_id = if snip_collision.is_some() && snip_collision.as_deref() != Some(&payload.vault.id) {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    s.id.clone()
+                };
 
-            c.execute(
-                "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
-                     remote_host=?7, remote_port=?8, vault_id=?9, updated_at=?10",
-                params![
-                    tun_id, t.label, mapped_host_id, t.forward_type, t.local_host, t.local_port,
-                    t.remote_host, t.remote_port, payload.vault.id, now()
-                ],
-            )?;
-        }
+                c.execute(
+                    "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
+                )?;
+            }
 
-        // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's
-        // API keys, and importing must never overwrite this user's own AI settings.
+            for t in &payload.tunnels {
+                let tun_collision = c.query_row(
+                    "SELECT vault_id FROM tunnels WHERE id = ?1",
+                    [&t.id],
+                    |r| r.get::<_, String>(0),
+                ).optional()?;
+                let tun_id = if tun_collision.is_some() && tun_collision.as_deref() != Some(&payload.vault.id) {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    t.id.clone()
+                };
+                let mapped_host_id = host_id_map.get(&t.host_id).cloned().unwrap_or_else(|| t.host_id.clone());
 
-        Ok(payload.vault.id)
+                c.execute(
+                    "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6,
+                         remote_host=?7, remote_port=?8, vault_id=?9, updated_at=?10",
+                    params![
+                        tun_id, t.label, mapped_host_id, t.forward_type, t.local_host, t.local_port,
+                        t.remote_host, t.remote_port, payload.vault.id, now()
+                    ],
+                )?;
+            }
+
+            // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's
+            // API keys, and importing must never overwrite this user's own AI settings.
+
+            Ok(payload.vault.id)
+        })
     })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }
 
 // ── AI Provider Configuration & Key Pooling ──

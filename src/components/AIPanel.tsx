@@ -1180,8 +1180,21 @@ export function AIPanel({
     let acc = '';
     let usedKeyMask = '';
     let usedProxyMask = '';
+    let flushTimer: number | null = null;
 
     const effectiveCfg = getEffectiveConfig(activeConfig);
+
+    const flushStreamUpdate = () => {
+      const updated: Msg[] = [...history, {
+        role: 'assistant',
+        content: acc,
+        modelUsed: effectiveCfg.selectedModel,
+        keyUsed: usedKeyMask,
+        proxyUsed: usedProxyMask,
+      }];
+      setMsgs(updated);
+      msgsRef.current = updated;
+    };
 
     try {
       await chatStreamMultiProvider(
@@ -1190,15 +1203,12 @@ export function AIPanel({
         {
           onToken: (t) => {
             acc += t;
-            const updated: Msg[] = [...history, {
-              role: 'assistant',
-              content: acc,
-              modelUsed: effectiveCfg.selectedModel,
-              keyUsed: usedKeyMask,
-              proxyUsed: usedProxyMask,
-            }];
-            setMsgs(updated);
-            msgsRef.current = updated;
+            if (flushTimer === null) {
+              flushTimer = window.setTimeout(() => {
+                flushTimer = null;
+                flushStreamUpdate();
+              }, 40);
+            }
           },
           onKeyUsed: (masked) => {
             usedKeyMask = masked;
@@ -1217,6 +1227,11 @@ export function AIPanel({
         pane?.hostId
       );
 
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+
       const finalMsg: Msg = {
         role: 'assistant',
         content: acc,
@@ -1229,6 +1244,10 @@ export function AIPanel({
       setMsgs(nextMsgs);
       msgsRef.current = nextMsgs;
     } catch (e: unknown) {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
       const err = e instanceof Error ? e : new Error(typeof e === 'string' ? e : (e as Error)?.message || String(e));
       if (err.name !== 'AbortError') {
         const errMsgs: Msg[] = [

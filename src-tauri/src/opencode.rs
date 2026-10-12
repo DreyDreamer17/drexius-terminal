@@ -312,6 +312,7 @@ struct OpencodeToolState {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpencodeToolMetadata {
     exit: Option<i32>,
     truncated: Option<bool>,
@@ -451,54 +452,19 @@ pub async fn opencode_stream_cancel(stream_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Emit text in token-sized chunks with adaptive micro-delays so that the UI
-/// renders a live, smooth streaming response even when OpenCode outputs batch blocks.
+/// Emit text chunks immediately to the UI channel without synthetic sleep delays.
 async fn emit_chunked_stream(
     text: &str,
     channel: &tauri::ipc::Channel<AiStreamEvent>,
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> bool {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        current.push(ch);
-        if ch == ' ' || ch == '\n' || ch == '\t' || current.len() >= 24 {
-            tokens.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-
-    if tokens.is_empty() {
+    if text.is_empty() {
         return true;
     }
-
-    // Adaptive pacing: Keep overall streaming duration between 200ms and 1200ms
-    let count = tokens.len();
-    let delay_ms = if count <= 15 {
-        12
-    } else if count <= 50 {
-        8
-    } else if count <= 120 {
-        4
-    } else if count <= 250 {
-        2
-    } else {
-        1
-    };
-
-    for token in tokens {
-        if cancel_rx.try_recv().is_ok() {
-            return false;
-        }
-        let _ = channel.send(AiStreamEvent::Data { text: token });
-        if delay_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
+    if cancel_rx.try_recv().is_ok() {
+        return false;
     }
-
+    let _ = channel.send(AiStreamEvent::Data { text: text.to_string() });
     true
 }
 

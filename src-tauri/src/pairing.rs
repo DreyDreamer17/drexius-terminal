@@ -308,8 +308,15 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        // AI Configs
-        let ai_configs = crate::vault::query_all_ai_configs(c)?;
+        // AI Configs: strip API keys and proxy URLs to ensure credentials never leak over LAN pairing
+        let ai_configs = crate::vault::query_all_ai_configs(c)?
+            .into_iter()
+            .map(|mut cfg| {
+                cfg.api_keys.clear();
+                cfg.proxy_urls.clear();
+                cfg
+            })
+            .collect();
 
         Ok(FullVaultArchive {
             version: 1,
