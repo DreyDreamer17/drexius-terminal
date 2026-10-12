@@ -132,16 +132,32 @@ const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
 const fromB64 = (s: string) => b64ToBytes(s);
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+async function doPersistDemo() {
+  if (!demo || !demoKey) return;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
+  localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+}
+
 async function persistDemo() {
   if (!demo || !demoKey) return;
   if (persistTimer !== null) return;
   persistTimer = setTimeout(async () => {
     persistTimer = null;
-    if (!demo || !demoKey) return;
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
-    localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+    await doPersistDemo();
   }, 100);
+}
+
+if (typeof window !== 'undefined') {
+  const flushPersist = () => {
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+      void doPersistDemo();
+    }
+  };
+  window.addEventListener('beforeunload', flushPersist);
+  window.addEventListener('pagehide', flushPersist);
 }
 
 function need(): DemoState {
