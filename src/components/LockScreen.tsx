@@ -64,13 +64,18 @@ export function LockScreen({
       //     checkbox faithfully reflects what's in the OS keychain)
       if (isTauri) {
         if (remember) {
-          await bridge.osKeychainStore(password);
-          setHasStored(true);
+          try {
+            const stored = await bridge.osKeychainStore(password);
+            setHasStored(stored);
+          } catch (e) {
+            console.warn('OS keychain storage failed', e);
+            setHasStored(false);
+          }
         } else if (!isNewVault) {
           // Only delete on existing-vault unlocks; on creation, there can't
           // be a previous entry so this is a no-op that we skip to avoid a
           // needless D-Bus / Security-framework round-trip.
-          await bridge.osKeychainDelete();
+          await bridge.osKeychainDelete().catch(() => {});
           setHasStored(false);
         }
       }

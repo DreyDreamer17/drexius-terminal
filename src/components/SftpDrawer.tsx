@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Folder, FileText, FileArchive, FileCode, ChevronRight, ArrowUp, RefreshCw, FolderPlus, Upload, Download, Trash2, Pencil, X, Link2, HardDrive, Loader2, Home, Save, AlertCircle } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { registry } from '../lib/sessions';
@@ -41,18 +41,28 @@ export function SftpDrawer({
   const [drag, setDrag] = useState(false);
   const [height, setHeight] = useState(300);
   const fileInput = useRef<HTMLInputElement>(null);
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async (p: string) => {
     if (!sessionId) return;
+    const generation = ++loadGeneration.current;
     setLoading(true); setErr(null);
     try {
       const list = await bridge.sftpList(sessionId, p);
+      if (generation !== loadGeneration.current) return;
       setEntries(list);
       if (!p && list[0]) p = list[0].path.slice(0, list[0].path.lastIndexOf('/')) || '/';
       if (!p) p = bridge.homeFor(sessionId) || '/';
       setPath(p);
-    } catch (e) { setErr(isBridgeError(e) ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e) {
+      if (generation === loadGeneration.current) {
+        setErr(isBridgeError(e) ? e.message : String(e));
+      }
+    } finally {
+      if (generation === loadGeneration.current) {
+        setLoading(false);
+      }
+    }
   }, [sessionId]);
 
   // Follow the terminal's cwd (from OSC-7) — or start at home.
@@ -343,7 +353,22 @@ function RemoteFileEditorModal({
     }
   };
 
-  const lines = content.split('\n');
+  const lineCount = useMemo(() => {
+    let count = 1;
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) count++;
+    }
+    return count;
+  }, [content]);
+
+  const lineGutterText = useMemo(() => {
+    const cap = Math.min(lineCount, 5000);
+    let s = '';
+    for (let i = 1; i <= cap; i++) {
+      s += i + '\n';
+    }
+    return s;
+  }, [lineCount]);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm" onMouseDown={tryClose}>
@@ -434,11 +459,9 @@ function RemoteFileEditorModal({
           ) : (
             <div className="flex h-full w-full min-h-0 min-w-0">
               {/* Line numbers gutter */}
-              <div className="w-12 shrink-0 select-none overflow-hidden bg-black/40 py-3 text-right font-mono text-[11px] text-slate-600 pr-3 border-r border-white/5">
-                {lines.map((_, i) => (
-                  <div key={i} className="leading-5">{i + 1}</div>
-                ))}
-              </div>
+              <pre className="w-12 shrink-0 select-none overflow-hidden bg-black/40 py-3 text-right font-mono text-[11px] leading-5 text-slate-600 pr-3 border-r border-white/5 m-0 font-normal">
+                {lineGutterText}
+              </pre>
               {/* Textarea code editor */}
               <textarea
                 ref={textareaRef}
@@ -456,7 +479,7 @@ function RemoteFileEditorModal({
         {/* Footer */}
         <div className="flex h-7 shrink-0 items-center justify-between border-t border-white/5 bg-black/30 px-3 text-[10.5px] text-slate-500">
           <div className="flex items-center gap-3">
-            <span>{lines.length} lines</span>
+            <span>{lineCount} lines</span>
             <span>{content.length} characters</span>
             <span className="font-mono">UTF-8</span>
           </div>

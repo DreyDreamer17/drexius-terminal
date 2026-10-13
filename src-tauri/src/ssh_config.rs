@@ -247,9 +247,8 @@ pub fn ssh_config_import(
                             .unwrap_or("id_key");
                         let kc_label = format!("{} ({})", parsed.label, key_filename);
 
-                        // Save identity into keychain table
                         let kid = uuid::Uuid::new_v4().to_string();
-                        let _ = vault.with(|c| {
+                        let kc_res = vault.with(|c| {
                             c.execute(
                                 "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
                                  VALUES(?1, ?2, ?3, 'key', NULL, ?4, NULL, ?5, unixepoch())",
@@ -257,12 +256,16 @@ pub fn ssh_config_import(
                             )?;
                             Ok(())
                         });
-                        keychain_id = Some(kid);
-                        host_secret = Some(HostSecret {
-                            password: None,
-                            private_key: Some(key_content),
-                            passphrase: None,
-                        });
+                        if kc_res.is_ok() {
+                            keychain_id = Some(kid);
+                            host_secret = None;
+                        } else {
+                            host_secret = Some(HostSecret {
+                                password: None,
+                                private_key: Some(key_content),
+                                passphrase: None,
+                            });
+                        }
                     }
                 }
             }
