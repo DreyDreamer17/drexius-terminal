@@ -409,7 +409,7 @@ fn restore_full_vault(
                  ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
                 params![v.id, v.name, v.kind, v.color, v.description, v.created_at],
             )?;
-            let _ = crate::vault::log_sync_mutation(&tx, "vaults", &v.id);
+            crate::vault::log_sync_mutation(&tx, "vaults", &v.id)?;
         }
 
         // 2. Keychain (restored before hosts so foreign keys resolve)
@@ -430,7 +430,7 @@ fn restore_full_vault(
                     k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
                 ],
             )?;
-            let _ = crate::vault::log_sync_mutation(&tx, "keychain", &k.id);
+            crate::vault::log_sync_mutation(&tx, "keychain", &k.id)?;
         }
 
         // 3. Hosts & Secrets
@@ -469,7 +469,7 @@ fn restore_full_vault(
                     tx.execute("UPDATE hosts SET keychain_id = NULL WHERE id = ?1", [&h.id])?;
                 }
             }
-            let _ = crate::vault::log_sync_mutation(&tx, "hosts", &h.id);
+            crate::vault::log_sync_mutation(&tx, "hosts", &h.id)?;
         }
 
         // 4. Snippets
@@ -484,7 +484,7 @@ fn restore_full_vault(
                     sn.vault_id.as_deref().unwrap_or("personal"), now
                 ],
             )?;
-            let _ = crate::vault::log_sync_mutation(&tx, "snippets", &sn.id);
+            crate::vault::log_sync_mutation(&tx, "snippets", &sn.id)?;
         }
 
         // 5. Tunnels
@@ -498,11 +498,38 @@ fn restore_full_vault(
                     t.remote_host, t.remote_port, t.updated_at, t.vault_id.as_deref().unwrap_or("personal")
                 ],
             )?;
-            let _ = crate::vault::log_sync_mutation(&tx, "tunnels", &t.id);
+            crate::vault::log_sync_mutation(&tx, "tunnels", &t.id)?;
         }
 
-        // 6. AI Configs - preserve existing api_keys and proxy_urls if empty in incoming archive
+        // 6. AI Configs - preserve existing api_keys and proxy_urls only if origin matches
         for ai in &archive.ai_configs {
+            let existing_base: Option<String> = tx
+                .query_row(
+                    "SELECT base_url FROM ai_configs WHERE provider_id = ?1",
+                    [&ai.provider_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+
+            let parse_origin = |s: &str| {
+                reqwest::Url::parse(s.trim())
+                    .ok()
+                    .map(|u| (u.scheme().to_string(), u.host_str().map(str::to_ascii_lowercase), u.port_or_known_default()))
+            };
+
+            let origin_matches = match &existing_base {
+                Some(old_base) => parse_origin(old_base) == parse_origin(&ai.base_url),
+                None => true,
+            };
+
+            // If origin changed and incoming archive has empty keys/proxies, retain the receiver's existing base_url
+            // to avoid sending preserved local credentials/proxies to an untrusted endpoint.
+            let effective_base_url = match &existing_base {
+                Some(old_base) if !origin_matches && ai.api_keys.is_empty() => old_base.clone(),
+                _ => ai.base_url.clone(),
+            };
+
             let keys_json = serde_json::to_string(&ai.api_keys).unwrap_or_else(|_| "[]".into());
             let cache_json = serde_json::to_string(&ai.models_cache).unwrap_or_else(|_| "[]".into());
             let proxies_json = serde_json::to_string(&ai.proxy_urls).unwrap_or_else(|_| "[]".into());
@@ -515,7 +542,7 @@ fn restore_full_vault(
                      proxy_urls=CASE WHEN ?11 != '[]' AND ?11 != '' THEN ?11 ELSE ai_configs.proxy_urls END,
                      proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
                 params![
-                    ai.provider_id, ai.name, ai.base_url, keys_json,
+                    ai.provider_id, ai.name, effective_base_url, keys_json,
                     ai.selected_model, cache_json, ai.balance_strategy,
                     if ai.enabled { 1 } else { 0 }, now,
                     if ai.use_proxies { 1 } else { 0 }, proxies_json, ai.proxy_strategy,
@@ -899,9 +926,13 @@ pub async fn pairing_stop_host(
 ) -> AppResult<()> {
     let mut inner = manager.inner.lock();
     if let Some(ref pin) = expected_pin {
-        if let Some(ref active) = inner.active {
-            if &active.pin != pin {
-                // Pin does not match active session; ignore stale stop request.
+        match &inner.active {
+            Some(active) if &active.pin == pin => {
+                // Pin matches active session; proceed to stop.
+            }
+            _ => {
+                // Pin does not match active session (or no active session currently installed);
+                // ignore stale stop request without invalidating pending starts.
                 return Ok(());
             }
         }

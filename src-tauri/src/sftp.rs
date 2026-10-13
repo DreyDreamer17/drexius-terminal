@@ -145,13 +145,27 @@ pub async fn sftp_download(
             let _ = std::fs::remove_file(&temp_local);
             return Err(e);
         }
-        let rename_res = std::fs::rename(&temp_local, &local);
-        let rename_res = match rename_res {
-            Err(_) if std::path::Path::new(&local).exists() => {
-                let _ = std::fs::remove_file(&local);
-                std::fs::rename(&temp_local, &local)
+        let temp_local_path = std::path::Path::new(&temp_local);
+        let local_path = std::path::Path::new(&local);
+        let rename_res = if local_path.exists() {
+            let backup_local = format!("{}.nexus-bak.{}", local, uuid::Uuid::new_v4());
+            let backup_path = std::path::Path::new(&backup_local);
+            if let Err(_) = std::fs::rename(local_path, backup_path) {
+                std::fs::rename(temp_local_path, local_path)
+            } else {
+                match std::fs::rename(temp_local_path, local_path) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(backup_path);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = std::fs::rename(backup_path, local_path);
+                        Err(e)
+                    }
+                }
             }
-            res => res,
+        } else {
+            std::fs::rename(temp_local_path, local_path)
         };
         if let Err(e) = rename_res {
             let _ = std::fs::remove_file(&temp_local);
@@ -208,20 +222,38 @@ pub async fn sftp_upload(
         }
         drop(dst);
 
+        let remote_path = Path::new(&remote);
+        let temp_remote_path = Path::new(&temp_remote);
         let rename_res = c.sftp.rename(
-            Path::new(&temp_remote),
-            Path::new(&remote),
+            temp_remote_path,
+            remote_path,
             Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
         );
         let rename_res = match rename_res {
-            Err(_) => {
-                let _ = c.sftp.unlink(Path::new(&remote));
-                c.sftp.rename(Path::new(&temp_remote), Path::new(&remote), None)
-            }
             Ok(()) => Ok(()),
+            Err(_) => {
+                // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
+                let backup_remote = format!("{}.nexus-bak.{}", remote, uuid::Uuid::new_v4());
+                let backup_path = Path::new(&backup_remote);
+                let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
+                match c.sftp.rename(temp_remote_path, remote_path, None) {
+                    Ok(()) => {
+                        if had_remote {
+                            let _ = c.sftp.unlink(backup_path);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        if had_remote {
+                            let _ = c.sftp.rename(backup_path, remote_path, None);
+                        }
+                        Err(e)
+                    }
+                }
+            }
         };
         if let Err(e) = rename_res {
-            let _ = c.sftp.unlink(Path::new(&temp_remote));
+            let _ = c.sftp.unlink(temp_remote_path);
             return Err(AppError::from(e));
         }
         let _ = on_progress.send(TransferProgress { transferred: done, total });
@@ -307,20 +339,38 @@ pub fn sftp_write_text(
         let _ = c.sftp.unlink(Path::new(&temp_remote));
         return Err(e);
     }
+    let remote_path = Path::new(&path);
+    let temp_remote_path = Path::new(&temp_remote);
     let rename_res = c.sftp.rename(
-        Path::new(&temp_remote),
-        Path::new(&path),
+        temp_remote_path,
+        remote_path,
         Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
     );
     let rename_res = match rename_res {
-        Err(_) => {
-            let _ = c.sftp.unlink(Path::new(&path));
-            c.sftp.rename(Path::new(&temp_remote), Path::new(&path), None)
-        }
         Ok(()) => Ok(()),
+        Err(_) => {
+            // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
+            let backup_remote = format!("{}.nexus-bak.{}", path, uuid::Uuid::new_v4());
+            let backup_path = Path::new(&backup_remote);
+            let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
+            match c.sftp.rename(temp_remote_path, remote_path, None) {
+                Ok(()) => {
+                    if had_remote {
+                        let _ = c.sftp.unlink(backup_path);
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    if had_remote {
+                        let _ = c.sftp.rename(backup_path, remote_path, None);
+                    }
+                    Err(e)
+                }
+            }
+        }
     };
     if let Err(e) = rename_res {
-        let _ = c.sftp.unlink(Path::new(&temp_remote));
+        let _ = c.sftp.unlink(temp_remote_path);
         return Err(AppError::from(e));
     }
     Ok(())

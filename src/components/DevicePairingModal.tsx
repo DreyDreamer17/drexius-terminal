@@ -116,7 +116,9 @@ export function DevicePairingModal({
         // the stop would land after the new start and kill the live listener.
         if (pairingSeq.current === seq) {
           const pin = hostInfoRef.current?.pin;
-          void bridge.pairingStopHost(pin).catch(() => {});
+          if (pin) {
+            void bridge.pairingStopHost(pin).catch(() => {});
+          }
         }
       };
     }

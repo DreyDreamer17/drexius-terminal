@@ -842,8 +842,8 @@ pub fn host_save_with_new_keychain(
         )?;
         // Single-source: linked host must not retain a host-level secret.
         tx.execute("DELETE FROM secrets WHERE host_id=?1", [&profile.id])?;
-        let _ = log_sync_mutation(&tx, "keychain", &kc_id);
-        let _ = log_sync_mutation(&tx, "hosts", &profile.id);
+        log_sync_mutation(&tx, "keychain", &kc_id)?;
+        log_sync_mutation(&tx, "hosts", &profile.id)?;
         tx.commit()?;
         Ok(profile.id)
     })
@@ -2244,7 +2244,7 @@ pub async fn team_vault_import(
                  ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
                 params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
             )?;
-            let _ = log_sync_mutation(&tx, "vaults", &payload.vault.id);
+            log_sync_mutation(&tx, "vaults", &payload.vault.id)?;
 
             // Pass 1: determine mapped IDs for ALL incoming hosts before writing any records
             // to ensure forward references in jump_host_id can never resolve to unrelated local hosts.
@@ -2304,7 +2304,7 @@ pub async fn team_vault_import(
                         now()
                     ],
                 )?;
-                let _ = log_sync_mutation(&tx, "hosts", &host_id);
+                log_sync_mutation(&tx, "hosts", &host_id)?;
             }
 
             for s in &payload.snippets {
@@ -2324,7 +2324,7 @@ pub async fn team_vault_import(
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
                 )?;
-                let _ = log_sync_mutation(&tx, "snippets", &snip_id);
+                log_sync_mutation(&tx, "snippets", &snip_id)?;
             }
 
             for t in &payload.tunnels {
@@ -2350,7 +2350,7 @@ pub async fn team_vault_import(
                         t.remote_host, t.remote_port, payload.vault.id, now()
                     ],
                 )?;
-                let _ = log_sync_mutation(&tx, "tunnels", &tun_id);
+                log_sync_mutation(&tx, "tunnels", &tun_id)?;
             }
 
             // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's
