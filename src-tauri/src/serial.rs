@@ -27,6 +27,7 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -96,6 +97,7 @@ enum Cmd {
 
 struct SessionHandle {
     tx: SyncSender<Cmd>,
+    stop: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -250,10 +252,11 @@ pub fn serial_open(
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
+    let stop = Arc::new(AtomicBool::new(false));
 
     mgr.sessions.lock().insert(
         session_id.clone(),
-        SessionHandle { tx },
+        SessionHandle { tx, stop: stop.clone() },
     );
 
     let banner = format!(
@@ -288,10 +291,11 @@ pub fn serial_open(
     let sid = session_id.clone();
     let event_ch = on_event.clone();
     let sessions = mgr.sessions.clone();
+    let stop_thread = stop.clone();
     if let Err(e) = thread::Builder::new()
         .name(format!("serial-{}", &sid[..8]))
         .spawn(move || {
-            let reason = serial_io_loop(&mut *port, rx, &event_ch);
+            let reason = serial_io_loop(&mut *port, rx, &event_ch, stop_thread);
             let _ = event_ch.send(PtyEvent::Disconnected {
                 reason,
                 resumable: false,
@@ -320,6 +324,7 @@ fn serial_io_loop(
     port: &mut dyn SerialPort,
     rx: Receiver<Cmd>,
     events: &tauri::ipc::Channel<PtyEvent>,
+    stop: Arc<AtomicBool>,
 ) -> String {
     // The port is configured with a 100 ms read timeout so we can poll
     // for UI commands (writes / close) without blocking indefinitely on
@@ -328,6 +333,10 @@ fn serial_io_loop(
     let mut buf = vec![0u8; 4096];
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            return "closed by user".to_string();
+        }
+
         // 1. Drain pending UI commands (capped per tick to prevent starvation).
         for _ in 0..32 {
             match rx.try_recv() {
@@ -386,6 +395,9 @@ pub fn serial_write(session_id: String, data: String, mgr: State<'_, SerialManag
 
 #[tauri::command]
 pub fn serial_close(session_id: String, mgr: State<'_, SerialManager>) -> AppResult<()> {
-    let _ = mgr.send(&session_id, Cmd::Close);
+    if let Some(h) = mgr.sessions.lock().get(&session_id) {
+        h.stop.store(true, Ordering::SeqCst);
+        let _ = h.tx.try_send(Cmd::Close);
+    }
     Ok(())
 }

@@ -464,7 +464,14 @@ export default function App() {
   }, [toggleQuick, openLocalTerminal, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu]);
 
   // ── Hosts / snippets CRUD ──
-  const saveHost = async (h: Host, s?: HostSecret) => { await bridge.saveHost(h, s); setModal(null); toast(`Saved ${h.label} to vault`); refresh(); };
+  const saveHost = async (h: Host, s?: HostSecret, alreadySaved?: boolean) => {
+    if (!alreadySaved) {
+      await bridge.saveHost(h, s);
+    }
+    setModal(null);
+    toast(`Saved ${h.label} to vault`);
+    refresh();
+  };
   const deleteHost = async (h: Host) => { if (confirm(`Delete ${h.label}? Stored credentials will be wiped.`)) { await bridge.deleteHost(h.id); refresh(); } };
   const saveSnippet = async (s: Snippet) => { await bridge.saveSnippet(s); refresh(); toast('Snippet saved'); };
   const deleteSnippet = async (id: string) => { await bridge.deleteSnippet(id); refresh(); };
@@ -942,6 +949,7 @@ export default function App() {
                 {panel === 'keychain' && (
                   <KeychainPanel
                     keychain={keychain}
+                    activeVaultId={activeVaultId}
                     onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
                     onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
                     onRefresh={refresh}

@@ -434,6 +434,34 @@ impl Vault {
         } else {
             let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
         }
+        // v3: single-source credentials backfill for vaults already at v2.
+        // Removes stale host secrets where a Keychain link exists and scopes
+        // legacy vault-less keychain rows. Idempotent; runs once.
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(2);
+        if user_version < 3 {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM secrets WHERE host_id IN (
+                    SELECT h.id FROM hosts h
+                    JOIN keychain k ON k.id = h.keychain_id
+                    WHERE h.keychain_id IS NOT NULL AND h.keychain_id != ''
+                )",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE hosts SET keychain_id = NULL
+                 WHERE keychain_id IS NOT NULL AND keychain_id != ''
+                   AND keychain_id NOT IN (SELECT id FROM keychain)",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE keychain SET vault_id = 'personal' WHERE vault_id IS NULL OR vault_id = ''",
+                [],
+            )?;
+            let _ = import_hosts_keys_internal(&tx);
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
         Ok(())
     }
@@ -472,6 +500,7 @@ impl Vault {
     pub fn set_host_os(&self, id: &str, os: &str) -> AppResult<()> {
         self.with(|c| {
             c.execute("UPDATE hosts SET os=?1, updated_at=?2 WHERE id=?3", params![os, now(), id])?;
+            let _ = log_sync_mutation(c, "hosts", id);
             Ok(())
         })
     }
@@ -765,6 +794,62 @@ pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
 }
 
 #[tauri::command]
+pub fn host_save_with_new_keychain(
+    profile: HostProfile,
+    keychain: KeychainInput,
+    vault: State<'_, Vault>,
+) -> AppResult<String> {
+    vault.with(|c| {
+        let tx = c.unchecked_transaction()?;
+        let mut profile = profile;
+        if profile.id.is_empty() {
+            profile.id = uuid::Uuid::new_v4().to_string();
+        }
+        let host_vault = profile.vault_id.clone().unwrap_or_else(|| "personal".into());
+        let kc_vault = keychain
+            .vault_id
+            .clone()
+            .unwrap_or_else(|| host_vault.clone());
+        let mut kc_id = keychain.id.clone();
+        if kc_id.is_empty() {
+            kc_id = uuid::Uuid::new_v4().to_string();
+        }
+        tx.execute(
+            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+                 password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase), vault_id=?8, updated_at=?9",
+            params![
+                kc_id, keychain.label, keychain.username, keychain.auth_method.as_str(),
+                keychain.password, keychain.private_key, keychain.passphrase, kc_vault, now()
+            ],
+        )?;
+        profile.keychain_id = Some(kc_id.clone());
+        tx.execute(
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
+            params![
+                profile.id, profile.label, profile.hostname, profile.port, profile.username,
+                profile.auth_method.as_str(), profile.group,
+                serde_json::to_string(&profile.tags).unwrap_or_else(|_| "[]".into()),
+                profile.color, profile.os, profile.keychain_id, profile.jump_host_id,
+                profile.vault_id.clone().unwrap_or_else(|| "personal".into()),
+                profile.startup_command,
+                now()
+            ],
+        )?;
+        // Single-source: linked host must not retain a host-level secret.
+        tx.execute("DELETE FROM secrets WHERE host_id=?1", [&profile.id])?;
+        let _ = log_sync_mutation(&tx, "keychain", &kc_id);
+        let _ = log_sync_mutation(&tx, "hosts", &profile.id);
+        tx.commit()?;
+        Ok(profile.id)
+    })
+}
+
+#[tauri::command]
 pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String> {
     let HostInput { mut profile, secret } = input;
     if profile.id.is_empty() {
@@ -786,21 +871,63 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
                 now()
             ],
         )?;
-        if profile.keychain_id.is_some() {
-            // Host now resolves credentials from Keychain (see host_with_secret):
-            // drop any stale host-specific secret so deleting the Keychain
-            // identity later cannot silently fall back to an old password/key.
-            c.execute("DELETE FROM secrets WHERE host_id=?1", [&profile.id])?;
-        } else if let Some(s) = &secret {
-            c.execute(
-                "INSERT INTO secrets(host_id, password, private_key, passphrase) VALUES(?1, ?2, ?3, ?4)
-                 ON CONFLICT(host_id) DO UPDATE SET password=?2, private_key=?3, passphrase=?4",
-                params![profile.id, s.password, s.private_key, s.passphrase],
-            )?;
+        let mut has_valid_keychain = false;
+        if let Some(ref kid) = profile.keychain_id {
+            if !kid.is_empty() {
+                let kc_exists: bool = c
+                    .query_row("SELECT 1 FROM keychain WHERE id=?1", [kid], |_| Ok(true))
+                    .optional()?
+                    .unwrap_or(false);
+                if kc_exists {
+                    has_valid_keychain = true;
+                    // Host now resolves credentials from Keychain (see host_with_secret):
+                    // drop any stale host-specific secret so deleting the Keychain
+                    // identity later cannot silently fall back to an old password/key.
+                    c.execute("DELETE FROM secrets WHERE host_id=?1", [&profile.id])?;
+                } else {
+                    profile.keychain_id = None;
+                    c.execute("UPDATE hosts SET keychain_id=NULL WHERE id=?1", [&profile.id])?;
+                }
+            }
+        }
+        if !has_valid_keychain {
+            if let Some(s) = &secret {
+                c.execute(
+                    "INSERT INTO secrets(host_id, password, private_key, passphrase) VALUES(?1, ?2, ?3, ?4)
+                     ON CONFLICT(host_id) DO UPDATE SET password=?2, private_key=?3, passphrase=?4",
+                    params![profile.id, s.password, s.private_key, s.passphrase],
+                )?;
+            }
         }
         let _ = log_sync_mutation(c, "hosts", &profile.id);
         Ok(profile.id.clone())
     })
+}
+
+pub fn get_or_create_device_id(conn: &Connection) -> String {
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT value FROM ai_settings WHERE key = 'sync_device_id'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    if let Some(id) = existing {
+        if !id.is_empty() {
+            return id;
+        }
+    }
+    let mut id_bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut id_bytes);
+    let new_id = hex::encode(id_bytes);
+    let _ = conn.execute(
+        "INSERT INTO ai_settings(key, value) VALUES('sync_device_id', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=?1",
+        [&new_id],
+    );
+    new_id
 }
 
 /// Advances HLC monotonically and logs a mutation in `sync_log`.
@@ -824,7 +951,8 @@ pub fn log_sync_mutation(conn: &Connection, tbl: &str, record_id: &str) -> rusql
     } else {
         (prev_ms, prev_ctr + 1)
     };
-    let next_hlc = format!("{next_ms}:{next_ctr}:local");
+    let device_id = get_or_create_device_id(conn);
+    let next_hlc = format!("{next_ms}:{next_ctr}:{device_id}");
     conn.execute(
         "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 0)
          ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=0",
@@ -854,7 +982,8 @@ pub fn log_sync_deletion(conn: &Connection, tbl: &str, record_id: &str) -> rusql
     } else {
         (prev_ms, prev_ctr + 1)
     };
-    let next_hlc = format!("{next_ms}:{next_ctr}:local");
+    let device_id = get_or_create_device_id(conn);
+    let next_hlc = format!("{next_ms}:{next_ctr}:{device_id}");
     conn.execute(
         "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 1)
          ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
@@ -931,7 +1060,7 @@ pub fn keychain_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
 
 pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
     let mut st = c.prepare(
-        "SELECT h.id, h.label, h.username, h.auth_method, s.password, s.private_key, s.passphrase
+        "SELECT h.id, h.label, h.username, h.auth_method, s.password, s.private_key, s.passphrase, h.vault_id
          FROM hosts h
          JOIN secrets s ON s.host_id = h.id
          WHERE (h.keychain_id IS NULL OR h.keychain_id = '')
@@ -946,6 +1075,7 @@ pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
         password: Option<String>,
         private_key: Option<String>,
         passphrase: Option<String>,
+        vault_id: Option<String>,
     }
 
     let rows = st
@@ -958,17 +1088,21 @@ pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
                 password: r.get(4)?,
                 private_key: r.get(5)?,
                 passphrase: r.get(6)?,
+                vault_id: r.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut imported = 0;
     for r in rows {
-        // If private_key exists, check if that exact private key is already in keychain
+        let host_vault = r.vault_id.clone().unwrap_or_else(|| "personal".into());
+        // Scope dedup strictly to the host's own vault so team hosts never
+        // attach to an identity in another vault (including legacy unscoped
+        // rows, which the v3 migration scopes to personal).
         let existing_id: Option<String> = if let Some(ref pk) = r.private_key {
             c.query_row(
-                "SELECT id FROM keychain WHERE private_key = ?1 LIMIT 1",
-                [pk],
+                "SELECT id FROM keychain WHERE private_key = ?1 AND vault_id = ?2 LIMIT 1",
+                params![pk, host_vault],
                 |row| row.get(0),
             )
             .optional()?
@@ -986,8 +1120,8 @@ pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
                 r.label.clone()
             };
             c.execute(
-                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     new_id,
                     kc_label,
@@ -996,18 +1130,34 @@ pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
                     r.password,
                     r.private_key,
                     r.passphrase,
+                    host_vault,
                     now()
                 ],
             )?;
             imported += 1;
+            let _ = log_sync_mutation(c, "keychain", &new_id);
             new_id
         };
 
         c.execute(
-            "UPDATE hosts SET keychain_id = ?1 WHERE id = ?2",
-            params![kc_id, r.host_id],
+            "UPDATE hosts SET keychain_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![kc_id, now(), r.host_id],
         )?;
+        let _ = log_sync_mutation(c, "hosts", &r.host_id);
+        // Host now resolves from Keychain: drop the original row so a later
+        // Keychain delete cannot silently fall back to stale credentials.
+        c.execute("DELETE FROM secrets WHERE host_id = ?1", [&r.host_id])?;
     }
+    // Backfill: hosts already linked by earlier runs still carry their old
+    // secrets row. Remove any fallback where a valid Keychain link exists.
+    c.execute(
+        "DELETE FROM secrets WHERE host_id IN (
+            SELECT h.id FROM hosts h
+            JOIN keychain k ON k.id = h.keychain_id
+            WHERE h.keychain_id IS NOT NULL AND h.keychain_id != ''
+        )",
+        [],
+    )?;
     Ok(imported)
 }
 
@@ -1139,6 +1289,7 @@ pub fn keychain_import_local_key(
     path: String,
     label: Option<String>,
     passphrase: Option<String>,
+    vault_id: Option<String>,
     vault: State<'_, Vault>,
 ) -> AppResult<String> {
     let key_path = PathBuf::from(&path);
@@ -1178,10 +1329,11 @@ pub fn keychain_import_local_key(
     };
 
     vault.with(|c| {
+        let scope = vault_id.unwrap_or_else(|| "personal".into());
         let existing: Option<String> = c
             .query_row(
-                "SELECT id FROM keychain WHERE private_key = ?1 LIMIT 1",
-                [&content],
+                "SELECT id FROM keychain WHERE private_key = ?1 AND vault_id = ?2 LIMIT 1",
+                params![content, scope],
                 |r| r.get(0),
             )
             .optional()?;
@@ -1192,10 +1344,11 @@ pub fn keychain_import_local_key(
 
         let id = uuid::Uuid::new_v4().to_string();
         c.execute(
-            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at)
-             VALUES(?1, ?2, NULL, 'key', NULL, ?3, ?4, ?5)",
-            params![id, final_label, content, passphrase, now()],
+            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+             VALUES(?1, ?2, NULL, 'key', NULL, ?3, ?4, ?5, ?6)",
+            params![id, final_label, content, passphrase, scope, now()],
         )?;
+        let _ = log_sync_mutation(c, "keychain", &id);
         Ok(id)
     })
 }
@@ -2091,6 +2244,7 @@ pub async fn team_vault_import(
                  ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
                 params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
             )?;
+            let _ = log_sync_mutation(&tx, "vaults", &payload.vault.id);
 
             // Pass 1: determine mapped IDs for ALL incoming hosts before writing any records
             // to ensure forward references in jump_host_id can never resolve to unrelated local hosts.
@@ -2150,6 +2304,7 @@ pub async fn team_vault_import(
                         now()
                     ],
                 )?;
+                let _ = log_sync_mutation(&tx, "hosts", &host_id);
             }
 
             for s in &payload.snippets {
@@ -2169,6 +2324,7 @@ pub async fn team_vault_import(
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     params![snip_id, s.name, s.command, s.folder, serde_json::to_string(&s.tags).unwrap_or_else(|_| "[]".into()), payload.vault.id, now()],
                 )?;
+                let _ = log_sync_mutation(&tx, "snippets", &snip_id);
             }
 
             for t in &payload.tunnels {
@@ -2194,6 +2350,7 @@ pub async fn team_vault_import(
                         t.remote_host, t.remote_port, payload.vault.id, now()
                     ],
                 )?;
+                let _ = log_sync_mutation(&tx, "tunnels", &tun_id);
             }
 
             // `payload.ai_configs` is intentionally ignored: older bundles may carry someone else's

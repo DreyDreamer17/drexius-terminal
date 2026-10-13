@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Laptop,
   Smartphone,
@@ -81,34 +81,48 @@ export function DevicePairingModal({
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
 
+  const hostInfoRef = useRef<PairingHostInfo | null>(null);
+  hostInfoRef.current = hostInfo;
+
   // ── Start Host pairing listener when in 'share' tab ──
   // NOTE: listener lifecycle depends only on `tab` so changing theme/accent
   // does not invalidate the active PIN/QR link. QR recoloring is handled
-  // by a separate effect below.
+  // by a separate effect below. A generation counter guards rapid
+  // Share -> Join -> Share switches so a stale stop cannot kill the newest
+  // listener and a stale start response cannot overwrite it.
+  const pairingSeq = useRef(0);
   useEffect(() => {
     let disposed = false;
-    let stopRequired = false;
 
     if (tab === 'share') {
-      stopRequired = true;
+      const seq = ++pairingSeq.current;
       setHostInfo(null);
       setQrDataUrl('');
       setHostingError(null);
       bridge.pairingStartHost()
         .then((info) => {
-          if (disposed) return;
+          if (disposed || pairingSeq.current !== seq) {
+            void bridge.pairingStopHost(info.pin).catch(() => {});
+            return;
+          }
           setHostInfo(info);
         })
         .catch((err) => {
-          if (!disposed) setHostingError(String(err?.message || err));
+          if (!disposed && pairingSeq.current === seq) setHostingError(String(err?.message || err));
         });
+      return () => {
+        disposed = true;
+        // Only stop if no newer Share session superseded this one; otherwise
+        // the stop would land after the new start and kill the live listener.
+        if (pairingSeq.current === seq) {
+          const pin = hostInfoRef.current?.pin;
+          void bridge.pairingStopHost(pin).catch(() => {});
+        }
+      };
     }
 
     return () => {
       disposed = true;
-      if (stopRequired) {
-        void bridge.pairingStopHost().catch(() => {});
-      }
     };
   }, [tab]);
 
@@ -180,9 +194,8 @@ export function DevicePairingModal({
     loadDevices();
   }, []);
 
-  // Clean up host on modal close
-  const handleClose = async () => {
-    await bridge.pairingStopHost().catch(() => {});
+  // Clean up host on modal close (unmount effect triggers session-scoped stop)
+  const handleClose = () => {
     onClose();
   };
 
