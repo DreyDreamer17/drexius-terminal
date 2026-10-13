@@ -279,6 +279,21 @@ export const bridge = {
     return 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
   },
 
+  async vaultSaveEmergencyKit(content: string, filename?: string): Promise<string> {
+    if (isTauri) {
+      return invoke<string>('vault_save_emergency_kit', { content, filename });
+    }
+    const fname = filename ?? `nexus-emergency-kit-${Date.now()}.txt`;
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(url);
+    return `Downloads/${fname}`;
+  },
+
   async resetDemoVault() {
     localStorage.removeItem('nx.vault');
     localStorage.removeItem('nx.salt');
