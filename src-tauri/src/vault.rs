@@ -878,6 +878,22 @@ pub fn vault_get_recovery_key(vault: State<'_, Vault>) -> AppResult<String> {
 }
 
 #[tauri::command]
+pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> AppResult<String> {
+    let fname = filename.unwrap_or_else(|| {
+        format!("nexus-emergency-kit-{}.txt", chrono::Utc::now().timestamp())
+    });
+    let download_dir = dirs::download_dir()
+        .or_else(dirs::document_dir)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let _ = std::fs::create_dir_all(&download_dir);
+    let target = download_dir.join(&fname);
+    std::fs::write(&target, content)?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub fn vault_lock(vault: State<'_, Vault>) {
     vault.lock()
 }

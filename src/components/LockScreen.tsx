@@ -14,9 +14,11 @@ import {
   Download,
   AlertTriangle,
   X,
+  CheckCircle2,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { cn } from '../utils/cn';
 function getPasswordStrength(p: string): { score: number; label: string; color: string } {
   if (!p) return { score: 0, label: '', color: 'transparent' };
   let score = 0;
@@ -58,6 +60,8 @@ export function LockScreen({
   // Emergency Recovery Kit Modal (Shown when a new recovery key is generated)
   const [createdRecoveryKey, setCreatedRecoveryKey] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
+  const [downloadedPath, setDownloadedPath] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   // Recovery & Reset Modal (Forgot password flow)
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
@@ -84,7 +88,8 @@ export function LockScreen({
     })();
   }, []);
 
-  const downloadEmergencyKit = (key: string) => {
+  const downloadEmergencyKit = async (key: string) => {
+    setDownloading(true);
     const text = `=====================================================
 NEXUSTERMINAL EMERGENCY RECOVERY KIT
 =====================================================
@@ -101,13 +106,14 @@ IMPORTANT:
 
 Generated: ${new Date().toISOString()}
 =====================================================`;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `nexus-emergency-kit-${Date.now()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const path = await bridge.vaultSaveEmergencyKit(text);
+      setDownloadedPath(path);
+    } catch (e) {
+      console.error('Failed to save emergency kit', e);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const copyToClipboard = async (text: string) => {
@@ -146,6 +152,7 @@ Generated: ${new Date().toISOString()}
 
       if (generatedCode) {
         setCreatedRecoveryKey(generatedCode);
+        setDownloadedPath(null);
         return;
       }
 
@@ -177,6 +184,7 @@ Generated: ${new Date().toISOString()}
       const freshKey = await bridge.vaultRecover(recoveryCode, recoveryNewPw);
       setShowRecoveryModal(false);
       setCreatedRecoveryKey(freshKey);
+      setDownloadedPath(null);
     } catch (er) {
       setRecoveryErr(isBridgeError(er) ? er.message : String(er));
     } finally {
@@ -495,94 +503,18 @@ Generated: ${new Date().toISOString()}
 
       {/* Emergency Recovery Kit Modal (Shown on vault creation or after recovery) */}
       {createdRecoveryKey && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-white/10 bg-[#0c1017] p-6 sm:p-8 shadow-2xl">
-            {/* Top ambient radial glow */}
-            <div
-              className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-30"
-              style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
-            />
-            {/* Top hairline accent border */}
-            <div
-              className="absolute inset-x-0 top-0 h-px"
-              style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
-            />
-
-            <div className="relative flex flex-col items-center text-center">
-              <div
-                className="grid h-14 w-14 place-items-center rounded-2xl border shadow-lg"
-                style={{
-                  backgroundColor: `${accentColor}18`,
-                  borderColor: `${accentColor}35`,
-                  color: accentColor,
-                  boxShadow: `0 0 25px ${accentColor}30`,
-                }}
-              >
-                <KeyRound className="h-7 w-7" />
-              </div>
-
-              <h3 className="mt-4 text-xl font-bold text-white">Your Emergency Recovery Key</h3>
-              <p className="mt-2 text-xs leading-relaxed text-slate-400">
-                NexusTerminal uses zero-knowledge encryption. If you ever forget your master password,
-                <strong className="text-slate-200"> this recovery key is the only way to recover your vault</strong>.
-                Save it now in a secure password manager or offline safe.
-              </p>
-
-              {/* Key Box */}
-              <div className="mt-6 w-full rounded-2xl border border-white/10 bg-black/60 p-4">
-                <div className="select-all font-mono text-sm sm:text-base font-bold tracking-wider text-emerald-400 break-all text-center">
-                  {createdRecoveryKey}
-                </div>
-                <div className="mt-4 flex items-center justify-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(createdRecoveryKey)}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-                  >
-                    {copiedKey ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                    {copiedKey ? 'Copied to clipboard' : 'Copy Key'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadEmergencyKit(createdRecoveryKey)}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    Download .txt
-                  </button>
-                </div>
-              </div>
-
-              {/* Warning banner */}
-              <div className="mt-5 flex items-start gap-2.5 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-left text-[11px] text-amber-300">
-                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-                <span>NexusTerminal cannot recover or reset your master password for you. If you lose this key and forget your password, your vault data cannot be recovered.</span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setCreatedRecoveryKey(null);
-                  onUnlocked();
-                }}
-                className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99]"
-                style={{
-                  backgroundColor: accentColor,
-                  color: '#000000',
-                  boxShadow: `0 10px 30px -5px ${accentColor}60`,
-                }}
-              >
-                I have saved my recovery key
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Recovery & Reset Modal (Forgot password dialog) */}
-      {showRecoveryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl border border-white/10 bg-[#0c1017] p-6 sm:p-7 shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onMouseDown={() => {
+            setCreatedRecoveryKey(null);
+            onUnlocked();
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="relative flex flex-col w-full max-w-lg rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            style={{ backgroundColor: bgColor }}
+          >
             {/* Top ambient radial glow */}
             <div
               className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -594,130 +526,317 @@ Generated: ${new Date().toISOString()}
               style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
             />
 
-            <div className="relative">
-              <div className="flex items-center justify-between pb-3">
-                <h3 className="text-base font-semibold text-white">Vault Recovery & Reset</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowRecoveryModal(false);
-                    setRecoveryErr(null);
+            {/* Standard Header */}
+            <div className="relative flex items-center justify-between border-b border-white/10 px-5 py-4 shrink-0 bg-white/[0.02]">
+              <div className="flex items-center gap-3">
+                <div
+                  className="flex h-10 w-10 items-center justify-center rounded-2xl border transition shadow-lg shrink-0"
+                  style={{
+                    backgroundColor: `${accentColor}18`,
+                    borderColor: `${accentColor}35`,
+                    color: accentColor,
+                    boxShadow: `0 0 20px ${accentColor}25`,
                   }}
-                  className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white"
                 >
-                  <X className="h-4 w-4" />
-                </button>
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Emergency Recovery Kit</h3>
+                  <p className="flex items-center gap-1 text-[11px] text-slate-400">
+                    <ShieldCheck className="h-3 w-3 text-emerald-400" />
+                    Zero-knowledge master vault recovery
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatedRecoveryKey(null);
+                  onUnlocked();
+                }}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="relative flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              <p className="text-xs text-slate-400 leading-relaxed">
+                NexusTerminal uses zero-knowledge encryption. If you ever forget your master password,{' '}
+                <strong className="text-slate-200">this recovery key is the ONLY way to regain access to your vault</strong>.
+                Save it now in a secure offline location or password manager.
+              </p>
+
+              {/* Themed Key Box */}
+              <div
+                className="rounded-xl border p-4 space-y-3 shadow-inner"
+                style={{
+                  backgroundColor: 'rgba(0, 0, 0, 0.45)',
+                  borderColor: `${accentColor}30`,
+                }}
+              >
+                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                  <span className="font-medium uppercase tracking-wider text-[10px]">128-Bit Emergency Recovery Key</span>
+                  <span className="text-[10px] text-slate-500">Keep safe & private</span>
+                </div>
+
+                <div
+                  className="select-all font-mono text-sm sm:text-base font-bold tracking-wider text-center py-2.5 px-3 rounded-lg bg-black/60 border border-white/5 break-all"
+                  style={{ color: accentColor }}
+                >
+                  {createdRecoveryKey}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(createdRecoveryKey)}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-white/[0.08] hover:text-white"
+                  >
+                    {copiedKey ? <Check className="h-3.5 w-3.5" style={{ color: accentColor }} /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedKey ? 'Copied key' : 'Copy Key'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => downloadEmergencyKit(createdRecoveryKey)}
+                    disabled={downloading}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-white/[0.08] hover:text-white disabled:opacity-50"
+                  >
+                    {downloading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : downloadedPath ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )}
+                    {downloading ? 'Saving…' : downloadedPath ? 'Downloaded' : 'Download .txt'}
+                  </button>
+                </div>
+
+                {/* Where it was saved indicator */}
+                {downloadedPath && (
+                  <div
+                    className="mt-3 flex items-start gap-2.5 rounded-xl border p-3 text-xs animate-in fade-in duration-150"
+                    style={{
+                      backgroundColor: `${accentColor}12`,
+                      borderColor: `${accentColor}35`,
+                    }}
+                  >
+                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" style={{ color: accentColor }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-white flex items-center gap-1.5">
+                        <span>Recovery key saved to disk</span>
+                      </div>
+                      <div className="mt-1 font-mono text-[10.5px] text-slate-200 select-all break-all rounded-lg bg-black/50 p-2 border border-white/5">
+                        {downloadedPath}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(downloadedPath)}
+                      title="Copy file path"
+                      className="shrink-0 rounded p-1 text-slate-400 hover:text-white hover:bg-white/10 transition"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Tab buttons */}
-              <div className="flex rounded-xl bg-black/40 p-1 border border-white/10 mb-4">
-                <button
-                  type="button"
-                  onClick={() => { setRecoveryTab('recover'); setRecoveryErr(null); }}
-                  className={`flex-1 rounded-lg py-2 text-xs font-medium transition ${
-                    recoveryTab === 'recover'
-                      ? 'bg-white/10 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Use Emergency Key
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setRecoveryTab('reset'); setRecoveryErr(null); }}
-                  className={`flex-1 rounded-lg py-2 text-xs font-medium transition ${
-                    recoveryTab === 'reset'
-                      ? 'bg-rose-500/20 text-rose-300 shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Reset Vault
-                </button>
+              {/* Warning Banner */}
+              <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200/90 leading-relaxed">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                <span>
+                  NexusTerminal cannot recover or reset your master password for you. If you lose this key and forget your master password, your vault data cannot be recovered.
+                </span>
               </div>
+            </div>
 
+            {/* Standard Footer */}
+            <div className="border-t border-white/10 px-5 py-4 shrink-0 bg-white/[0.02] flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatedRecoveryKey(null);
+                  onUnlocked();
+                }}
+                className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl px-6 py-2.5 text-xs font-semibold text-black transition hover:brightness-110 active:scale-[0.99] shadow-lg"
+                style={{
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 4px 20px -3px ${accentColor}60`,
+                }}
+              >
+                I have saved my recovery key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery & Reset Modal (Forgot password dialog) */}
+      {showRecoveryModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onMouseDown={() => {
+            setShowRecoveryModal(false);
+            setRecoveryErr(null);
+          }}
+        >
+          <div
+            onMouseDown={(e) => e.stopPropagation()}
+            className="relative flex flex-col w-full max-w-lg rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            style={{ backgroundColor: bgColor }}
+          >
+            {/* Top ambient radial glow */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+              style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+            />
+            {/* Top hairline accent border */}
+            <div
+              className="absolute inset-x-0 top-0 h-px"
+              style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
+            />
+
+            {/* Standard Header */}
+            <div className="relative flex items-center justify-between border-b border-white/10 px-5 py-4 shrink-0 bg-white/[0.02]">
+              <div className="flex items-center gap-3">
+                <div
+                  className="flex h-10 w-10 items-center justify-center rounded-2xl border transition shadow-lg shrink-0"
+                  style={{
+                    backgroundColor: `${accentColor}18`,
+                    borderColor: `${accentColor}35`,
+                    color: accentColor,
+                    boxShadow: `0 0 20px ${accentColor}25`,
+                  }}
+                >
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Vault Recovery & Reset</h3>
+                  <p className="flex items-center gap-1 text-[11px] text-slate-400">
+                    <ShieldCheck className="h-3 w-3 text-emerald-400" />
+                    Regain access or reset your encrypted vault
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRecoveryModal(false);
+                  setRecoveryErr(null);
+                }}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Tab switcher - Matches TeamShareModal style */}
+            <div className="relative flex border-b border-white/10 bg-white/[0.02] px-5 pt-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => { setRecoveryTab('recover'); setRecoveryErr(null); }}
+                className={cn(
+                  'flex items-center gap-2 border-b-2 px-3 py-2 text-xs font-medium transition',
+                  recoveryTab !== 'recover' && 'border-transparent text-slate-400 hover:text-slate-200'
+                )}
+                style={recoveryTab === 'recover' ? {
+                  borderColor: accentColor,
+                  color: accentColor,
+                } : undefined}
+              >
+                <KeyRound className="h-3.5 w-3.5" />
+                <span>Use Emergency Key</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRecoveryTab('reset'); setRecoveryErr(null); }}
+                className={cn(
+                  'flex items-center gap-2 border-b-2 px-3 py-2 text-xs font-medium transition',
+                  recoveryTab !== 'reset' && 'border-transparent text-slate-400 hover:text-slate-200'
+                )}
+                style={recoveryTab === 'reset' ? {
+                  borderColor: '#f43f5e',
+                  color: '#f43f5e',
+                } : undefined}
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Reset Vault</span>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="relative flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {recoveryTab === 'recover' ? (
-                <form onSubmit={handleRecover} className="space-y-3.5">
+                <form id="recover-form" onSubmit={handleRecover} className="space-y-4">
                   <p className="text-xs text-slate-400 leading-relaxed">
                     Enter the 128-bit Emergency Recovery Key generated when your vault was created, then choose a new master password.
                   </p>
 
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">Emergency Recovery Key</label>
+                    <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1.5">
+                      Emergency Recovery Key
+                    </label>
                     <textarea
                       value={recoveryCode}
                       onChange={(e) => setRecoveryCode(e.target.value)}
                       rows={2}
                       placeholder="NX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
-                      className="w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">New Master Password</label>
+                    <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1.5">
+                      New Master Password
+                    </label>
                     <input
                       type="password"
                       value={recoveryNewPw}
                       onChange={(e) => setRecoveryNewPw(e.target.value)}
                       placeholder="Enter new master password"
-                      className="w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
                     />
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">Confirm New Master Password</label>
+                    <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1.5">
+                      Confirm New Master Password
+                    </label>
                     <input
                       type="password"
                       value={recoveryNewPw2}
                       onChange={(e) => setRecoveryNewPw2(e.target.value)}
                       placeholder="Confirm new master password"
-                      className="w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
+                      className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
                     />
                   </div>
 
                   {recoveryErr && (
-                    <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-2.5 text-xs text-rose-300">
+                    <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 p-2.5 text-xs text-rose-300">
                       {recoveryErr}
                     </div>
                   )}
-
-                  <div className="pt-2 flex items-center justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowRecoveryModal(false)}
-                      className="rounded-xl px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={recoveryBusy}
-                      className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-semibold text-black transition hover:brightness-110 disabled:opacity-50"
-                      style={{
-                        backgroundColor: accentColor,
-                        color: '#000000',
-                        boxShadow: `0 4px 15px -3px ${accentColor}50`,
-                      }}
-                    >
-                      {recoveryBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                      {recoveryBusy ? 'Rekeying vault…' : 'Recover Vault'}
-                    </button>
-                  </div>
                 </form>
               ) : (
-                <form onSubmit={handleResetVault} className="space-y-4">
+                <form id="reset-form" onSubmit={handleResetVault} className="space-y-4">
                   <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-200 leading-relaxed">
                     <div className="flex items-center gap-2 font-semibold text-rose-400 mb-1">
                       <AlertTriangle className="h-4 w-4" />
                       DANGER: Permanent Data Loss
                     </div>
-                    Resetting your vault will permanently delete your encrypted database file, all stored SSH hosts, credentials, snippets, and recovery envelope. This action cannot be reversed.
+                    Resetting your vault will permanently erase your encrypted database file, all stored SSH hosts, credentials, snippets, and recovery envelope. This action cannot be reversed.
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1.5">
+                    <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1.5">
                       Type <span className="font-mono font-bold text-rose-400">RESET</span> in capital letters to confirm:
                     </label>
                     <input
@@ -725,34 +844,54 @@ Generated: ${new Date().toISOString()}
                       value={resetConfirmText}
                       onChange={(e) => setResetConfirmText(e.target.value)}
                       placeholder="RESET"
-                      className="w-full rounded-xl border border-rose-500/30 bg-black/50 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                      className="w-full rounded-xl border border-rose-500/30 bg-black/40 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-rose-500"
                     />
                   </div>
 
                   {recoveryErr && (
-                    <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-2.5 text-xs text-rose-300">
+                    <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 p-2.5 text-xs text-rose-300">
                       {recoveryErr}
                     </div>
                   )}
-
-                  <div className="pt-2 flex items-center justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setShowRecoveryModal(false)}
-                      className="rounded-xl px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={resetBusy || resetConfirmText.trim().toUpperCase() !== 'RESET'}
-                      className="flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50 shadow-lg shadow-rose-900/30"
-                    >
-                      {resetBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                      {resetBusy ? 'Erasing vault…' : 'Permanently Reset Vault'}
-                    </button>
-                  </div>
                 </form>
+              )}
+            </div>
+
+            {/* Standard Footer */}
+            <div className="border-t border-white/10 px-5 py-4 shrink-0 bg-white/[0.02] flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="rounded-xl px-4 py-2.5 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white transition"
+              >
+                Cancel
+              </button>
+
+              {recoveryTab === 'recover' ? (
+                <button
+                  type="submit"
+                  form="recover-form"
+                  disabled={recoveryBusy}
+                  className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-semibold text-black transition hover:brightness-110 disabled:opacity-50"
+                  style={{
+                    backgroundColor: accentColor,
+                    color: '#000000',
+                    boxShadow: `0 4px 15px -3px ${accentColor}50`,
+                  }}
+                >
+                  {recoveryBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {recoveryBusy ? 'Rekeying vault…' : 'Recover Vault'}
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  form="reset-form"
+                  disabled={resetBusy || resetConfirmText.trim().toUpperCase() !== 'RESET'}
+                  className="flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-rose-500 disabled:opacity-50 shadow-lg shadow-rose-900/30"
+                >
+                  {resetBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {resetBusy ? 'Erasing vault…' : 'Permanently Reset Vault'}
+                </button>
               )}
             </div>
           </div>
