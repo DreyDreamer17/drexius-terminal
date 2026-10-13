@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   X,
   CheckCircle2,
+  Clipboard,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
@@ -122,6 +123,15 @@ Generated: ${new Date().toISOString()}
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
     } catch (_) {}
+  };
+
+  const pasteFromClipboard = async (setter: (val: string) => void) => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) setter(text.trim());
+    } catch (err) {
+      console.warn('Clipboard read failed', err);
+    }
   };
 
   const doUnlock = async (password: string, isNewVault: boolean) => {
@@ -368,6 +378,17 @@ Generated: ${new Date().toISOString()}
                 type={show ? 'text' : 'password'}
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  const text = e.clipboardData?.getData('text/plain') ?? '';
+                  if (text) setPw(text);
+                }}
+                onContextMenu={async (e) => {
+                  e.preventDefault();
+                  await pasteFromClipboard(setPw);
+                }}
+                spellCheck={false}
+                autoComplete="off"
                 placeholder="Master password"
                 className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
                 style={{
@@ -409,6 +430,17 @@ Generated: ${new Date().toISOString()}
                 type={show ? 'text' : 'password'}
                 value={pw2}
                 onChange={(e) => setPw2(e.target.value)}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  const text = e.clipboardData?.getData('text/plain') ?? '';
+                  if (text) setPw2(text);
+                }}
+                onContextMenu={async (e) => {
+                  e.preventDefault();
+                  await pasteFromClipboard(setPw2);
+                }}
+                spellCheck={false}
+                autoComplete="off"
                 placeholder="Confirm master password"
                 className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
                 style={{
@@ -778,12 +810,35 @@ Generated: ${new Date().toISOString()}
                   </p>
 
                   <div>
-                    <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-1.5">
-                      Emergency Recovery Key
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                        Emergency Recovery Key
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => pasteFromClipboard(setRecoveryCode)}
+                        className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-white/10 hover:text-white"
+                      >
+                        <Clipboard className="h-3 w-3" style={{ color: accentColor }} />
+                        <span>Paste from clipboard</span>
+                      </button>
+                    </div>
                     <textarea
                       value={recoveryCode}
                       onChange={(e) => setRecoveryCode(e.target.value)}
+                      onPaste={(e) => {
+                        e.preventDefault();
+                        const text = e.clipboardData?.getData('text/plain') ?? '';
+                        setRecoveryCode(text.trim());
+                      }}
+                      onContextMenu={async (e) => {
+                        e.preventDefault();
+                        await pasteFromClipboard(setRecoveryCode);
+                      }}
+                      spellCheck={false}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
                       rows={2}
                       placeholder="NX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
@@ -799,6 +854,17 @@ Generated: ${new Date().toISOString()}
                       type="password"
                       value={recoveryNewPw}
                       onChange={(e) => setRecoveryNewPw(e.target.value)}
+                      onPaste={(e) => {
+                        e.preventDefault();
+                        const text = e.clipboardData?.getData('text/plain') ?? '';
+                        setRecoveryNewPw(text);
+                      }}
+                      onContextMenu={async (e) => {
+                        e.preventDefault();
+                        await pasteFromClipboard(setRecoveryNewPw);
+                      }}
+                      spellCheck={false}
+                      autoComplete="off"
                       placeholder="Enter new master password"
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
@@ -813,6 +879,17 @@ Generated: ${new Date().toISOString()}
                       type="password"
                       value={recoveryNewPw2}
                       onChange={(e) => setRecoveryNewPw2(e.target.value)}
+                      onPaste={(e) => {
+                        e.preventDefault();
+                        const text = e.clipboardData?.getData('text/plain') ?? '';
+                        setRecoveryNewPw2(text);
+                      }}
+                      onContextMenu={async (e) => {
+                        e.preventDefault();
+                        await pasteFromClipboard(setRecoveryNewPw2);
+                      }}
+                      spellCheck={false}
+                      autoComplete="off"
                       placeholder="Confirm new master password"
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
@@ -843,6 +920,8 @@ Generated: ${new Date().toISOString()}
                       type="text"
                       value={resetConfirmText}
                       onChange={(e) => setResetConfirmText(e.target.value)}
+                      spellCheck={false}
+                      autoComplete="off"
                       placeholder="RESET"
                       className="w-full rounded-xl border border-rose-500/30 bg-black/40 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-rose-500"
                     />
