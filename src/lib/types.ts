@@ -165,13 +165,24 @@ export interface Pane {
 
 export type Layout = 'single' | 'vertical' | 'horizontal' | 'grid';
 
+export type TabKind = 'terminal' | 'sftp';
+
 export interface Tab {
   id: string;
   title: string;
   color?: string | null;
+  kind?: TabKind;
+  sftpHostId?: string | null;
+  sftpSessionId?: string | null;
   panes: Pane[];
   layout: Layout;
   activePaneId: string;
+}
+
+export interface LocalDirResponse {
+  currentPath: string;
+  parentPath?: string | null;
+  entries: FileEntry[];
 }
 
 export interface KeychainItem {

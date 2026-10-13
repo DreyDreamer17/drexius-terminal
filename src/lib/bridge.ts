@@ -25,6 +25,7 @@ import type {
   KeychainItem,
   KnownHost,
   LocalDeviceInfo,
+  LocalDirResponse,
   OpencodeHostStatus,
   PairedDevice,
   PairingHostInfo,
@@ -593,10 +594,106 @@ export const bridge = {
     vfs.write(s.host, path, content);
   },
 
+  async sftpConnect(hostId: string): Promise<string> {
+    if (isTauri) return invoke('sftp_connect', { hostId });
+    const sid = 'sftp_demo_' + Math.random().toString(36).slice(2, 8);
+    const h = need().hosts.find((x) => x.id === hostId);
+    if (h) {
+      const shell = new DemoShell(h, () => {}, () => {});
+      demoSessions.set(sid, { host: h, shell, emit: () => {} });
+    }
+    return sid;
+  },
+
+  async sftpUploadDirect(
+    sessionId: string,
+    localPath: string,
+    remotePath: string,
+    onProgress?: (pct: number) => void
+  ): Promise<void> {
+    if (isTauri) {
+      const ch = new Channel<{ transferred: number; total: number }>();
+      if (onProgress) {
+        ch.onmessage = (p) => onProgress(p.total ? p.transferred / p.total : 1);
+      }
+      return invoke('sftp_upload', { sessionId, local: localPath, remote: remotePath, onProgress: ch });
+    }
+    if (onProgress) {
+      for (let i = 1; i <= 10; i++) {
+        await sleep(30);
+        onProgress(i / 10);
+      }
+    }
+  },
+
+  async sftpDownloadDirect(
+    sessionId: string,
+    remotePath: string,
+    localPath: string,
+    onProgress?: (pct: number) => void
+  ): Promise<void> {
+    if (isTauri) {
+      const ch = new Channel<{ transferred: number; total: number }>();
+      if (onProgress) {
+        ch.onmessage = (p) => onProgress(p.total ? p.transferred / p.total : 1);
+      }
+      return invoke('sftp_download', { sessionId, remote: remotePath, local: localPath, onProgress: ch });
+    }
+    if (onProgress) {
+      for (let i = 1; i <= 10; i++) {
+        await sleep(30);
+        onProgress(i / 10);
+      }
+    }
+  },
+
   async sftpClose(sessionId: string): Promise<void> {
     if (isTauri) {
       await invoke('sftp_close', { sessionId }).catch(() => {});
     }
+  },
+
+  // ── Local Filesystem ──
+  async localFsHome(): Promise<string> {
+    if (isTauri) return invoke('local_fs_home');
+    return '/home/dreycore';
+  },
+
+  async localFsList(path?: string): Promise<LocalDirResponse> {
+    if (isTauri) return invoke('local_fs_list', { path: path || null });
+    const current = path || '/home/dreycore';
+    return {
+      currentPath: current,
+      parentPath: current === '/' ? null : current.replace(/\/[^/]+\/?$/, '') || '/',
+      entries: [
+        { name: 'Desktop', path: `${current}/Desktop`, isDir: true, isSymlink: false, size: 0, modified: Math.floor(Date.now() / 1000), permissions: 0o755 },
+        { name: 'Documents', path: `${current}/Documents`, isDir: true, isSymlink: false, size: 0, modified: Math.floor(Date.now() / 1000), permissions: 0o755 },
+        { name: 'Downloads', path: `${current}/Downloads`, isDir: true, isSymlink: false, size: 0, modified: Math.floor(Date.now() / 1000), permissions: 0o755 },
+        { name: 'Projects', path: `${current}/Projects`, isDir: true, isSymlink: false, size: 0, modified: Math.floor(Date.now() / 1000), permissions: 0o755 },
+        { name: 'config.json', path: `${current}/config.json`, isDir: false, isSymlink: false, size: 512, modified: Math.floor(Date.now() / 1000), permissions: 0o644 },
+      ],
+    };
+  },
+
+  async localFsMkdir(path: string): Promise<void> {
+    if (isTauri) return invoke('local_fs_mkdir', { path });
+  },
+
+  async localFsRemove(path: string, isDir: boolean): Promise<void> {
+    if (isTauri) return invoke('local_fs_remove', { path, isDir });
+  },
+
+  async localFsRename(from: string, to: string): Promise<void> {
+    if (isTauri) return invoke('local_fs_rename', { from, to });
+  },
+
+  async localFsReadText(path: string): Promise<string> {
+    if (isTauri) return invoke('local_fs_read_text', { path });
+    return '# Demo local file\nprint("Hello, NexusTerminal!")\n';
+  },
+
+  async localFsWriteText(path: string, content: string): Promise<void> {
+    if (isTauri) return invoke('local_fs_write_text', { path, content });
   },
 
   // ── Keychain (Reusable Identities) ──

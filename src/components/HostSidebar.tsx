@@ -16,6 +16,7 @@ import {
   ChevronDown,
   FolderInput,
   X,
+  HardDrive,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
@@ -28,6 +29,7 @@ interface Props {
   vaults: Vault[];
   activeVaultId: string | 'all';
   onConnect: (h: Host) => void;
+  onOpenSftp?: (h: Host) => void;
   onSplit: (h: Host) => void;
   onEdit: (h: Host | null) => void;
   onDelete: (h: Host) => void;
@@ -75,6 +77,7 @@ export function HostSidebar({
   vaults,
   activeVaultId,
   onConnect,
+  onOpenSftp,
   onSplit,
   onEdit,
   onDelete,
@@ -402,6 +405,15 @@ export function HostSidebar({
                     className="absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
                     onClick={(e) => e.stopPropagation()}
                   >
+                    {onOpenSftp && (
+                      <button
+                        title="Open SFTP File Browser"
+                        onClick={() => onOpenSftp(h)}
+                        className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-emerald-300"
+                      >
+                        <HardDrive className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     <button
                       title="Open in split pane"
                       onClick={() => onSplit(h)}

@@ -29,6 +29,7 @@ import {
   FolderInput,
   Timer,
   Check,
+  Folder,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -50,7 +51,7 @@ import { PortForwardingPanel } from './components/PortForwardingPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { KnownHostsPanel } from './components/KnownHostsPanel';
 import { AIPanel } from './components/AIPanel';
-import { SftpDrawer } from './components/SftpDrawer';
+import { SftpTab } from './components/SftpTab';
 import { cn } from './utils/cn';
 
 const uid = () => crypto.randomUUID();
@@ -148,7 +149,6 @@ export default function App() {
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   }, []);
-  const [showSftp, setShowSftp] = useState(false);
   const [themeId, setThemeId] = useState(() => localStorage.getItem('nx.theme') ?? 'nexus');
   const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('nx.font') ?? 13));
   const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('nx.lineHeight') ?? 1.0));
@@ -156,7 +156,6 @@ export default function App() {
   const [showSync, setShowSync] = useState(false);
   const [modal, setModal] = useState<{ host: Host | null } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
   const [quick, setQuick] = useState(false);
   const [quickFilter, setQuickFilter] = useState('');
   const [quickPos, setQuickPos] = useState<{ top: number; left: number }>({ top: 40, left: 200 });
@@ -174,6 +173,7 @@ export default function App() {
     m.set(LOCAL_HOST.id, LOCAL_HOST);
     return m;
   }, [hosts]);
+  const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
   const toast = useCallback((m: string) => { setToastMsg(m); setTimeout(() => setToastMsg((c) => (c === m ? null : c)), 2400); }, []);
@@ -359,6 +359,9 @@ export default function App() {
       const i = ts.findIndex((t) => t.id === id);
       const target = ts[i];
       if (target) {
+        if (target.kind === 'sftp' && target.sftpSessionId) {
+          bridge.sftpClose(target.sftpSessionId).catch(() => {});
+        }
         target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
       }
       const remaining = ts.filter((t) => t.id !== id);
@@ -366,6 +369,41 @@ export default function App() {
       return remaining;
     });
   }, []);
+
+  const openSftpTab = useCallback((hostId?: string) => {
+    const existing = tabs.find((t) => t.kind === 'sftp');
+    if (existing) {
+      setActiveTabId(existing.id);
+      if (hostId && existing.sftpHostId !== hostId) {
+        const h = hostMap.get(hostId);
+        setTabs((ts) =>
+          ts.map((t) =>
+            t.id === existing.id
+              ? {
+                  ...t,
+                  sftpHostId: hostId,
+                  sftpSessionId: null,
+                  title: h ? `SFTP: ${h.label}` : 'SFTP',
+                }
+              : t
+          )
+        );
+      }
+      return;
+    }
+    const h = hostId ? hostMap.get(hostId) : undefined;
+    const newTab: Tab = {
+      id: uid(),
+      title: h ? `SFTP: ${h.label}` : 'SFTP',
+      kind: 'sftp',
+      sftpHostId: hostId || null,
+      panes: [],
+      layout: 'single',
+      activePaneId: '',
+    };
+    setTabs((ts) => [...ts, newTab]);
+    setActiveTabId(newTab.id);
+  }, [tabs, hostMap]);
 
   const focusPane = useCallback((tabId: string, paneId: string) => {
     setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
@@ -454,14 +492,14 @@ export default function App() {
       else if (k === 'd') { e.preventDefault(); e.stopPropagation(); splitActive('vertical'); }
       else if (k === 'e') { e.preventDefault(); e.stopPropagation(); splitActive('horizontal'); }
       else if (k === 'a') { e.preventDefault(); e.stopPropagation(); setShowAI((v) => !v); }
-      else if (k === 'f') { e.preventDefault(); e.stopPropagation(); setShowSftp((v) => !v); }
+      else if (k === 'f') { e.preventDefault(); e.stopPropagation(); openSftpTab(); }
       else if (k === 'z') { e.preventDefault(); e.stopPropagation(); setZen((v) => !v); }
       else if (k === 'b') { e.preventDefault(); e.stopPropagation(); setShowRail((v) => !v); }
       else if (k === '/') { e.preventDefault(); e.stopPropagation(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu]);
+  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret, alreadySaved?: boolean) => {
@@ -521,7 +559,7 @@ export default function App() {
     { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
     { id: 'logs', icon: History, label: 'Session History & Audit', on: panel === 'logs', act: () => setPanel((p) => (p === 'logs' ? null : 'logs')) },
     { id: 'known_hosts', icon: ShieldCheck, label: 'Known Hosts', on: panel === 'known_hosts', act: () => setPanel((p) => (p === 'known_hosts' ? null : 'known_hosts')) },
-    { id: 'sftp', icon: HardDrive, label: 'SFTP (⌘⇧F)', on: showSftp, act: () => setShowSftp((v) => !v) },
+    { id: 'sftp', icon: HardDrive, label: 'SFTP (⌘⇧F)', on: activeTab?.kind === 'sftp', act: () => openSftpTab() },
     { id: 'ai', icon: Sparkles, label: 'AI Assistant (⌘⇧A)', on: showAI, act: () => setShowAI((v) => !v) },
   ];
 
@@ -596,16 +634,16 @@ export default function App() {
               <span className="font-semibold hidden sm:inline">Hosts</span>
             </button>
             <button
-              onClick={() => setShowSftp((v) => !v)}
+              onClick={() => openSftpTab()}
               title="SFTP File Browser (⌘⇧F)"
               className={cn(
                 'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
-                showSftp
+                activeTab?.kind === 'sftp'
                   ? 'text-white'
                   : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
               )}
               style={
-                showSftp
+                activeTab?.kind === 'sftp'
                   ? {
                       backgroundColor: `${theme.accent}18`,
                       borderColor: `${theme.accent}45`,
@@ -614,7 +652,7 @@ export default function App() {
                   : undefined
               }
             >
-              <HardDrive className="h-3.5 w-3.5 transition-colors" style={{ color: showSftp ? theme.accent : '#10b981' }} />
+              <HardDrive className="h-3.5 w-3.5 transition-colors" style={{ color: activeTab?.kind === 'sftp' ? theme.accent : '#10b981' }} />
               <span className="font-semibold hidden sm:inline">SFTP</span>
             </button>
           </div>
@@ -624,8 +662,15 @@ export default function App() {
           {/* Floating Tabs */}
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {tabs.map((t) => {
+              const isSftp = t.kind === 'sftp';
               const tabLive = t.panes.map((p) => registry.get(p.id)?.status);
-              const dot = tabLive.includes('disconnected') || tabLive.includes('error') ? 'bg-rose-500' : tabLive.every((s) => s === 'connected') ? 'bg-emerald-400' : 'bg-amber-400';
+              const dot = isSftp
+                ? 'bg-cyan-400'
+                : tabLive.includes('disconnected') || tabLive.includes('error')
+                  ? 'bg-rose-500'
+                  : tabLive.every((s) => s === 'connected')
+                    ? 'bg-emerald-400'
+                    : 'bg-amber-400';
               const isActive = t.id === activeTabId;
               return (
                 <div
@@ -634,11 +679,17 @@ export default function App() {
                   className={cn(
                     'group relative flex h-7 min-w-[130px] max-w-[220px] cursor-pointer items-center gap-2 rounded-lg px-2.5 text-xs transition border shadow-sm',
                     isActive
-                      ? 'border-emerald-500/40 bg-emerald-950/70 text-emerald-200 ring-1 ring-emerald-500/20'
+                      ? isSftp
+                        ? 'border-cyan-500/40 bg-cyan-950/70 text-cyan-200 ring-1 ring-cyan-500/20'
+                        : 'border-emerald-500/40 bg-emerald-950/70 text-emerald-200 ring-1 ring-emerald-500/20'
                       : 'border-white/5 bg-white/[0.03] text-slate-400 hover:border-white/10 hover:bg-white/[0.07] hover:text-slate-200'
                   )}
                 >
-                  <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dot)} />
+                  {isSftp ? (
+                    <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                  ) : (
+                    <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dot)} />
+                  )}
                   <span className="truncate font-medium">{t.title}</span>
                   {t.panes.length > 1 && (
                     <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">{t.panes.length}</span>
@@ -934,6 +985,7 @@ export default function App() {
                     vaults={vaults}
                     activeVaultId={activeVaultId}
                     onConnect={openHost}
+                    onOpenSftp={(h) => { openSftpTab(h.id); setPanel(null); }}
                     onSplit={(h) => splitWith(h)}
                     onEdit={(h) => setModal({ host: h })}
                     onDelete={deleteHost}
@@ -993,6 +1045,25 @@ export default function App() {
             />
           )}
           {tabs.map((t) => {
+            if (t.kind === 'sftp') {
+              return (
+                <div
+                  key={t.id}
+                  className={cn('absolute inset-0', t.id !== activeTabId && 'invisible')}
+                >
+                  <SftpTab
+                    tab={t}
+                    hosts={hosts}
+                    onUpdateTab={(patch) =>
+                      setTabs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))
+                    }
+                    onClose={() => closeTab(t.id)}
+                    toast={toast}
+                    theme={theme}
+                  />
+                </div>
+              );
+            }
             const isSplit = t.panes.length > 1;
             return (
               <div
@@ -1035,8 +1106,6 @@ export default function App() {
             );
           })}
         </div>
-
-        {showSftp && <SftpDrawer activePaneId={activePaneId} tick={tick} onClose={() => setShowSftp(false)} toast={toast} theme={theme} />}
 
         {/* Status bar */}
         {showStatusBar && (
