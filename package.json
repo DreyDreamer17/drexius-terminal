@@ -2,7 +2,7 @@
   "name": "react-vite-tailwind",
   "private": true,
   "version": "0.0.0",
-  "license": "FSL-1.1-MIT",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

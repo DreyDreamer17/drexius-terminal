@@ -3,7 +3,7 @@ name = "nexus-terminal"
 version = "0.1.0"
 description = "NexusTerminal — secure, local-first SSH client with local AI"
 authors = ["NexusTerminal Contributors"]
-license = "FSL-1.1-MIT"
+license = "MIT OR Apache-2.0"
 edition = "2021"
 rust-version = "1.77"
 

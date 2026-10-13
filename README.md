@@ -89,8 +89,9 @@ For full architecture diagrams and cryptographic specifications, see [ARCHITECTU
 
 ## License
 
-NexusTerminal is source-available software licensed under the **[Functional Source License, Version 1.1 (FSL-1.1-MIT)](LICENSE)**.
+NexusTerminal is open-source software dual-licensed under either:
 
-* **Free for Personal, Education & Internal Use:** You are free to view, audit, test, and run NexusTerminal for your own personal and internal workflows.
-* **Commercial Protection:** Third parties and commercial entities may not sell, rebrand, or host competing commercial substitutes of NexusTerminal.
-* **Automatic Conversion to MIT:** On the second anniversary of each release, that version automatically converts to the fully permissive **MIT License**.
+* **[Apache License, Version 2.0](LICENSE-APACHE)** ([http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0))
+* **[MIT License](LICENSE-MIT)** ([http://opensource.org/licenses/MIT](http://opensource.org/licenses/MIT))
+
+at your option.
