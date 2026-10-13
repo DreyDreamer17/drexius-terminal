@@ -38,7 +38,7 @@ export function HostModal({
   vaults?: Vault[];
   defaultVaultId?: string;
   onClose: () => void;
-  onSave: (h: Host, s?: HostSecret) => void;
+  onSave: (h: Host, s?: HostSecret, alreadySaved?: boolean) => void | Promise<void>;
   theme?: NexusTheme;
 }) {
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
@@ -70,6 +70,8 @@ export function HostModal({
   const [passphrase, setPassphrase] = useState('');
   const [saveToKeychain, setSaveToKeychain] = useState(false);
   const [tags, setTags] = useState(h.tags.join(', '));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const keyType = detectKeyType(privateKey);
 
   useEffect(() => {
@@ -81,7 +83,9 @@ export function HostModal({
   const valid = h.hostname.trim() && h.username.trim() && h.port > 0;
 
   const submit = async () => {
-    if (!valid) return;
+    if (!valid || saving) return;
+    setSaving(true);
+    setSaveError(null);
     const finalLabel = h.label.trim() || h.hostname;
     const finalHost = {
       ...h,
@@ -92,21 +96,41 @@ export function HostModal({
     const secretChanged = !h.keychainId && ((h.authMethod === 'password' && password) || (h.authMethod === 'key' && privateKey));
     let secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
 
+    let alreadySaved = false;
+
+    // Atomic path: single Rust transaction creates the Keychain identity,
+    // links the host, and drops any host-level secret. Pre-generate both IDs
+    // so the follow-up onSave (close/refresh) reuses the same rows.
     if (saveToKeychain && secretChanged) {
+      const rid = () =>
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      const hostId = finalHost.id || rid();
+      const kid = rid();
+      finalHost.id = hostId;
       try {
-        const kid = await bridge.saveKeychain({
-          id: '',
-          label: `${finalLabel} (${finalHost.username})`,
-          username: finalHost.username,
-          authMethod: finalHost.authMethod,
-          password: password || null,
-          privateKey: privateKey || null,
-          passphrase: passphrase || null,
-        });
+        await bridge.saveHostWithNewKeychain(
+          { ...finalHost, keychainId: null },
+          {
+            id: kid,
+            label: `${finalLabel} (${finalHost.username})`,
+            username: finalHost.username,
+            authMethod: finalHost.authMethod,
+            password: password || null,
+            privateKey: privateKey || null,
+            passphrase: passphrase || null,
+            vaultId: finalHost.vaultId && finalHost.vaultId !== 'all' ? finalHost.vaultId : 'personal',
+          }
+        );
         finalHost.keychainId = kid;
         secret = undefined;
+        alreadySaved = true;
       } catch (err) {
-        console.error('Failed to auto-save to keychain', err);
+        console.error('Failed to save host with new keychain identity', err);
+        setSaveError(`Could not save host with Keychain identity: ${String((err as any)?.message || err)}`);
+        setSaving(false);
+        return;
       }
     }
 
@@ -114,7 +138,15 @@ export function HostModal({
       secret = undefined;
     }
 
-    onSave(finalHost, secret);
+    try {
+      await onSave(finalHost, secret, alreadySaved);
+    } catch (err) {
+      console.error('Failed to save host', err);
+      setSaveError(`Could not save host: ${String((err as any)?.message || err)}`);
+      setSaving(false);
+      return;
+    }
+    setSaving(false);
   };
 
   const methods: { id: AuthMethod; label: string; icon: typeof Lock }[] = [
@@ -401,11 +433,14 @@ export function HostModal({
             </p>
           </div>
           <div><label className={label}>Tags</label><input className={input} value={tags} onChange={(e) => setTags(e.target.value)} placeholder="api, eu-west" /></div>
+          {saveError && (
+            <p className="rounded-lg border border-rose-500/30 bg-rose-950/30 px-3 py-2 text-xs text-rose-300">{saveError}</p>
+          )}
         </div>
         <div className="flex justify-end gap-2 border-t border-white/5 bg-black/20 px-5 py-3">
           <button onClick={onClose} className="rounded-xl px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Cancel</button>
           <button
-            disabled={!valid}
+            disabled={!valid || saving}
             onClick={submit}
             className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-40 shadow-lg"
             style={{
@@ -414,7 +449,7 @@ export function HostModal({
               boxShadow: `0 0 20px ${accentColor}35`,
             }}
           >
-            Save host
+            {saving ? 'Saving…' : 'Save host'}
           </button>
         </div>
       </div>

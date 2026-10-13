@@ -99,8 +99,8 @@ const SEED: DemoState = {
   ],
   snapshots: {},
   keychain: [
-    { id: 'kc-1', label: 'Production Ops Key', username: 'ubuntu', authMethod: 'key', hasSecret: true, updatedAt: Date.now() - 86400000 * 2 },
-    { id: 'kc-2', label: 'DB Root Password', username: 'postgres', authMethod: 'password', hasSecret: true, updatedAt: Date.now() - 86400000 * 7 },
+    { id: 'kc-1', label: 'Production Ops Key', username: 'ubuntu', authMethod: 'key', hasSecret: true, updatedAt: Date.now() - 86400000 * 2, vaultId: 'personal' },
+    { id: 'kc-2', label: 'DB Root Password', username: 'postgres', authMethod: 'password', hasSecret: true, updatedAt: Date.now() - 86400000 * 7, vaultId: 'personal' },
   ],
   keychainSecrets: {
     'kc-1': { privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\n(demo keychain)\n-----END OPENSSH PRIVATE KEY-----' },
@@ -231,6 +231,11 @@ export const bridge = {
         const { iv, ct } = JSON.parse(stored);
         const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) as BufferSource }, key, fromB64(ct) as BufferSource);
         demo = JSON.parse(new TextDecoder().decode(pt));
+        // Migrate already-persisted demo vaults: scope vault-less keychain
+        // rows so preview matches desktop partitioning.
+        for (const k of demo?.keychain ?? []) {
+          if (!k.vaultId) k.vaultId = 'personal';
+        }
       } catch {
         throw { kind: 'badMasterPassword', message: 'Invalid master password' };
       }
@@ -299,10 +304,43 @@ export const bridge = {
     if (isTauri) return invoke('host_save', { input: { ...host, secret: secret ?? null } });
     const s = need();
     const id = host.id || uid();
-    const next = { ...host, id, hasSecret: !!secret || host.hasSecret };
+    const next = { ...host, id, hasSecret: !!secret || (!!host.keychainId ? false : host.hasSecret) };
     const i = s.hosts.findIndex((h) => h.id === id);
     if (i >= 0) s.hosts[i] = next; else s.hosts.push(next);
-    if (secret) s.secrets[id] = secret;
+    if (host.keychainId) delete s.secrets[id];
+    else if (secret) s.secrets[id] = secret;
+    await persistDemo();
+    return id;
+  },
+
+  async saveHostWithNewKeychain(host: Host, keychain: KeychainInput): Promise<string> {
+    if (isTauri) return invoke('host_save_with_new_keychain', { profile: host, keychain });
+    const s = need();
+    const kid = keychain.id || uid();
+    const hostVault = (host as any).vaultId && (host as any).vaultId !== 'all' ? (host as any).vaultId : 'personal';
+    const itemId = kid;
+    const hasSecret = !!(keychain.password || keychain.privateKey);
+    const item: KeychainItem = {
+      id: itemId,
+      label: keychain.label,
+      username: keychain.username,
+      authMethod: keychain.authMethod,
+      hasSecret,
+      updatedAt: Date.now(),
+      vaultId: keychain.vaultId ?? hostVault,
+    } as KeychainItem;
+    const ki = s.keychain.findIndex((k) => k.id === itemId);
+    if (ki >= 0) s.keychain[ki] = item; else s.keychain.push(item);
+    s.keychainSecrets[itemId] = {
+      password: keychain.password,
+      privateKey: keychain.privateKey,
+      passphrase: keychain.passphrase,
+    };
+    const id = host.id || uid();
+    const next = { ...host, id, keychainId: itemId, hasSecret: false };
+    const i = s.hosts.findIndex((h) => h.id === id);
+    if (i >= 0) s.hosts[i] = next; else s.hosts.push(next);
+    delete s.secrets[id];
     await persistDemo();
     return id;
   },
@@ -428,7 +466,20 @@ export const bridge = {
   },
 
   async write(sessionId: string, data: string) {
-    if (isTauri) return invoke('ssh_write', { sessionId, data });
+    if (isTauri) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          return await invoke('ssh_write', { sessionId, data });
+        } catch (err: any) {
+          const msg = String(err?.message || err);
+          if (msg.includes('queue is full') && attempt < 4) {
+            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
     demoSessions.get(sessionId)?.shell.input(data);
   },
 
@@ -555,6 +606,7 @@ export const bridge = {
       authMethod: input.authMethod,
       hasSecret,
       updatedAt: Date.now(),
+      vaultId: input.vaultId ?? s.keychain[existingIdx]?.vaultId ?? 'personal',
     };
     if (existingIdx >= 0) s.keychain[existingIdx] = item; else s.keychain.push(item);
     s.keychainSecrets[itemId] = {
@@ -584,8 +636,8 @@ export const bridge = {
     return [];
   },
 
-  async importLocalSshKey(path: string, label?: string, passphrase?: string): Promise<string> {
-    if (isTauri) return invoke('keychain_import_local_key', { path, label: label ?? null, passphrase: passphrase ?? null });
+  async importLocalSshKey(path: string, label?: string, passphrase?: string, vaultId?: string): Promise<string> {
+    if (isTauri) return invoke('keychain_import_local_key', { path, label: label ?? null, passphrase: passphrase ?? null, vaultId: vaultId ?? null });
     return '';
   },
 
@@ -733,7 +785,20 @@ export const bridge = {
   },
 
   async writeLocalPty(sessionId: string, data: string): Promise<void> {
-    if (isTauri) return invoke('local_pty_write', { sessionId, data });
+    if (isTauri) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          return await invoke('local_pty_write', { sessionId, data });
+        } catch (err: any) {
+          const msg = String(err?.message || err);
+          if (msg.includes('queue is full') && attempt < 4) {
+            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
     demoSessions.get(sessionId)?.shell.input(data);
   },
 
@@ -814,7 +879,20 @@ export const bridge = {
   },
 
   async writeSerial(sessionId: string, data: string): Promise<void> {
-    if (isTauri) return invoke('serial_write', { sessionId, data });
+    if (isTauri) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          return await invoke('serial_write', { sessionId, data });
+        } catch (err: any) {
+          const msg = String(err?.message || err);
+          if (msg.includes('queue is full') && attempt < 4) {
+            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
   },
 
   async closeSerial(sessionId: string): Promise<void> {
@@ -870,8 +948,8 @@ export const bridge = {
     };
   },
 
-  async pairingStopHost(): Promise<void> {
-    if (isTauri) return invoke('pairing_stop_host');
+  async pairingStopHost(expectedPin?: string): Promise<void> {
+    if (isTauri) return invoke('pairing_stop_host', { expectedPin: expectedPin ?? null });
   },
 
   async pairingJoinClient(

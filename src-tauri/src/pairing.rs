@@ -26,7 +26,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use parking_lot::Mutex;
 use rand::{Rng, RngCore};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -116,16 +116,63 @@ struct FullVaultArchive {
     pub ai_configs: Vec<AiProviderConfig>,
 }
 
+struct PairingInner {
+    generation: u64,
+    active: Option<PairingHostInfo>,
+    shutdown: Option<oneshot::Sender<()>>,
+}
+
 pub struct PairingManager {
-    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
-    active_host: Mutex<Option<PairingHostInfo>>,
+    inner: Mutex<PairingInner>,
 }
 
 impl Default for PairingManager {
     fn default() -> Self {
         Self {
-            shutdown_tx: Mutex::new(None),
-            active_host: Mutex::new(None),
+            inner: Mutex::new(PairingInner {
+                generation: 0,
+                active: None,
+                shutdown: None,
+            }),
+        }
+    }
+}
+
+impl PairingManager {
+    fn active_cloned(&self) -> Option<PairingHostInfo> {
+        self.inner.lock().active.clone()
+    }
+    /// Atomically install a new session (generation already claimed).
+    /// Returns Ok(info) if installed or if another completed start won the
+    /// race (idempotent reuse), Err if superseded by a newer generation.
+    fn install(&self, generation: u64, info: PairingHostInfo, tx: oneshot::Sender<()>) -> AppResult<PairingHostInfo> {
+        let mut inner = self.inner.lock();
+        if inner.generation != generation {
+            return Err(AppError::Other(
+                "Pairing start superseded by a newer session".into(),
+            ));
+        }
+        if let Some(existing) = inner.active.clone() {
+            return Ok(existing);
+        }
+        inner.active = Some(info.clone());
+        inner.shutdown = Some(tx);
+        Ok(info)
+    }
+    /// Take shutdown sender + clear active only if `generation` still owns
+    /// the session. Returns true if this caller owned the session.
+    fn take_if_owner(&self, generation: u64) -> Option<oneshot::Sender<()>> {
+        let mut inner = self.inner.lock();
+        if inner.generation != generation {
+            return None;
+        }
+        inner.active = None;
+        inner.shutdown.take()
+    }
+    fn clear_if_owner(&self, generation: u64) {
+        let mut inner = self.inner.lock();
+        if inner.generation == generation {
+            inner.active = None;
         }
     }
 }
@@ -351,21 +398,44 @@ fn restore_full_vault(
     peer_pk: &str,
 ) -> AppResult<()> {
     vault.with(|c| {
+        let tx = c.unchecked_transaction()?;
         let now = chrono::Utc::now().timestamp();
 
         // 1. Vaults
         for v in &archive.vaults {
-            c.execute(
+            tx.execute(
                 "INSERT INTO vaults(id, name, kind, color, description, created_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
                 params![v.id, v.name, v.kind, v.color, v.description, v.created_at],
             )?;
+            let _ = crate::vault::log_sync_mutation(&tx, "vaults", &v.id);
         }
 
-        // 2. Hosts & Secrets
+        // 2. Keychain (restored before hosts so foreign keys resolve)
+        for (k, sec) in &archive.keychain {
+            let (pwd, pkey, pass) = if let Some(s) = sec {
+                (s.password.as_deref(), s.private_key.as_deref(), s.passphrase.as_deref())
+            } else {
+                (None, None, None)
+            };
+            tx.execute(
+                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at, vault_id)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+                     password=COALESCE(?5, password), private_key=COALESCE(?6, private_key),
+                     passphrase=COALESCE(?7, passphrase), updated_at=?8, vault_id=?9",
+                params![
+                    k.id, k.label, k.username, k.auth_method.as_str(), pwd, pkey, pass,
+                    k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
+                ],
+            )?;
+            let _ = crate::vault::log_sync_mutation(&tx, "keychain", &k.id);
+        }
+
+        // 3. Hosts & Secrets
         for (h, sec) in &archive.hosts {
-            c.execute(
+            tx.execute(
                 "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
@@ -379,7 +449,7 @@ fn restore_full_vault(
                 ],
             )?;
             if let Some(s) = sec {
-                c.execute(
+                tx.execute(
                     "INSERT INTO secrets(host_id, password, private_key, passphrase)
                      VALUES(?1, ?2, ?3, ?4)
                      ON CONFLICT(host_id) DO UPDATE SET password=COALESCE(?2, password),
@@ -387,31 +457,24 @@ fn restore_full_vault(
                     params![h.id, s.password, s.private_key, s.passphrase],
                 )?;
             }
-        }
-
-        // 3. Keychain
-        for (k, sec) in &archive.keychain {
-            let (pwd, pkey, pass) = if let Some(s) = sec {
-                (s.password.as_deref(), s.private_key.as_deref(), s.passphrase.as_deref())
-            } else {
-                (None, None, None)
-            };
-            c.execute(
-                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at, vault_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
-                     password=COALESCE(?5, password), private_key=COALESCE(?6, private_key),
-                     passphrase=COALESCE(?7, passphrase), updated_at=?8, vault_id=?9",
-                params![
-                    k.id, k.label, k.username, k.auth_method.as_str(), pwd, pkey, pass,
-                    k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
-                ],
-            )?;
+            // Single-source invariant: only drop host secret if keychain identity actually exists
+            if let Some(ref kid) = h.keychain_id.as_deref().filter(|v| !v.is_empty()) {
+                let kc_exists: bool = tx
+                    .query_row("SELECT 1 FROM keychain WHERE id=?1", [kid], |_| Ok(true))
+                    .optional()?
+                    .unwrap_or(false);
+                if kc_exists {
+                    tx.execute("DELETE FROM secrets WHERE host_id = ?1", [&h.id])?;
+                } else {
+                    tx.execute("UPDATE hosts SET keychain_id = NULL WHERE id = ?1", [&h.id])?;
+                }
+            }
+            let _ = crate::vault::log_sync_mutation(&tx, "hosts", &h.id);
         }
 
         // 4. Snippets
         for sn in &archive.snippets {
-            c.execute(
+            tx.execute(
                 "INSERT INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(id) DO UPDATE SET name=?2, command=?3, folder=?4, tags=?5, vault_id=?6, updated_at=?7",
@@ -421,11 +484,12 @@ fn restore_full_vault(
                     sn.vault_id.as_deref().unwrap_or("personal"), now
                 ],
             )?;
+            let _ = crate::vault::log_sync_mutation(&tx, "snippets", &sn.id);
         }
 
         // 5. Tunnels
         for t in &archive.tunnels {
-            c.execute(
+            tx.execute(
                 "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6, remote_host=?7, remote_port=?8, updated_at=?9, vault_id=?10",
@@ -434,17 +498,22 @@ fn restore_full_vault(
                     t.remote_host, t.remote_port, t.updated_at, t.vault_id.as_deref().unwrap_or("personal")
                 ],
             )?;
+            let _ = crate::vault::log_sync_mutation(&tx, "tunnels", &t.id);
         }
 
-        // 6. AI Configs
+        // 6. AI Configs - preserve existing api_keys and proxy_urls if empty in incoming archive
         for ai in &archive.ai_configs {
             let keys_json = serde_json::to_string(&ai.api_keys).unwrap_or_else(|_| "[]".into());
             let cache_json = serde_json::to_string(&ai.models_cache).unwrap_or_else(|_| "[]".into());
             let proxies_json = serde_json::to_string(&ai.proxy_urls).unwrap_or_else(|_| "[]".into());
-            c.execute(
+            tx.execute(
                 "INSERT INTO ai_configs(provider_id, name, base_url, api_keys, selected_model, models_cache, balance_strategy, enabled, updated_at, use_proxies, proxy_urls, proxy_strategy, auto_ssh_proxy, auto_ssh_host_id)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                 ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3, api_keys=?4, selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10, proxy_urls=?11, proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
+                 ON CONFLICT(provider_id) DO UPDATE SET name=?2, base_url=?3,
+                     api_keys=CASE WHEN ?4 != '[]' AND ?4 != '' THEN ?4 ELSE ai_configs.api_keys END,
+                     selected_model=?5, models_cache=?6, balance_strategy=?7, enabled=?8, updated_at=?9, use_proxies=?10,
+                     proxy_urls=CASE WHEN ?11 != '[]' AND ?11 != '' THEN ?11 ELSE ai_configs.proxy_urls END,
+                     proxy_strategy=?12, auto_ssh_proxy=?13, auto_ssh_host_id=?14",
                 params![
                     ai.provider_id, ai.name, ai.base_url, keys_json,
                     ai.selected_model, cache_json, ai.balance_strategy,
@@ -457,12 +526,13 @@ fn restore_full_vault(
 
         // 7. Record paired device
         let dev_id = uuid::Uuid::new_v4().to_string();
-        c.execute(
+        tx.execute(
             "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![dev_id, peer_name, "desktop", peer_ip, peer_pk, now, now],
         )?;
 
+        tx.commit()?;
         Ok(())
     })
 }
@@ -474,10 +544,18 @@ pub async fn pairing_start_host(
     app: AppHandle,
     manager: State<'_, PairingManager>,
 ) -> AppResult<PairingHostInfo> {
-    // 1. Check if already hosting
-    if let Some(existing) = manager.active_host.lock().clone() {
+    // Fast path: already hosting (no generation bump; idempotent reuse).
+    if let Some(existing) = manager.active_cloned() {
         return Ok(existing);
     }
+    // Claim a session generation before the await points so overlapping
+    // starts/stops can be ordered. A stop bumps the generation, invalidating
+    // any in-flight start that has not yet installed its listener.
+    let generation = {
+        let mut inner = manager.inner.lock();
+        inner.generation += 1;
+        inner.generation
+    };
 
     // 2. Bind TCP listener on 48291, or dynamic port if unavailable
     let listener = match TcpListener::bind("0.0.0.0:48291").await {
@@ -522,10 +600,16 @@ pub async fn pairing_start_host(
         qr_payload,
     };
 
-    *manager.active_host.lock() = Some(info.clone());
-
+    // Install session atomically (generation + active + shutdown under one
+    // lock) so a concurrent stop cannot slip between publishing active_host
+    // and storing the shutdown sender, which previously left an orphan listener.
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
-    *manager.shutdown_tx.lock() = Some(shutdown_tx);
+    let installed_info = manager.install(generation, info, shutdown_tx)?;
+    if installed_info.pin != pin_str {
+        // Another completed start won while we were binding; drop our
+        // listener and reuse the winner (idempotent).
+        return Ok(installed_info);
+    }
 
     let app_clone = app.clone();
     let expected_pin = pin_str;
@@ -536,6 +620,7 @@ pub async fn pairing_start_host(
 
     // Background listener task with auto-expiry and rate limiting
     tokio::spawn(async move {
+        let session_gen = generation;
         let timeout = tokio::time::sleep(Duration::from_secs(PAIRING_TIMEOUT_SECS));
         tokio::pin!(timeout);
 
@@ -574,6 +659,7 @@ pub async fn pairing_start_host(
                             let s_dev = s_name.clone();
                             let exp_pin = expected_pin.clone();
                             let attempts_clone = failed_attempts.clone();
+                            let hs_gen = session_gen;
 
                             tokio::spawn(async move {
                                 let _permit = permit;
@@ -590,6 +676,7 @@ pub async fn pairing_start_host(
                                         &s_dev,
                                         &vault,
                                         &app_h,
+                                        hs_gen,
                                     ),
                                 ).await {
                                     Ok(Err(e)) => log::warn!("Pairing connection error from {peer_addr}: {e}"),
@@ -610,10 +697,12 @@ pub async fn pairing_start_host(
             }
         }
         let mgr = app_clone.state::<PairingManager>();
-        *mgr.active_host.lock() = None;
+        // Only clear global state if this listener still owns the session.
+        // A newer start would otherwise be wiped by an old listener exiting.
+        mgr.clear_if_owner(session_gen);
     });
 
-    Ok(info)
+    Ok(installed_info)
 }
 
 async fn handle_incoming_pairing(
@@ -626,6 +715,7 @@ async fn handle_incoming_pairing(
     server_name: &str,
     vault: &Vault,
     app_handle: &AppHandle,
+    session_gen: u64,
 ) -> AppResult<()> {
     let mut buf = vec![0u8; 65536];
     let mut n_total = 0;
@@ -715,10 +805,11 @@ async fn handle_incoming_pairing(
                     let err_resp = if count >= MAX_PAIRING_ATTEMPTS {
                         log::warn!("Pairing locked out after {} failed attempts from {}", count, peer_addr);
                         let mgr = app_handle.state::<PairingManager>();
-                        if let Some(tx) = mgr.shutdown_tx.lock().take() {
+                        // Only the owning session may shut down the listener;
+                        // a stale session's lockout must not kill a newer one.
+                        if let Some(tx) = mgr.take_if_owner(session_gen) {
                             let _ = tx.send(());
                         }
-                        *mgr.active_host.lock() = None;
                         "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing locked out.\"}".to_string()
                     } else {
                         format!(
@@ -787,11 +878,11 @@ async fn handle_incoming_pairing(
                 );
 
                 // Single-use PIN enforcement: shut down listener immediately after successful pairing
+                // Only if this handshake still owns the session.
                 let mgr = app_handle.state::<PairingManager>();
-                if let Some(tx) = mgr.shutdown_tx.lock().take() {
+                if let Some(tx) = mgr.take_if_owner(session_gen) {
                     let _ = tx.send(());
                 }
-                *mgr.active_host.lock() = None;
 
                 return Ok(());
             }
@@ -802,11 +893,27 @@ async fn handle_incoming_pairing(
 }
 
 #[tauri::command]
-pub async fn pairing_stop_host(manager: State<'_, PairingManager>) -> AppResult<()> {
-    if let Some(tx) = manager.shutdown_tx.lock().take() {
+pub async fn pairing_stop_host(
+    expected_pin: Option<String>,
+    manager: State<'_, PairingManager>,
+) -> AppResult<()> {
+    let mut inner = manager.inner.lock();
+    if let Some(ref pin) = expected_pin {
+        if let Some(ref active) = inner.active {
+            if &active.pin != pin {
+                // Pin does not match active session; ignore stale stop request.
+                return Ok(());
+            }
+        }
+    }
+    // Bump generation so any in-flight start aborts instead of installing
+    // a listener after this stop. Single lock with the take/clear makes
+    // stop atomic against a concurrent install.
+    inner.generation += 1;
+    if let Some(tx) = inner.shutdown.take() {
         let _ = tx.send(());
     }
-    *manager.active_host.lock() = None;
+    inner.active = None;
     Ok(())
 }
 

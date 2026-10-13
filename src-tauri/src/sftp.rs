@@ -139,13 +139,21 @@ pub async fn sftp_download(
             Ok(())
         })();
 
+        drop(dst);
+
         if let Err(e) = loop_result {
             let _ = std::fs::remove_file(&temp_local);
             return Err(e);
         }
-        drop(dst);
-
-        if let Err(e) = std::fs::rename(&temp_local, &local) {
+        let rename_res = std::fs::rename(&temp_local, &local);
+        let rename_res = match rename_res {
+            Err(_) if std::path::Path::new(&local).exists() => {
+                let _ = std::fs::remove_file(&local);
+                std::fs::rename(&temp_local, &local)
+            }
+            res => res,
+        };
+        if let Err(e) = rename_res {
             let _ = std::fs::remove_file(&temp_local);
             return Err(AppError::Io(e));
         }
@@ -200,11 +208,19 @@ pub async fn sftp_upload(
         }
         drop(dst);
 
-        if let Err(e) = c.sftp.rename(
+        let rename_res = c.sftp.rename(
             Path::new(&temp_remote),
             Path::new(&remote),
             Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
-        ) {
+        );
+        let rename_res = match rename_res {
+            Err(_) => {
+                let _ = c.sftp.unlink(Path::new(&remote));
+                c.sftp.rename(Path::new(&temp_remote), Path::new(&remote), None)
+            }
+            Ok(()) => Ok(()),
+        };
+        if let Err(e) = rename_res {
             let _ = c.sftp.unlink(Path::new(&temp_remote));
             return Err(AppError::from(e));
         }
@@ -281,16 +297,29 @@ pub fn sftp_write_text(
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
     let temp_remote = format!("{}.nexus-{}.part", path, uuid::Uuid::new_v4());
-    {
+    let write_res: AppResult<()> = (|| {
         let mut file = c.sftp.create(Path::new(&temp_remote))?;
         file.write_all(content.as_bytes())?;
         file.flush()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        let _ = c.sftp.unlink(Path::new(&temp_remote));
+        return Err(e);
     }
-    if let Err(e) = c.sftp.rename(
+    let rename_res = c.sftp.rename(
         Path::new(&temp_remote),
         Path::new(&path),
         Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
-    ) {
+    );
+    let rename_res = match rename_res {
+        Err(_) => {
+            let _ = c.sftp.unlink(Path::new(&path));
+            c.sftp.rename(Path::new(&temp_remote), Path::new(&path), None)
+        }
+        Ok(()) => Ok(()),
+    };
+    if let Err(e) = rename_res {
         let _ = c.sftp.unlink(Path::new(&temp_remote));
         return Err(AppError::from(e));
     }

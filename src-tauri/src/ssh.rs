@@ -19,7 +19,9 @@ use ssh2::{Channel, ExtendedData, HashType, MethodType, Session};
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
@@ -78,6 +80,7 @@ enum Cmd {
 struct SessionHandle {
     tx: SyncSender<Cmd>,
     info: SessionInfo,
+    stop: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -377,6 +380,7 @@ pub fn ssh_connect(
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
+    let stop = Arc::new(AtomicBool::new(false));
 
     // Login bootstrap: OSC-7 hook + optional resume of snapshotted cwd.
     let mut init = String::from(OSC7_HOOK);
@@ -392,7 +396,7 @@ pub fn ssh_connect(
         host_id: host.id.clone(),
         started_at: chrono::Utc::now().timestamp(),
     };
-    mgr.sessions.lock().insert(session_id.clone(), SessionHandle { tx, info });
+    mgr.sessions.lock().insert(session_id.clone(), SessionHandle { tx, info, stop: stop.clone() });
 
     let _ = vault.log_start(&session_id, Some(&host.id), &host.label, &host.username, &host.hostname);
 
@@ -406,10 +410,11 @@ pub fn ssh_connect(
     let sid = session_id.clone();
     let snaps = snaps.inner().clone();
     let host_id = host.id.clone();
+    let stop_thread = stop.clone();
     if let Err(e) = thread::Builder::new()
         .name(format!("ssh-io-{}", &sid[..8]))
         .spawn(move || {
-            let (reason, resumable) = io_loop(sess, channel, rx, &on_event, &snaps, &host_id, &sid);
+            let (reason, resumable) = io_loop(sess, channel, rx, &on_event, &snaps, &host_id, &sid, stop_thread);
             let _ = app.state::<Vault>().log_end(&sid, &reason);
             let _ = on_event.send(SshEvent::Disconnected { reason, resumable });
             app.state::<SshManager>().sessions.lock().remove(&sid);
@@ -436,7 +441,11 @@ pub fn ssh_resize(session_id: String, cols: u32, rows: u32, mgr: State<'_, SshMa
 
 #[tauri::command]
 pub fn ssh_disconnect(session_id: String, mgr: State<'_, SshManager>) -> AppResult<()> {
-    mgr.send(&session_id, Cmd::Close)
+    if let Some(h) = mgr.sessions.lock().get(&session_id) {
+        h.stop.store(true, Ordering::SeqCst);
+        let _ = h.tx.try_send(Cmd::Close);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -479,6 +488,7 @@ fn io_loop(
     snaps: &SnapshotStore,
     host_id: &str,
     session_id: &str,
+    stop: Arc<AtomicBool>,
 ) -> (String, bool) {
     let mut buf = vec![0u8; 64 * 1024];
     let mut osc = Osc7Parser::default();
@@ -486,6 +496,12 @@ fn io_loop(
     let mut next_keepalive = Instant::now() + Duration::from_secs(15);
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            let _ = ch.send_eof();
+            let _ = ch.close();
+            return ("closed by user".into(), false);
+        }
+
         let mut idle = true;
 
         // 1. Drain UI commands (capped per tick to prevent starvation).

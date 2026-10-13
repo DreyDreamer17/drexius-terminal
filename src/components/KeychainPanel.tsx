@@ -24,13 +24,15 @@ import { cn } from '../utils/cn';
 
 interface Props {
   keychain: KeychainItem[];
+  activeVaultId?: string;
   onSave: (k: KeychainInput) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRefresh?: () => Promise<void>;
   toast: (m: string) => void;
 }
 
-export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: Props) {
+export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRefresh, toast }: Props) {
+  const targetVault = activeVaultId && activeVaultId !== 'all' ? activeVaultId : 'personal';
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<KeychainInput | null>(null);
   const [showPassword, setShowPassword] = useState(false);
@@ -69,6 +71,7 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
         authMethod: 'key',
         privateKey: res.privateKey,
         passphrase: genPassphrase || null,
+        vaultId: targetVault,
       });
       if (onRefresh) await onRefresh();
       toast(`Generated and saved "${label}" to Keychain!`);
@@ -108,7 +111,7 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
   const handleImportLocal = async (localKey: DetectedLocalKey) => {
     setImportingLocal(localKey.filename);
     try {
-      await bridge.importLocalSshKey(localKey.path, localKey.filename);
+      await bridge.importLocalSshKey(localKey.path, localKey.filename, undefined, targetVault);
       if (onRefresh) await onRefresh();
       toast(`Imported "${localKey.filename}" to Keychain`);
     } catch (e) {
@@ -124,7 +127,7 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
     try {
       let count = 0;
       for (const k of detectedLocal) {
-        await bridge.importLocalSshKey(k.path, k.filename);
+        await bridge.importLocalSshKey(k.path, k.filename, undefined, targetVault);
         count++;
       }
       if (onRefresh) await onRefresh();
@@ -166,7 +169,10 @@ export function KeychainPanel({ keychain, onSave, onDelete, onRefresh, toast }: 
     }
     setSaving(true);
     try {
-      await onSave(editing);
+      await onSave({
+        ...editing,
+        vaultId: editing.vaultId ?? targetVault,
+      });
       toast(`Identity "${editing.label}" saved`);
       setEditing(null);
     } catch (e) {

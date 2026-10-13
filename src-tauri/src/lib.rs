@@ -89,6 +89,7 @@ pub fn run() {
             // hosts
             vault::hosts_list,
             vault::host_save,
+            vault::host_save_with_new_keychain,
             vault::host_delete,
             vault::host_trust_key,
             // keychain (reusable identities)

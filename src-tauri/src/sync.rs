@@ -430,53 +430,52 @@ fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppRes
 
 /// Apply a remote SyncRecord to the local database using HLC last-writer-wins.
 fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResult<()> {
+    let tx = conn.unchecked_transaction()?;
+
     if rec.deleted {
         match rec.table.as_str() {
             "hosts" => {
-                let _ = conn.execute("DELETE FROM hosts WHERE id=?1", [&rec.id]);
+                let _ = tx.execute("DELETE FROM hosts WHERE id=?1", [&rec.id]);
+                let _ = tx.execute("DELETE FROM secrets WHERE host_id=?1", [&rec.id]);
             }
             "snippets" => {
-                let _ = conn.execute("DELETE FROM snippets WHERE id=?1", [&rec.id]);
+                let _ = tx.execute("DELETE FROM snippets WHERE id=?1", [&rec.id]);
             }
             "keychain" => {
-                let _ = conn.execute("DELETE FROM keychain WHERE id=?1", [&rec.id]);
-                let _ = conn.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&rec.id]);
+                let _ = tx.execute("DELETE FROM keychain WHERE id=?1", [&rec.id]);
+                let _ = tx.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&rec.id]);
             }
             "tunnels" => {
-                let _ = conn.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id]);
+                let _ = tx.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id]);
             }
             "vaults" => {
                 if rec.id != "personal" {
-                    let _ = conn.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = conn.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = conn.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = conn.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = conn.execute("DELETE FROM vaults WHERE id=?1", [&rec.id]);
+                    let _ = tx.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = tx.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = tx.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = tx.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
+                    let _ = tx.execute("DELETE FROM vaults WHERE id=?1", [&rec.id]);
                 }
             }
             _ => {}
         }
-        let _ = conn.execute(
+        tx.execute(
             "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 1)
              ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
             rusqlite::params![rec.id, rec.table, rec.hlc],
-        );
+        )?;
+        tx.commit()?;
         return Ok(());
     }
-
-    let _ = conn.execute(
-        "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 0)
-         ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=0",
-        rusqlite::params![rec.id, rec.table, rec.hlc],
-    );
 
     let obj = match &rec.body {
         serde_json::Value::Object(o) => o,
         _ => return Ok(()),
     };
+
     match rec.table.as_str() {
         "hosts" => {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO hosts (id,label,hostname,port,username,auth_method,grp,tags,color,os,keychain_id,jump_host_id,vault_id,startup_command,updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
                  ON CONFLICT(id) DO UPDATE SET label=excluded.label,hostname=excluded.hostname,port=excluded.port,username=excluded.username,auth_method=excluded.auth_method,grp=excluded.grp,tags=excluded.tags,color=excluded.color,os=excluded.os,keychain_id=excluded.keychain_id,jump_host_id=excluded.jump_host_id,vault_id=excluded.vault_id,startup_command=excluded.startup_command,updated_at=excluded.updated_at",
@@ -498,9 +497,19 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
                     obj.get("updated_at").and_then(|v|v.as_i64()).unwrap_or(chrono::Utc::now().timestamp()),
                 ],
             )?;
+            // Single-source invariant: only drop local host secret if the keychain identity exists
+            if let Some(kid) = obj.get("keychain_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                let kc_exists: bool = tx
+                    .query_row("SELECT 1 FROM keychain WHERE id=?1", [kid], |_| Ok(true))
+                    .optional()?
+                    .unwrap_or(false);
+                if kc_exists {
+                    tx.execute("DELETE FROM secrets WHERE host_id = ?1", [&rec.id])?;
+                }
+            }
         }
         "snippets" => {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO snippets (id,name,command,folder,tags,vault_id,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,command=excluded.command,folder=excluded.folder,tags=excluded.tags,vault_id=excluded.vault_id,updated_at=excluded.updated_at",
                 rusqlite::params![
@@ -515,7 +524,7 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
             )?;
         }
         "keychain" => {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO keychain (id,label,username,auth_method,password,private_key,passphrase,vault_id,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
                  ON CONFLICT(id) DO UPDATE SET label=excluded.label,username=excluded.username,auth_method=excluded.auth_method,
                      password=COALESCE(excluded.password, keychain.password),
@@ -536,7 +545,7 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
             )?;
         }
         "tunnels" => {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO tunnels (id,label,host_id,forward_type,local_host,local_port,remote_host,remote_port,vault_id,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                  ON CONFLICT(id) DO UPDATE SET label=excluded.label,host_id=excluded.host_id,forward_type=excluded.forward_type,local_host=excluded.local_host,local_port=excluded.local_port,remote_host=excluded.remote_host,remote_port=excluded.remote_port,vault_id=excluded.vault_id,updated_at=excluded.updated_at",
                 rusqlite::params![
@@ -554,7 +563,7 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
             )?;
         }
         "vaults" => {
-            conn.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO vaults (id,name,kind,color,description,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
                 rusqlite::params![
                     obj.get("id").and_then(|v|v.as_str()),
@@ -566,8 +575,16 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
                 ],
             )?;
         }
-        _ => {}
+        _ => return Ok(()),
     }
+
+    tx.execute(
+        "INSERT INTO sync_log (record_id, tbl, hlc, deleted) VALUES (?1, ?2, ?3, 0)
+         ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=0",
+        rusqlite::params![rec.id, rec.table, rec.hlc],
+    )?;
+
+    tx.commit()?;
     Ok(())
 }
 
