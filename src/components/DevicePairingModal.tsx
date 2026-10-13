@@ -82,42 +82,63 @@ export function DevicePairingModal({
   const [loadingDevices, setLoadingDevices] = useState(false);
 
   // ── Start Host pairing listener when in 'share' tab ──
+  // NOTE: listener lifecycle depends only on `tab` so changing theme/accent
+  // does not invalidate the active PIN/QR link. QR recoloring is handled
+  // by a separate effect below.
   useEffect(() => {
-    let active = true;
+    let disposed = false;
+    let stopRequired = false;
 
     if (tab === 'share') {
+      stopRequired = true;
+      setHostInfo(null);
+      setQrDataUrl('');
+      setHostingError(null);
       bridge.pairingStartHost()
-        .then(async (info) => {
-          if (!active) return;
+        .then((info) => {
+          if (disposed) return;
           setHostInfo(info);
-          if (info.qrPayload) {
-            try {
-              const url = await QRCode.toDataURL(info.qrPayload, {
-                width: 220,
-                margin: 1.5,
-                color: {
-                  dark: '#030712',
-                  light: accentColor,
-                },
-              });
-              if (active) setQrDataUrl(url);
-            } catch (err) {
-              console.error('Failed to generate QR code', err);
-            }
-          }
         })
         .catch((err) => {
-          if (active) setHostingError(String(err?.message || err));
+          if (!disposed) setHostingError(String(err?.message || err));
         });
     }
 
     return () => {
-      active = false;
+      disposed = true;
+      if (stopRequired) {
+        void bridge.pairingStopHost().catch(() => {});
+      }
     };
-  }, [tab, accentColor]);
+  }, [tab]);
+
+  // ── Render QR for current payload; re-runs on theme change without restarting listener ──
+  useEffect(() => {
+    let cancelled = false;
+    const payload = hostInfo?.qrPayload;
+    if (tab !== 'share' || !payload) return;
+    QRCode.toDataURL(payload, {
+      width: 220,
+      margin: 1.5,
+      color: {
+        dark: '#030712',
+        light: accentColor,
+      },
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch((err) => {
+        console.error('Failed to generate QR code', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, hostInfo?.qrPayload, accentColor]);
 
   // ── Listen for pairing success event from Tauri backend ──
   useEffect(() => {
+    let disposed = false;
     let unlistenFn: (() => void) | null = null;
     if (isTauri) {
       listen<{ deviceName: string; ip: string }>('pairing-success', (event) => {
@@ -125,10 +146,12 @@ export function DevicePairingModal({
         toast(`Successfully paired with ${event.payload.deviceName}!`);
         onRefresh();
       }).then((u) => {
-        unlistenFn = u;
+        if (disposed) u();
+        else unlistenFn = u;
       }).catch(() => {});
     }
     return () => {
+      disposed = true;
       if (unlistenFn) unlistenFn();
     };
   }, [onRefresh, toast]);

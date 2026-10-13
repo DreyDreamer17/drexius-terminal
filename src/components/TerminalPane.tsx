@@ -124,6 +124,11 @@ export const TerminalPane = memo(function TerminalPane({
   const lineRef = useRef('');
   const retryRef = useRef(0);
   const genRef = useRef(0);
+  const onDataRef = useRef(onData);
+  const updateRef = useRef<(patch: Parameters<typeof registry.patch>[1]) => void>(() => {});
+  const onChangeRef = useRef(onChange);
+  const pendingSize = useRef<{ cols: number; rows: number } | null>(null);
+  const resizeScheduled = useRef(false);
 
   // Command & Clipboard history + Autosuggestion states
   const historyCacheRef = useRef<string[]>([]);
@@ -157,6 +162,31 @@ export const TerminalPane = memo(function TerminalPane({
     },
     [pane.id, onChange]
   );
+
+  useEffect(() => {
+    onDataRef.current = onData;
+    updateRef.current = update;
+    onChangeRef.current = onChange;
+  }, [onData, update, onChange]);
+
+  const scheduleResize = useCallback((cols: number, rows: number) => {
+    pendingSize.current = { cols, rows };
+    if (resizeScheduled.current) return;
+
+    resizeScheduled.current = true;
+    requestAnimationFrame(() => {
+      resizeScheduled.current = false;
+      const size = pendingSize.current;
+      const sid = sessionRef.current;
+      if (size && sid && !isSerial) {
+        if (isLocal) {
+          void bridge.resizeLocalPty(sid, size.cols, size.rows).catch(() => {});
+        } else {
+          void bridge.resize(sid, size.cols, size.rows).catch(() => {});
+        }
+      }
+    });
+  }, [isSerial, isLocal]);
 
   const performSearch = useCallback(
     (query: string, reverse = false) => {
@@ -437,8 +467,8 @@ export const TerminalPane = memo(function TerminalPane({
     async (resume: boolean) => {
       const term = termRef.current;
       if (!term) return;
-      const gen = genRef.current;
-      const dead = () => genRef.current !== gen;
+      const attempt = ++genRef.current;
+      const dead = () => genRef.current !== attempt;
       setStatus('connecting');
       setError(null);
       setCountdown(null);
@@ -712,22 +742,24 @@ export const TerminalPane = memo(function TerminalPane({
       });
     }
 
-    // Keep PTY dimensions in sync on any terminal resize event
+    // Keep PTY dimensions in sync on any terminal resize event (coalesced)
     term.onResize(({ cols, rows }) => {
-      const sid = sessionRef.current;
-      if (sid && !isSerial) {
-        if (isLocal) bridge.resizeLocalPty(sid, cols, rows);
-        else bridge.resize(sid, cols, rows);
-      }
+      scheduleResize(cols, rows);
     });
 
     // OSC 7 — working directory reporting
     term.parser.registerOscHandler(7, (data) => {
-      const m = data.match(/^file:\/\/[^/]*(\/.*)$/);
-      if (m) {
-        const p = decodeURI(m[1]);
-        setCwd(p);
-        update({ cwd: p });
+      const match = data.match(/^file:\/\/[^/]*(\/.{0,4096})$/);
+      if (match) {
+        try {
+          const p = decodeURI(match[1]);
+          if (!p.includes('\0') && !/[\r\n]/.test(p)) {
+            setCwd(p);
+            updateRef.current({ cwd: p });
+          }
+        } catch {
+          // Ignore malformed terminal-controlled OSC-7 escapes
+        }
       }
       return true;
     });
@@ -816,7 +848,7 @@ export const TerminalPane = memo(function TerminalPane({
       // line in ways we can't track from keystrokes -> re-read it from the screen.
       if (data.startsWith('\x1b')) {
         scheduleResync();
-        onData?.(data);
+        onDataRef.current?.(data);
         return;
       }
 
@@ -872,7 +904,7 @@ export const TerminalPane = memo(function TerminalPane({
           updateSuggestion(lineRef.current);
         }
       }
-      onData?.(data);
+      onDataRef.current?.(data);
     });
 
     // Copy on selection mouseup (Termius convenience & Clipboard history)
@@ -911,9 +943,8 @@ export const TerminalPane = memo(function TerminalPane({
       try {
         fit.fit();
         updateGhostPos();
-        if (sessionRef.current && !isSerial) {
-          if (isLocal) bridge.resizeLocalPty(sessionRef.current, term.cols, term.rows);
-          else bridge.resize(sessionRef.current, term.cols, term.rows);
+        if (term.cols && term.rows) {
+          scheduleResize(term.cols, term.rows);
         }
       } catch {
         /* not visible */
@@ -938,7 +969,7 @@ export const TerminalPane = memo(function TerminalPane({
       sessionRef.current = null;
       registry.delete(pane.id);
       term.dispose();
-      onChange();
+      onChangeRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

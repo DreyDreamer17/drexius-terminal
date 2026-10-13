@@ -786,7 +786,12 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
                 now()
             ],
         )?;
-        if let Some(s) = &secret {
+        if profile.keychain_id.is_some() {
+            // Host now resolves credentials from Keychain (see host_with_secret):
+            // drop any stale host-specific secret so deleting the Keychain
+            // identity later cannot silently fall back to an old password/key.
+            c.execute("DELETE FROM secrets WHERE host_id=?1", [&profile.id])?;
+        } else if let Some(s) = &secret {
             c.execute(
                 "INSERT INTO secrets(host_id, password, private_key, passphrase) VALUES(?1, ?2, ?3, ?4)
                  ON CONFLICT(host_id) DO UPDATE SET password=?2, private_key=?3, passphrase=?4",

@@ -90,7 +90,7 @@ export function HostModal({
       startupCommand: h.startupCommand?.trim() || null,
     };
     const secretChanged = !h.keychainId && ((h.authMethod === 'password' && password) || (h.authMethod === 'key' && privateKey));
-    const secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
+    let secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
 
     if (saveToKeychain && secretChanged) {
       try {
@@ -104,9 +104,14 @@ export function HostModal({
           passphrase: passphrase || null,
         });
         finalHost.keychainId = kid;
+        secret = undefined;
       } catch (err) {
         console.error('Failed to auto-save to keychain', err);
       }
+    }
+
+    if (finalHost.keychainId) {
+      secret = undefined;
     }
 
     onSave(finalHost, secret);

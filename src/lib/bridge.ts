@@ -270,12 +270,16 @@ export const bridge = {
     return invoke('os_keychain_unlock');
   },
 
-  async osKeychainStore(masterPassword: string): Promise<void> {
-    if (!isTauri) return;
+  async osKeychainStore(masterPassword: string): Promise<boolean> {
+    if (!isTauri) return false;
     try {
       await invoke('os_keychain_store', { masterPassword });
       localStorage.setItem('nx.os_keychain', '1');
-    } catch { /* non-fatal — the checkbox will show unticked next launch */ }
+      return true;
+    } catch (e) {
+      localStorage.removeItem('nx.os_keychain');
+      throw e;
+    }
   },
 
   async osKeychainDelete(): Promise<void> {
