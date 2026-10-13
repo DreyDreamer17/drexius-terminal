@@ -230,12 +230,13 @@ export const bridge = {
     return { initialized: !!localStorage.getItem('nx.vault'), unlocked: !!demo };
   },
 
-  async unlock(masterPassword: string): Promise<void> {
+  async unlock(masterPassword: string): Promise<string | null> {
     if (isTauri) return invoke('vault_unlock', { masterPassword });
     let saltB64 = localStorage.getItem('nx.salt');
     if (!saltB64) { saltB64 = toB64(crypto.getRandomValues(new Uint8Array(16))); localStorage.setItem('nx.salt', saltB64); }
     const key = await deriveDemoKey(masterPassword, fromB64(saltB64));
     const stored = localStorage.getItem('nx.vault');
+    let isNew = false;
     if (stored) {
       try {
         const { iv, ct } = JSON.parse(stored);
@@ -251,14 +252,38 @@ export const bridge = {
       }
     } else {
       demo = structuredClone(SEED);
+      isNew = true;
     }
     demoKey = key;
     await persistDemo();
+    return isNew ? 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD' : null;
+  },
+
+  async vaultRecover(recoveryCode: string, newPassword: string): Promise<string> {
+    if (isTauri) return invoke('vault_recover', { recoveryCode, newPassword });
+    await this.resetDemoVault();
+    await this.unlock(newPassword);
+    return 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
+  },
+
+  async vaultReset(): Promise<void> {
+    if (isTauri) {
+      await invoke('vault_reset');
+    }
+    await this.resetDemoVault();
+    localStorage.removeItem('nx.os_keychain');
+  },
+
+  async vaultGetRecoveryKey(): Promise<string> {
+    if (isTauri) return invoke('vault_get_recovery_key');
+    return 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
   },
 
   async resetDemoVault() {
     localStorage.removeItem('nx.vault');
     localStorage.removeItem('nx.salt');
+    demo = null;
+    demoKey = null;
   },
 
   async lock(): Promise<void> {

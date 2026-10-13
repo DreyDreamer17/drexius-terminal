@@ -352,6 +352,42 @@ fn add_column_if_missing(conn: &Connection, table: &str, col: &str, col_type: &s
     Ok(())
 }
 
+#[derive(Serialize, Deserialize)]
+struct RecoveryEnvelope {
+    version: u32,
+    recovery_salt: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+fn normalize_recovery_code(code: &str) -> String {
+    let clean = code.trim().replace('-', "").replace(' ', "").to_uppercase();
+    if let Some(stripped) = clean.strip_prefix("NX") {
+        stripped.to_string()
+    } else {
+        clean
+    }
+}
+
+fn generate_recovery_code() -> (String, String) {
+    let mut raw = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut raw);
+    let hex_raw = hex::encode(raw).to_uppercase();
+    let formatted = format!(
+        "NX-{}-{}-{}-{}-{}-{}-{}-{}",
+        &hex_raw[0..4],
+        &hex_raw[4..8],
+        &hex_raw[8..12],
+        &hex_raw[12..16],
+        &hex_raw[16..20],
+        &hex_raw[20..24],
+        &hex_raw[24..28],
+        &hex_raw[28..32]
+    );
+    let normalized = hex_raw;
+    (formatted, normalized)
+}
+
 impl Vault {
     pub fn new(path: PathBuf) -> Self {
         Self { path, inner: Mutex::new(None) }
@@ -359,6 +395,10 @@ impl Vault {
 
     fn salt_path(&self) -> PathBuf {
         self.path.with_extension("salt")
+    }
+
+    pub fn recovery_path(&self) -> PathBuf {
+        self.path.with_extension("recovery")
     }
 
     pub fn derive_key(password: &str, salt: &[u8]) -> AppResult<Zeroizing<[u8; 32]>> {
@@ -371,26 +411,70 @@ impl Vault {
         Ok(key)
     }
 
-    pub fn unlock(&self, master_password: &str) -> AppResult<()> {
-        let salt = match std::fs::read(self.salt_path()) {
-            Ok(s) if s.len() == 16 => s,
-            Ok(s) => return Err(AppError::Crypto(format!("vault salt file is corrupt ({} bytes, expected 16)", s.len()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if self.path.exists() {
-                    return Err(AppError::Crypto(
-                        "Vault database exists but its salt file (nexus.vault.salt) is missing. \
-                         Refusing to generate a new salt to prevent permanent data loss. \
-                         Please restore nexus.vault.salt or delete the vault database to reset.".into()
-                    ));
-                }
-                let mut s = vec![0u8; 16];
-                rand::thread_rng().fill_bytes(&mut s);
-                std::fs::write(self.salt_path(), &s)?;
-                s
-            }
-            Err(e) => return Err(AppError::Io(e)),
+    pub fn save_recovery_envelope(&self, db_key: &[u8; 32], normalized_code: &str) -> AppResult<()> {
+        let mut salt = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut salt);
+        let kek = Self::derive_key(normalized_code, &salt)?;
+
+        let mut nonce_bytes = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
+
+        let cipher = XChaCha20Poly1305::new((kek.as_ref()).into());
+        let ciphertext = cipher
+            .encrypt(nonce, db_key.as_slice())
+            .map_err(|e| AppError::Crypto(format!("Failed to encrypt recovery envelope: {e}")))?;
+
+        let env = RecoveryEnvelope {
+            version: 1,
+            recovery_salt: hex::encode(salt),
+            nonce: hex::encode(nonce_bytes),
+            ciphertext: B64.encode(ciphertext),
         };
-        let key = Self::derive_key(master_password, &salt)?;
+        let json = serde_json::to_string_pretty(&env)
+            .map_err(|e| AppError::Other(e.to_string()))?;
+        std::fs::write(self.recovery_path(), json)?;
+        Ok(())
+    }
+
+    pub fn decrypt_recovery_envelope(&self, code: &str) -> AppResult<Zeroizing<[u8; 32]>> {
+        let normalized = normalize_recovery_code(code);
+        if normalized.len() < 16 {
+            return Err(AppError::Other("Invalid recovery key format".into()));
+        }
+        let env_bytes = std::fs::read(self.recovery_path())
+            .map_err(|_| AppError::Other("No emergency recovery key found on this system".into()))?;
+        let env: RecoveryEnvelope = serde_json::from_slice(&env_bytes)
+            .map_err(|e| AppError::Other(format!("Corrupt recovery envelope: {e}")))?;
+
+        let salt = hex::decode(&env.recovery_salt)
+            .map_err(|_| AppError::Crypto("Invalid salt in recovery envelope".into()))?;
+        let kek = Self::derive_key(&normalized, &salt)?;
+
+        let nonce_bytes = hex::decode(&env.nonce)
+            .map_err(|_| AppError::Crypto("Invalid nonce in recovery envelope".into()))?;
+        if nonce_bytes.len() != 24 {
+            return Err(AppError::Crypto("Invalid nonce length".into()));
+        }
+        let nonce = XNonce::from_slice(&nonce_bytes);
+
+        let ciphertext = B64.decode(&env.ciphertext)
+            .map_err(|_| AppError::Crypto("Invalid ciphertext in recovery envelope".into()))?;
+
+        let cipher = XChaCha20Poly1305::new((kek.as_ref()).into());
+        let db_key = cipher
+            .decrypt(nonce, ciphertext.as_slice())
+            .map_err(|_| AppError::Crypto("Invalid recovery key. Decryption failed.".into()))?;
+
+        if db_key.len() != 32 {
+            return Err(AppError::Crypto("Corrupted database key in envelope".into()));
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        key.copy_from_slice(&db_key);
+        Ok(key)
+    }
+
+    fn unlock_with_key(&self, key: Zeroizing<[u8; 32]>) -> AppResult<()> {
         let conn = Connection::open(&self.path)?;
         let hex_key = Zeroizing::new(hex::encode(key.as_ref()));
         conn.execute_batch(&format!(
@@ -435,8 +519,6 @@ impl Vault {
             let _ = conn.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & secrets', unixepoch())", []);
         }
         // v3: single-source credentials backfill for vaults already at v2.
-        // Removes stale host secrets where a Keychain link exists and scopes
-        // legacy vault-less keychain rows. Idempotent; runs once.
         let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(2);
         if user_version < 3 {
             let tx = conn.unchecked_transaction()?;
@@ -463,6 +545,86 @@ impl Vault {
             tx.commit()?;
         }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
+        Ok(())
+    }
+
+    pub fn unlock(&self, master_password: &str) -> AppResult<Option<String>> {
+        let is_new = !self.path.exists();
+        let salt = match std::fs::read(self.salt_path()) {
+            Ok(s) if s.len() == 16 => s,
+            Ok(s) => return Err(AppError::Crypto(format!("vault salt file is corrupt ({} bytes, expected 16)", s.len()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if self.path.exists() {
+                    return Err(AppError::Crypto(
+                        "Vault database exists but its salt file (nexus.vault.salt) is missing. \
+                         Refusing to generate a new salt to prevent permanent data loss. \
+                         Please restore nexus.vault.salt or delete the vault database to reset.".into()
+                    ));
+                }
+                let mut s = vec![0u8; 16];
+                rand::thread_rng().fill_bytes(&mut s);
+                std::fs::write(self.salt_path(), &s)?;
+                s
+            }
+            Err(e) => return Err(AppError::Io(e)),
+        };
+        let key = Self::derive_key(master_password, &salt)?;
+        self.unlock_with_key(key.clone())?;
+
+        // If the recovery envelope doesn't exist yet, create it and return the emergency key
+        if !self.recovery_path().exists() {
+            let (code, normalized) = generate_recovery_code();
+            self.save_recovery_envelope(&key, &normalized)?;
+            if is_new {
+                return Ok(Some(code));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn recover_and_rekey(&self, recovery_code: &str, new_password: &str) -> AppResult<String> {
+        let db_key = self.decrypt_recovery_envelope(recovery_code)?;
+        self.unlock_with_key(db_key)?;
+
+        let mut new_salt = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut new_salt);
+        let new_key = Self::derive_key(new_password, &new_salt)?;
+
+        let hex_new_key = Zeroizing::new(hex::encode(new_key.as_ref()));
+        {
+            let g = self.inner.lock();
+            let u = g.as_ref().ok_or(AppError::VaultLocked)?;
+            u.conn.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", hex_new_key.as_str()))?;
+        }
+
+        std::fs::write(self.salt_path(), &new_salt)?;
+
+        let (new_code, normalized) = generate_recovery_code();
+        self.save_recovery_envelope(&new_key, &normalized)?;
+
+        if let Some(ref mut u) = *self.inner.lock() {
+            u.root_key = new_key;
+        }
+
+        let _ = os_keychain_delete();
+        Ok(new_code)
+    }
+
+    pub fn regenerate_recovery_key(&self) -> AppResult<String> {
+        let key = self.root_key()?;
+        let (code, normalized) = generate_recovery_code();
+        self.save_recovery_envelope(&key, &normalized)?;
+        Ok(code)
+    }
+
+    pub fn reset(&self) -> AppResult<()> {
+        *self.inner.lock() = None;
+        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(self.path.with_extension("vault-wal"));
+        let _ = std::fs::remove_file(self.path.with_extension("vault-shm"));
+        let _ = std::fs::remove_file(self.salt_path());
+        let _ = std::fs::remove_file(self.recovery_path());
+        let _ = os_keychain_delete();
         Ok(())
     }
 
@@ -675,7 +837,7 @@ pub fn vault_status(vault: State<'_, Vault>) -> VaultStatus {
 }
 
 #[tauri::command]
-pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> AppResult<()> {
+pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> AppResult<Option<String>> {
     if master_password.len() < 4 {
         return Err(AppError::Other("Master password must be at least 4 characters".into()));
     }
@@ -686,6 +848,33 @@ pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> App
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn vault_recover(
+    recovery_code: String,
+    new_password: String,
+    app: tauri::AppHandle,
+) -> AppResult<String> {
+    if new_password.len() < 4 {
+        return Err(AppError::Other("New master password must be at least 4 characters".into()));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = app.state::<Vault>();
+        vault.recover_and_rekey(&recovery_code, &new_password)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
+pub fn vault_reset(vault: State<'_, Vault>) -> AppResult<()> {
+    vault.reset()
+}
+
+#[tauri::command]
+pub fn vault_get_recovery_key(vault: State<'_, Vault>) -> AppResult<String> {
+    vault.regenerate_recovery_key()
 }
 
 #[tauri::command]
@@ -740,7 +929,8 @@ pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<()> {
             }
         };
         let vault = app.state::<Vault>();
-        vault.unlock(&pw)
+        vault.unlock(&pw)?;
+        Ok(())
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
@@ -2577,3 +2767,42 @@ pub fn ai_active_provider_set(provider_id: String, vault: tauri::State<'_, Vault
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_recovery_code_generation_and_normalization() {
+        let (formatted, normalized) = generate_recovery_code();
+        assert!(formatted.starts_with("NX-"));
+        assert_eq!(normalized.len(), 32);
+        assert_eq!(normalize_recovery_code(&formatted), normalized);
+        assert_eq!(normalize_recovery_code("nx-1234-abcd-5678-ef01"), "1234ABCD5678EF01");
+        assert_eq!(normalize_recovery_code("  nx 1234 abcd "), "1234ABCD");
+        assert_eq!(normalize_recovery_code("1234ABCD5678EF01"), "1234ABCD5678EF01");
+    }
+
+    #[test]
+    fn test_recovery_envelope_roundtrip() {
+        let unique = format!("test_vault_{}.db", rand::random::<u64>());
+        let db_path = std::env::temp_dir().join(unique);
+        let vault = Vault::new(db_path.clone());
+
+        let (code, normalized) = generate_recovery_code();
+        let db_key = [42u8; 32];
+
+        vault.save_recovery_envelope(&db_key, &normalized).expect("Save envelope");
+        assert!(vault.recovery_path().exists());
+
+        let decrypted = vault.decrypt_recovery_envelope(&code).expect("Decrypt envelope");
+        assert_eq!(*decrypted, db_key);
+
+        // Wrong code fails
+        assert!(vault.decrypt_recovery_envelope("NX-0000-0000-0000-0000-0000-0000-0000-0000").is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_file(vault.recovery_path());
+    }
+}
+
