@@ -184,6 +184,7 @@ export function HostSidebar({
           <button
             onClick={onClose}
             title="Close panel"
+            aria-label="Close panel"
             className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white transition"
           >
             <X className="h-3.5 w-3.5" />
@@ -408,6 +409,7 @@ export function HostSidebar({
                     {onOpenSftp && (
                       <button
                         title="Open SFTP File Browser"
+                        aria-label="Open SFTP File Browser"
                         onClick={() => onOpenSftp(h)}
                         className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-emerald-300"
                       >
@@ -416,6 +418,7 @@ export function HostSidebar({
                     )}
                     <button
                       title="Open in split pane"
+                      aria-label="Open in split pane"
                       onClick={() => onSplit(h)}
                       className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-cyan-300"
                     >
@@ -423,6 +426,7 @@ export function HostSidebar({
                     </button>
                     <button
                       title="Edit"
+                      aria-label="Edit host"
                       onClick={() => onEdit(h)}
                       className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
                     >
@@ -430,6 +434,7 @@ export function HostSidebar({
                     </button>
                     <button
                       title="Delete"
+                      aria-label="Delete host"
                       onClick={() => onDelete(h)}
                       className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-rose-300"
                     >
