@@ -42,18 +42,23 @@ struct SftpConn {
 #[derive(Default)]
 pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<Mutex<SftpConn>>>>,
+    session_hosts: Mutex<HashMap<String, String>>,
 }
 
 impl SftpManager {
     pub fn close(&self, session_id: &str) {
         self.conns.lock().remove(session_id);
+        self.session_hosts.lock().remove(session_id);
     }
 
     fn get(&self, session_id: &str, ssh: &SshManager, vault: &Vault) -> AppResult<Arc<Mutex<SftpConn>>> {
         if let Some(c) = self.conns.lock().get(session_id) {
             return Ok(c.clone());
         }
-        let host_id = ssh.host_of(session_id)?;
+        let host_id = match self.session_hosts.lock().get(session_id).cloned() {
+            Some(h) => h,
+            None => ssh.host_of(session_id)?,
+        };
         let (host, secret) = vault.host_with_secret(&host_id)?;
         let (session, _) = open_authenticated(&host, &secret, vault)?;
         let sftp = session.sftp()?;
@@ -65,6 +70,20 @@ impl SftpManager {
         conns.insert(session_id.to_string(), conn.clone());
         Ok(conn)
     }
+}
+
+#[tauri::command(async)]
+pub fn sftp_connect(
+    host_id: String,
+    mgr: State<'_, SftpManager>,
+    ssh: State<'_, SshManager>,
+    vault: State<'_, Vault>,
+) -> AppResult<String> {
+    let session_id = format!("sftp_{}", uuid::Uuid::new_v4());
+    mgr.session_hosts.lock().insert(session_id.clone(), host_id);
+    // Eagerly authenticate/connect so errors surface immediately to caller
+    mgr.get(&session_id, &ssh, &vault)?;
+    Ok(session_id)
 }
 
 const CHUNK: usize = 256 * 1024;
@@ -379,6 +398,113 @@ pub fn sftp_write_text(
 #[tauri::command]
 pub fn sftp_close(session_id: String, mgr: State<'_, SftpManager>) -> AppResult<()> {
     mgr.close(&session_id);
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDirResponse {
+    pub current_path: String,
+    pub parent_path: Option<String>,
+    pub entries: Vec<FileEntry>,
+}
+
+#[tauri::command]
+pub fn local_fs_home() -> AppResult<String> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::Other("Could not resolve home directory".into()))
+}
+
+#[tauri::command]
+pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
+    let target = match path.as_deref() {
+        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        _ => dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+    };
+
+    let canonical = target.canonicalize().unwrap_or(target);
+    let current_path = canonical.to_string_lossy().to_string();
+    let parent_path = canonical.parent().map(|p| p.to_string_lossy().to_string());
+
+    let read_dir = std::fs::read_dir(&canonical)?;
+    let mut entries = Vec::new();
+    for item in read_dir.flatten() {
+        let meta = match item.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let name = item.file_name().to_string_lossy().to_string();
+        let item_path = item.path().to_string_lossy().to_string();
+        let is_dir = meta.is_dir();
+        let is_symlink = meta.file_type().is_symlink();
+        let size = meta.len();
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+
+        #[cfg(unix)]
+        let permissions = {
+            use std::os::unix::fs::PermissionsExt;
+            Some(meta.permissions().mode())
+        };
+        #[cfg(not(unix))]
+        let permissions = None;
+
+        entries.push(FileEntry {
+            name,
+            path: item_path,
+            is_dir,
+            is_symlink,
+            size,
+            modified,
+            permissions,
+        });
+    }
+
+    entries.sort_by_cached_key(|e| (std::cmp::Reverse(e.is_dir), e.name.to_lowercase()));
+
+    Ok(LocalDirResponse {
+        current_path,
+        parent_path,
+        entries,
+    })
+}
+
+#[tauri::command]
+pub fn local_fs_mkdir(path: String) -> AppResult<()> {
+    std::fs::create_dir_all(Path::new(&path))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_fs_remove(path: String, is_dir: bool) -> AppResult<()> {
+    let p = Path::new(&path);
+    if is_dir {
+        std::fs::remove_dir_all(p)?;
+    } else {
+        std::fs::remove_file(p)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_fs_rename(from: String, to: String) -> AppResult<()> {
+    std::fs::rename(Path::new(&from), Path::new(&to))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_fs_read_text(path: String) -> AppResult<String> {
+    let s = std::fs::read_to_string(Path::new(&path))?;
+    Ok(s)
+}
+
+#[tauri::command]
+pub fn local_fs_write_text(path: String, content: String) -> AppResult<()> {
+    std::fs::write(Path::new(&path), content)?;
     Ok(())
 }
 

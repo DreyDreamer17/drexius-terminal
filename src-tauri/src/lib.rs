@@ -148,6 +148,7 @@ pub fn run() {
             serial::serial_write,
             serial::serial_close,
             // sftp
+            sftp::sftp_connect,
             sftp::sftp_list,
             sftp::sftp_download,
             sftp::sftp_upload,
@@ -157,6 +158,13 @@ pub fn run() {
             sftp::sftp_read_text,
             sftp::sftp_write_text,
             sftp::sftp_close,
+            sftp::local_fs_home,
+            sftp::local_fs_list,
+            sftp::local_fs_mkdir,
+            sftp::local_fs_remove,
+            sftp::local_fs_rename,
+            sftp::local_fs_read_text,
+            sftp::local_fs_write_text,
             // ssh config importer
             ssh_config::ssh_config_detect,
             ssh_config::ssh_config_preview,
