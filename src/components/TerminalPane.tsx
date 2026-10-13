@@ -837,11 +837,11 @@ export const TerminalPane = memo(function TerminalPane({
       const sid = sessionRef.current;
       if (!sid) return;
       if (isSerial) {
-        bridge.writeSerial(sid, data);
+        bridge.writeSerial(sid, data).catch((err) => console.error('Serial write failed:', err));
       } else if (isLocal) {
-        bridge.writeLocalPty(sid, data);
+        bridge.writeLocalPty(sid, data).catch((err) => console.error('Local PTY write failed:', err));
       } else {
-        bridge.write(sid, data);
+        bridge.write(sid, data).catch((err) => console.error('SSH write failed:', err));
       }
 
       // Escape sequences (arrows, Home/End, Delete, bracketed paste...) change the

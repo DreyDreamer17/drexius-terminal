@@ -173,6 +173,15 @@ async function fingerprintFor(h: Host) {
 interface DemoSession { shell: DemoShell; host: Host; emit: (e: SessionEvent) => void; }
 const demoSessions = new Map<string, DemoSession>();
 
+const sessionWriteQueues = new Map<string, Promise<any>>();
+
+function enqueueSessionWrite<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sessionWriteQueues.get(sessionId) ?? Promise.resolve();
+  const next = prev.then(() => fn(), () => fn());
+  sessionWriteQueues.set(sessionId, next);
+  return next;
+}
+
 // ─────────────────────────────── API ───────────────────────────────────
 export type AiAuthKind = 'none' | 'bearer' | 'anthropic' | 'gemini';
 
@@ -467,18 +476,20 @@ export const bridge = {
 
   async write(sessionId: string, data: string) {
     if (isTauri) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          return await invoke('ssh_write', { sessionId, data });
-        } catch (err: any) {
-          const msg = String(err?.message || err);
-          if (msg.includes('queue is full') && attempt < 4) {
-            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-            continue;
+      return enqueueSessionWrite(sessionId, async () => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            return await invoke('ssh_write', { sessionId, data });
+          } catch (err: any) {
+            const msg = String(err?.message || err);
+            if (msg.includes('queue is full') && attempt < 4) {
+              await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+              continue;
+            }
+            throw err;
           }
-          throw err;
         }
-      }
+      });
     }
     demoSessions.get(sessionId)?.shell.input(data);
   },
@@ -488,6 +499,7 @@ export const bridge = {
   },
 
   async disconnect(sessionId: string) {
+    sessionWriteQueues.delete(sessionId);
     if (isTauri) return invoke('ssh_disconnect', { sessionId }).catch(() => {});
     demoSessions.delete(sessionId);
   },
@@ -786,18 +798,20 @@ export const bridge = {
 
   async writeLocalPty(sessionId: string, data: string): Promise<void> {
     if (isTauri) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          return await invoke('local_pty_write', { sessionId, data });
-        } catch (err: any) {
-          const msg = String(err?.message || err);
-          if (msg.includes('queue is full') && attempt < 4) {
-            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-            continue;
+      return enqueueSessionWrite(sessionId, async () => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            return await invoke('local_pty_write', { sessionId, data });
+          } catch (err: any) {
+            const msg = String(err?.message || err);
+            if (msg.includes('queue is full') && attempt < 4) {
+              await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+              continue;
+            }
+            throw err;
           }
-          throw err;
         }
-      }
+      });
     }
     demoSessions.get(sessionId)?.shell.input(data);
   },
@@ -807,6 +821,7 @@ export const bridge = {
   },
 
   async closeLocalPty(sessionId: string): Promise<void> {
+    sessionWriteQueues.delete(sessionId);
     if (isTauri) {
       await invoke('local_pty_close', { sessionId }).catch(() => {});
       return;
@@ -880,22 +895,25 @@ export const bridge = {
 
   async writeSerial(sessionId: string, data: string): Promise<void> {
     if (isTauri) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          return await invoke('serial_write', { sessionId, data });
-        } catch (err: any) {
-          const msg = String(err?.message || err);
-          if (msg.includes('queue is full') && attempt < 4) {
-            await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
-            continue;
+      return enqueueSessionWrite(sessionId, async () => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            return await invoke('serial_write', { sessionId, data });
+          } catch (err: any) {
+            const msg = String(err?.message || err);
+            if (msg.includes('queue is full') && attempt < 4) {
+              await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+              continue;
+            }
+            throw err;
           }
-          throw err;
         }
-      }
+      });
     }
   },
 
   async closeSerial(sessionId: string): Promise<void> {
+    sessionWriteQueues.delete(sessionId);
     if (isTauri) {
       await invoke('serial_close', { sessionId }).catch(() => {});
       return;

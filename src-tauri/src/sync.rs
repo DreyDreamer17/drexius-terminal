@@ -435,26 +435,26 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
     if rec.deleted {
         match rec.table.as_str() {
             "hosts" => {
-                let _ = tx.execute("DELETE FROM hosts WHERE id=?1", [&rec.id]);
-                let _ = tx.execute("DELETE FROM secrets WHERE host_id=?1", [&rec.id]);
+                tx.execute("DELETE FROM hosts WHERE id=?1", [&rec.id])?;
+                tx.execute("DELETE FROM secrets WHERE host_id=?1", [&rec.id])?;
             }
             "snippets" => {
-                let _ = tx.execute("DELETE FROM snippets WHERE id=?1", [&rec.id]);
+                tx.execute("DELETE FROM snippets WHERE id=?1", [&rec.id])?;
             }
             "keychain" => {
-                let _ = tx.execute("DELETE FROM keychain WHERE id=?1", [&rec.id]);
-                let _ = tx.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&rec.id]);
+                tx.execute("DELETE FROM keychain WHERE id=?1", [&rec.id])?;
+                tx.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&rec.id])?;
             }
             "tunnels" => {
-                let _ = tx.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id]);
+                tx.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id])?;
             }
             "vaults" => {
                 if rec.id != "personal" {
-                    let _ = tx.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = tx.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = tx.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = tx.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id]);
-                    let _ = tx.execute("DELETE FROM vaults WHERE id=?1", [&rec.id]);
+                    tx.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
+                    tx.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
+                    tx.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
+                    tx.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
+                    tx.execute("DELETE FROM vaults WHERE id=?1", [&rec.id])?;
                 }
             }
             _ => {}
@@ -542,6 +542,11 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
                     obj.get("vault_id").and_then(|v|v.as_str()),
                     obj.get("updated_at").and_then(|v|v.as_i64()).unwrap_or(chrono::Utc::now().timestamp()),
                 ],
+            )?;
+            // Reconcile single-source invariant: drop fallback secrets for any hosts referencing this keychain
+            tx.execute(
+                "DELETE FROM secrets WHERE host_id IN (SELECT id FROM hosts WHERE keychain_id = ?1)",
+                [&rec.id],
             )?;
         }
         "tunnels" => {
@@ -716,7 +721,18 @@ pub async fn sync_now(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<
 
     let mut pulled = 0usize;
     vault.with(|conn| -> AppResult<()> {
-        for (_blob_id, (remote, _cur)) in remote_blobs {
+        let mut sorted_remotes: Vec<(SyncRecord, u64)> = remote_blobs.into_values().collect();
+        let table_rank = |tbl: &str| match tbl {
+            "vaults" => 0,
+            "keychain" => 1,
+            "hosts" => 2,
+            "tunnels" => 3,
+            "snippets" => 4,
+            _ => 5,
+        };
+        sorted_remotes.sort_by_key(|(r, _)| table_rank(&r.table));
+
+        for (remote, _cur) in sorted_remotes {
             let local_logged_hlc: Option<String> = conn
                 .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [&remote.id], |r| r.get(0))
                 .ok();
