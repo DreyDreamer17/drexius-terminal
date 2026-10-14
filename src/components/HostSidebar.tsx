@@ -1,3 +1,5 @@
+import { useMobile } from '../hooks/useMobile';
+import { MobileSheet } from './MobileSheet';
 import { useMemo, useState } from 'react';
 import {
   Search,
@@ -89,6 +91,8 @@ export function HostSidebar({
   onClose,
   theme,
 }: Props) {
+  const mobile = useMobile();
+  const [actionHost, setActionHost] = useState<Host | null>(null);
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const accentColor = theme?.accent || '#22d3ee';
@@ -369,6 +373,16 @@ export function HostSidebar({
         </div>
       )}
 
+      {mobile && actionHost && <MobileSheet title={actionHost.label} onClose={() => setActionHost(null)}>
+        <p className="mb-4 break-all font-mono text-xs text-slate-400">{actionHost.username}@{actionHost.hostname}:{actionHost.port}</p>
+        <div className="nx-settings-group">
+          <button className="nx-settings-row" onClick={() => { onConnect(actionHost); setActionHost(null); }}><TerminalIcon size={18} /> Connect</button>
+          {onOpenSftp && <button className="nx-settings-row" onClick={() => { onOpenSftp(actionHost); setActionHost(null); }}><HardDrive size={18} /> Browse files</button>}
+          <button className="nx-settings-row" onClick={() => { onSplit(actionHost); setActionHost(null); }}><Plus size={18} /> Add session to current tab</button>
+          <button className="nx-settings-row" onClick={() => { onEdit(actionHost); setActionHost(null); }}><Pencil size={18} /> Edit host</button>
+          <button className="nx-settings-row text-rose-300" onClick={() => { onDelete(actionHost); setActionHost(null); }}><Trash2 size={18} /> Delete host…</button>
+        </div>
+      </MobileSheet>}
       {/* Host List */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {groups.map(([g, list]) => (
@@ -381,9 +395,9 @@ export function HostSidebar({
               return (
                 <div
                   key={h.id}
-                  onDoubleClick={() => onConnect(h)}
+                  onDoubleClick={() => { if (!mobile) onConnect(h); }}
                   onClick={() => onConnect(h)}
-                  className="group relative flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.04] transition"
+                  className="group relative flex max-md:min-h-16 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.04] transition"
                 >
                   <div className="relative shrink-0">
                     <OsIcon os={h.os} color={h.color} size={30} />
@@ -401,8 +415,9 @@ export function HostSidebar({
                       {h.port !== 22 ? `:${h.port}` : ''}
                     </div>
                   </div>
+                  <button type="button" aria-label={`Actions for ${h.label}`} className="nx-touch-button md:hidden" onClick={e => { e.stopPropagation(); setActionHost(h); }}>•••</button>
                   <div
-                    className="absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
+                    className="max-md:!hidden absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
                     onClick={(e) => e.stopPropagation()}
                   >
                     {onOpenSftp && (

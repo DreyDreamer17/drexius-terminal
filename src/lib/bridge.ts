@@ -42,7 +42,9 @@ import type {
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
-const uid = () => crypto.randomUUID();
+const uid = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+  ? crypto.randomUUID()
+  : `id-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -121,12 +123,19 @@ const SEED: DemoState = {
   ],
 };
 
-let demoKey: CryptoKey | null = null;
+let demoKey: CryptoKey | string | null = null;
 let demo: DemoState | null = null;
 
-async function deriveDemoKey(password: string, salt: Uint8Array) {
-  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: salt as BufferSource, iterations: 310_000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+async function deriveDemoKey(password: string, salt: Uint8Array): Promise<CryptoKey | string> {
+  if (typeof crypto !== 'undefined' && crypto?.subtle?.importKey) {
+    try {
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+      return await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: salt as BufferSource, iterations: 310_000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    } catch {
+      /* subtle unavailable */
+    }
+  }
+  return `insecure_preview_${password}_${toB64(salt)}`;
 }
 
 const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
@@ -135,9 +144,19 @@ const fromB64 = (s: string) => b64ToBytes(s);
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 async function doPersistDemo() {
   if (!demo || !demoKey) return;
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
-  localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+  if (typeof crypto !== 'undefined' && crypto?.subtle?.encrypt && typeof demoKey !== 'string') {
+    try {
+      const iv = (crypto.getRandomValues ? crypto.getRandomValues(new Uint8Array(12)) : new Uint8Array(12));
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
+      localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+      return;
+    } catch {
+      /* fallback below */
+    }
+  }
+  // Insecure HTTP preview context fallback (mobile browser testing over LAN IP)
+  const plain = toB64(new TextEncoder().encode(JSON.stringify(demo)));
+  localStorage.setItem('nx.vault', JSON.stringify({ v: 1, plain }));
 }
 
 async function persistDemo() {
@@ -167,8 +186,16 @@ function need(): DemoState {
 }
 
 async function fingerprintFor(h: Host) {
-  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${h.hostname}:${h.port}`)));
-  return toB64(d).replace(/=+$/, '');
+  const enc = new TextEncoder().encode(`${h.hostname}:${h.port}`);
+  if (typeof crypto !== 'undefined' && crypto?.subtle?.digest) {
+    try {
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', enc));
+      return toB64(d).replace(/=+$/, '');
+    } catch {
+      /* fallback below */
+    }
+  }
+  return toB64(enc).replace(/=+$/, '');
 }
 
 interface DemoSession { shell: DemoShell; host: Host; emit: (e: SessionEvent) => void; }
@@ -233,15 +260,29 @@ export const bridge = {
   async unlock(masterPassword: string): Promise<string | null> {
     if (isTauri) return invoke('vault_unlock', { masterPassword });
     let saltB64 = localStorage.getItem('nx.salt');
-    if (!saltB64) { saltB64 = toB64(crypto.getRandomValues(new Uint8Array(16))); localStorage.setItem('nx.salt', saltB64); }
+    if (!saltB64) {
+      const salt = (typeof crypto !== 'undefined' && crypto.getRandomValues) ? crypto.getRandomValues(new Uint8Array(16)) : new Uint8Array(16);
+      saltB64 = toB64(salt);
+      localStorage.setItem('nx.salt', saltB64);
+    }
     const key = await deriveDemoKey(masterPassword, fromB64(saltB64));
     const stored = localStorage.getItem('nx.vault');
     let isNew = false;
     if (stored) {
       try {
-        const { iv, ct } = JSON.parse(stored);
-        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) as BufferSource }, key, fromB64(ct) as BufferSource);
-        demo = JSON.parse(new TextDecoder().decode(pt));
+        const parsed = JSON.parse(stored);
+        if (parsed.plain) {
+          demo = JSON.parse(new TextDecoder().decode(fromB64(parsed.plain)));
+        } else if (parsed.iv && parsed.ct) {
+          if (typeof crypto !== 'undefined' && crypto?.subtle?.decrypt && typeof key !== 'string') {
+            const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(parsed.iv) as BufferSource }, key, fromB64(parsed.ct) as BufferSource);
+            demo = JSON.parse(new TextDecoder().decode(pt));
+          } else {
+            demo = structuredClone(SEED);
+          }
+        } else {
+          demo = structuredClone(SEED);
+        }
         // Migrate already-persisted demo vaults: scope vault-less keychain
         // rows so preview matches desktop partitioning.
         for (const k of demo?.keychain ?? []) {
@@ -1219,7 +1260,7 @@ export const bridge = {
   ): Promise<void> {
     if (isTauri) {
       if (signal?.aborted) return;
-      const streamId = crypto.randomUUID();
+      const streamId = uid();
       const channel = new Channel<AiStreamMsg>();
       channel.onmessage = (msg) => {
         if (msg.type === 'data') onChunk(msg.text);
@@ -1356,7 +1397,7 @@ export const bridge = {
   ): Promise<void> {
     if (isTauri) {
       if (signal?.aborted) return;
-      const streamId = options.streamId || crypto.randomUUID();
+      const streamId = options.streamId || uid();
       const channel = new Channel<AiStreamMsg>();
       channel.onmessage = (msg) => {
         if (msg.type === 'data') onToken(msg.text);

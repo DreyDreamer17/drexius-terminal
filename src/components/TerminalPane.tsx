@@ -1,3 +1,7 @@
+import { useMobile } from '../hooks/useMobile';
+import { useTerminalTouch } from '../hooks/useTerminalTouch';
+import { isTerminalModifierKey, modifiedTerminalInput, type TerminalModifiers } from '../lib/mobileTerminal';
+import { TerminalAccessory } from './TerminalAccessory';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -32,6 +36,7 @@ import { CommandSearchModal } from './CommandSearchModal';
 import type { NexusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus } from '../lib/types';
 import { cn } from '../utils/cn';
+import { safeUid } from '../utils/uuid';
 
 const COMMON_SHELL_COMMANDS = [
   'pm2 status',
@@ -92,6 +97,7 @@ interface Props {
   lineHeight?: number;
   active: boolean;
   showHeader: boolean;
+  mobileHidden?: boolean;
   onFocus: () => void;
   onClose: () => void;
   onChange: () => void;
@@ -107,6 +113,7 @@ export const TerminalPane = memo(function TerminalPane({
   lineHeight = 1.0,
   active,
   showHeader,
+  mobileHidden = false,
   onFocus,
   onClose,
   onChange,
@@ -662,6 +669,23 @@ export const TerminalPane = memo(function TerminalPane({
     [host, isLocal, update, onChange]
   );
 
+  const mobile = useMobile();
+  const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
+  const modifiersRef = useRef(modifiers);
+  const swallowRef = useRef<{ char: string; until: number } | null>(null);
+  const [touchActions, setTouchActions] = useState(false);
+  const openTouchActions = useCallback(() => setTouchActions(true), []);
+  const toggleModifier = (key: keyof TerminalModifiers) => {
+    const next = { ...modifiersRef.current, [key]: !modifiersRef.current[key] };
+    modifiersRef.current = next; setModifiers(next);
+  };
+  useEffect(() => {
+    if (!active || !mobile) {
+      modifiersRef.current = { ctrl: false, alt: false };
+      setModifiers(modifiersRef.current); setTouchActions(false);
+    }
+  }, [active, mobile]);
+
   // Mount xterm once
   useEffect(() => {
     const term = new Terminal({
@@ -715,20 +739,74 @@ export const TerminalPane = memo(function TerminalPane({
       }
     }
 
+    const helperTextarea = term.textarea;
+    const handleBeforeInput = (e: InputEvent) => {
+      if (!modifiersRef.current.ctrl && !modifiersRef.current.alt) return;
+      const char = e.data;
+      if (char && char.length === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeMod = { ...modifiersRef.current };
+        modifiersRef.current = { ctrl: false, alt: false };
+        setModifiers(modifiersRef.current);
+        const lower = char.toLowerCase();
+        swallowRef.current = { char: lower, until: Date.now() + 1200 };
+        if (helperTextarea) {
+          helperTextarea.value = '';
+        }
+        const modified = modifiedTerminalInput(char, activeMod);
+        term.input(modified, true);
+      }
+    };
+
+    const handleCompositionEnd = (e: CompositionEvent) => {
+      const sw = swallowRef.current;
+      if (sw && Date.now() < sw.until) {
+        const text = (e.data || helperTextarea?.value || '').toLowerCase();
+        if (text === sw.char || text.includes(sw.char)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (helperTextarea) helperTextarea.value = '';
+        }
+      }
+    };
+
+    const handleInput = (e: Event) => {
+      const sw = swallowRef.current;
+      if (sw && Date.now() < sw.until) {
+        const val = (helperTextarea?.value || '').toLowerCase();
+        if (val === sw.char || val.includes(sw.char)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          if (helperTextarea) helperTextarea.value = '';
+        }
+      }
+    };
+
+    if (helperTextarea) {
+      helperTextarea.setAttribute('autocapitalize', 'none');
+      helperTextarea.setAttribute('autocomplete', 'off');
+      helperTextarea.setAttribute('autocorrect', 'off');
+      helperTextarea.setAttribute('spellcheck', 'false');
+      helperTextarea.addEventListener('beforeinput', handleBeforeInput as EventListener);
+      helperTextarea.addEventListener('compositionend', handleCompositionEnd as EventListener, true);
+      helperTextarea.addEventListener('input', handleInput as EventListener, true);
+    }
+
     termRef.current = term;
     fitRef.current = fit;
     searchRef.current = search;
 
     // Synchronous immediate fit so cols/rows are initialized before connect()
     try {
-      fit.fit();
+      if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
     } catch {
       /* hidden */
     }
 
     requestAnimationFrame(() => {
       try {
-        fit.fit();
+        if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
       } catch {
         /* hidden */
       }
@@ -737,7 +815,7 @@ export const TerminalPane = memo(function TerminalPane({
     if (document.fonts?.ready) {
       document.fonts.ready.then(() => {
         try {
-          fit.fit();
+          if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
         } catch {
           /* hidden */
         }
@@ -840,6 +918,26 @@ export const TerminalPane = memo(function TerminalPane({
     });
 
     term.onData((data) => {
+      // If a software keyboard / IME emits duplicate character right after modifier sequence, swallow it
+      const sw = swallowRef.current;
+      if (sw && Date.now() < sw.until) {
+        if (data.toLowerCase() === sw.char) {
+          swallowRef.current = null;
+          return;
+        }
+        if (data.toLowerCase().startsWith(sw.char)) {
+          data = data.slice(sw.char.length);
+          swallowRef.current = null;
+          if (!data) return;
+        }
+      }
+
+      // onData also receives software-keyboard input/IME, unlike keydown.
+      if ((modifiersRef.current.ctrl || modifiersRef.current.alt) && isTerminalModifierKey(data)) {
+        data = modifiedTerminalInput(data, modifiersRef.current);
+        modifiersRef.current = { ctrl: false, alt: false };
+        setModifiers(modifiersRef.current);
+      }
       const sid = sessionRef.current;
       if (!sid) return;
       if (isSerial) {
@@ -946,8 +1044,9 @@ export const TerminalPane = memo(function TerminalPane({
     });
 
     const ro = new ResizeObserver(() => {
+      if (!elRef.current?.clientWidth || !elRef.current.clientHeight) return;
       try {
-        fit.fit();
+        if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
         updateGhostPos();
         if (term.cols && term.rows) {
           scheduleResize(term.cols, term.rows);
@@ -963,6 +1062,9 @@ export const TerminalPane = memo(function TerminalPane({
     return () => {
       genRef.current += 1;
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
+      helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener);
+      helperTextarea?.removeEventListener('compositionend', handleCompositionEnd as EventListener, true);
+      helperTextarea?.removeEventListener('input', handleInput as EventListener, true);
       ro.disconnect();
       dCursor.dispose();
       dRender.dispose();
@@ -980,6 +1082,23 @@ export const TerminalPane = memo(function TerminalPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useTerminalTouch(elRef, termRef, mobile && active, openTouchActions);
+
+  // Fit once the keyboard animation/viewport resize has settled; ResizeObserver
+  // handles intermediate frames. Hidden sessions keep their last valid dimensions.
+  useEffect(() => {
+    if (!mobile || !active) return;
+    let timer = 0;
+    const fit = () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => { try { if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit(); } catch { /* hidden */ } }, 100);
+    };
+    fit();
+    window.visualViewport?.addEventListener('resize', fit);
+    window.addEventListener('resize', fit);
+    return () => { clearTimeout(timer); window.visualViewport?.removeEventListener('resize', fit); window.removeEventListener('resize', fit); };
+  }, [mobile, active]);
+
   useEffect(() => {
     if (termRef.current) {
       termRef.current.options.theme = theme.xterm;
@@ -990,7 +1109,7 @@ export const TerminalPane = memo(function TerminalPane({
     if (!termRef.current) return;
     termRef.current.options.fontSize = fontSize;
     try {
-      fitRef.current?.fit();
+      if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
     } catch {
       /* */
     }
@@ -1000,15 +1119,16 @@ export const TerminalPane = memo(function TerminalPane({
     if (!termRef.current) return;
     termRef.current.options.lineHeight = lineHeight;
     try {
-      fitRef.current?.fit();
+      if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
     } catch {
       /* */
     }
   }, [lineHeight]);
 
   useEffect(() => {
-    if (active) termRef.current?.focus();
-  }, [active]);
+    if (active && !mobile) termRef.current?.focus();
+    if (active) { try { if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit(); } catch { /* hidden */ } }
+  }, [active, mobile]);
 
   // Handle Ctrl+F / Cmd+F for search inside active terminal
   useEffect(() => {
@@ -1025,7 +1145,7 @@ export const TerminalPane = memo(function TerminalPane({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [active]);
+  }, [active, mobile]);
 
   // Auto-reconnect countdown with exponential backoff
   useEffect(() => {
@@ -1055,6 +1175,7 @@ export const TerminalPane = memo(function TerminalPane({
       }}
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
       onContextMenu={async (e) => {
+        if (mobile) { e.preventDefault(); setTouchActions(true); return; }
         if (termRef.current?.hasSelection()) return;
         e.preventDefault();
         try {
@@ -1078,6 +1199,7 @@ export const TerminalPane = memo(function TerminalPane({
       }}
       className={cn(
         'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-colors',
+        mobileHidden && 'max-md:hidden',
         showHeader
           ? cn(
               'rounded-xl border',
@@ -1089,7 +1211,31 @@ export const TerminalPane = memo(function TerminalPane({
       )}
       style={{ background: theme.xterm.background }}
     >
-      {showHeader && (
+      {mobile && active && <div className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 text-xs">
+        <span className={cn('ml-1 h-2 w-2 shrink-0 rounded-full', statusColor)} />
+        <span className="min-w-0 flex-1 truncate px-2">{host.label}</span>
+        <button className="nx-touch-button" aria-label="Search terminal" onClick={() => setShowSearch(v => !v)}><Search size={17} /></button>
+        <button className="nx-touch-button" aria-label="Command history" onClick={() => setShowCmdSearch(true)}><History size={17} /></button>
+        <button className="nx-touch-button" aria-label="Terminal actions" onClick={() => setTouchActions(v => !v)}><Clipboard size={17} /></button>
+        <button className="nx-touch-button" aria-label="Show terminal keyboard" onClick={() => termRef.current?.focus()}>⌨</button>
+      </div>}
+      {mobile && active && touchActions && <div className="nx-selection-actions" role="toolbar" aria-label="Terminal selection actions">
+        <button onClick={async () => {
+          const selected = termRef.current?.getSelection();
+          if (!selected) { toast('Long-press a word or select all first'); return; }
+          try { await navigator.clipboard.writeText(selected); toast('Copied selection'); }
+          catch { toast('Clipboard access denied'); }
+        }}>Copy</button>
+        <button onClick={async () => {
+          try { const text = await navigator.clipboard.readText(); termRef.current?.paste(text); }
+          catch { toast('Clipboard access denied — use your keyboard’s Paste action'); }
+        }}>Paste</button>
+        <button onClick={() => termRef.current?.clear()}>Clear</button>
+        <button onClick={() => termRef.current?.selectAll()}>Select All</button>
+        <button onClick={() => { setTouchActions(false); setShowClipboard(true); }}>Clips</button>
+        <button aria-label="Close terminal actions" onClick={() => setTouchActions(false)}>×</button>
+      </div>}
+      {showHeader && !mobile && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
           <span className={cn('h-1.5 w-1.5 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
           {isSerial ? (
@@ -1160,7 +1306,7 @@ export const TerminalPane = memo(function TerminalPane({
       {showSearch && (
         <div
           className={cn(
-            'absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur',
+            'nx-terminal-search absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur',
             showHeader ? 'top-10' : 'top-2'
           )}
         >
@@ -1266,6 +1412,25 @@ export const TerminalPane = memo(function TerminalPane({
           </div>
         )}
       </div>
+      {mobile && active && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
+        onKey={data => {
+          const term = termRef.current;
+          if (term?.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(data)) data = data.replace('[', 'O');
+          if (data === '\x03') {
+            modifiersRef.current = { ctrl: false, alt: false };
+            setModifiers(modifiersRef.current);
+            swallowRef.current = { char: 'c', until: Date.now() + 1200 };
+            if (term?.textarea) {
+              term.textarea.value = '';
+            }
+          } else if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
+            modifiersRef.current = { ctrl: false, alt: false };
+            setModifiers(modifiersRef.current);
+          }
+          term?.input(data, true);
+          term?.focus();
+        }} />}
+
 
       {status === 'connecting' && (
         <div
@@ -1456,7 +1621,7 @@ export const TerminalPane = memo(function TerminalPane({
           onSelect={handleSelectCommand}
           onSaveSnippet={(cmd) => {
             bridge.saveSnippet({
-              id: crypto.randomUUID(),
+              id: safeUid(),
               name: cmd.slice(0, 32),
               command: cmd,
               tags: [isLocal ? 'local' : host.label],

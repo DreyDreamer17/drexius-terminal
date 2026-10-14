@@ -1,3 +1,6 @@
+import { useMobile, useMobileViewport } from './hooks/useMobile';
+import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
+import { MobileSheet, ResponsiveOverlay, SheetHandle, WorkspaceAccessContext } from './components/MobileSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Server,
@@ -53,8 +56,9 @@ import { KnownHostsPanel } from './components/KnownHostsPanel';
 import { AIPanel } from './components/AIPanel';
 import { SftpTab } from './components/SftpTab';
 import { cn } from './utils/cn';
+import { safeUid } from './utils/uuid';
 
-const uid = () => crypto.randomUUID();
+const uid = safeUid;
 const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
 
 const LOCAL_HOST: Host = {
@@ -87,7 +91,16 @@ function readAutoLockMinutes(): number {
 }
 
 export default function App() {
+  const mobile = useMobile();
+  useMobileViewport();
+  const [mobilePage, setMobilePage] = useState<MobilePage>('terminals');
+  const [sessionSheet, setSessionSheet] = useState(false);
+
   const [unlocked, setUnlocked] = useState(false);
+  // Initialize vault-backed AI settings only after the first unlock, then keep
+  // the panel mounted through auto-lock and mobile navigation.
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  useEffect(() => { if (unlocked) setWorkspaceReady(true); }, [unlocked]);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(readAutoLockMinutes);
   const [showAutoLockMenu, setShowAutoLockMenu] = useState(false);
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -167,7 +180,10 @@ export default function App() {
 
   const theme = THEMES.find((t) => t.id === themeId) ?? THEMES[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-  const activePaneId = activeTab?.activePaneId ?? null;
+  const lastTerminalTab = useRef<string | null>(null);
+  if (activeTab && activeTab.kind !== 'sftp') lastTerminalTab.current = activeTab.id;
+  const terminalContext = mobile && activeTab?.kind === 'sftp' ? tabs.find(t => t.id === lastTerminalTab.current) : activeTab;
+  const activePaneId = terminalContext?.activePaneId ?? null;
   const hostMap = useMemo(() => {
     const m = new Map(hosts.map((h) => [h.id, h]));
     m.set(LOCAL_HOST.id, LOCAL_HOST);
@@ -252,6 +268,7 @@ export default function App() {
     setPanel(null);
     setShowAI(false);
     setNewConnNonce((n) => n + 1);
+    setMobilePage('terminals');
   }, []);
 
   const openLocalTerminal = useCallback(() => {
@@ -270,6 +287,7 @@ export default function App() {
     setPanel(null);
     setShowAI(false);
     setNewConnNonce((n) => n + 1);
+    setMobilePage('terminals');
   }, []);
 
   const handleConnectSerial = useCallback((opts: { portName: string; baudRate: number; dataBits: number; parity: string; stopBits: number; flowControl: string }) => {
@@ -317,6 +335,7 @@ export default function App() {
     setPanel(null);
     setShowAI(false);
     setNewConnNonce((n) => n + 1);
+    setMobilePage('terminals');
     toast(`Opened serial ${opts.portName} @ ${opts.baudRate} baud ${summary}`);
   }, [activeVaultId, toast]);
 
@@ -357,9 +376,9 @@ export default function App() {
   }, [hosts, openHost, activeVaultId]);
 
   const splitWith = useCallback((h: Host, pref?: Layout) => {
-    if (!activeTab) return openHost(h);
+    if (!activeTab || activeTab.kind === 'sftp') return openHost(h);
     if (activeTab.panes.length >= 4) { toast('Maximum 4 panes per tab'); return; }
-    const pane: Pane = { id: uid(), hostId: h.id };
+    const pane: Pane = { id: uid(), hostId: h.id, isLocal: h.id === LOCAL_HOST.id };
     setTabs((ts) => ts.map((t) => t.id !== activeTab.id ? t : { ...t, panes: [...t.panes, pane], layout: layoutFor(t.panes.length + 1, pref), activePaneId: pane.id, title: t.panes.length ? `${t.title.split(' +')[0]} +${t.panes.length}` : h.label }));
   }, [activeTab, openHost, toast]);
 
@@ -403,6 +422,8 @@ export default function App() {
   }, []);
 
   const openSftpTab = useCallback((hostId?: string) => {
+    setMobilePage('sftp');
+    if (mobile) { setPanel(null); setShowAI(false); }
     const existing = tabs.find((t) => t.kind === 'sftp');
     if (existing) {
       setActiveTabId(existing.id);
@@ -435,7 +456,7 @@ export default function App() {
     };
     setTabs((ts) => [...ts, newTab]);
     setActiveTabId(newTab.id);
-  }, [tabs, hostMap]);
+  }, [tabs, hostMap, mobile]);
 
   const focusPane = useCallback((tabId: string, paneId: string) => {
     setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
@@ -602,6 +623,21 @@ export default function App() {
     { id: 'ai', icon: Sparkles, label: 'AI Assistant (⌘⇧A)', on: showAI, act: () => setShowAI((v) => !v) },
   ];
 
+  const navigateMobile = (page: MobilePage) => {
+    setMobilePage(page);
+    setPanel(page === 'hosts' ? 'hosts' : null);
+    setShowAI(page === 'assistant');
+    setSessionSheet(false);
+    if (page === 'sftp') openSftpTab();
+    if (page === 'terminals' && activeTab?.kind === 'sftp') {
+      setActiveTabId(tabs.find(t => t.id === lastTerminalTab.current)?.id ?? tabs.find(t => t.kind !== 'sftp')?.id ?? null);
+    }
+    // Switching workspaces should not leave an invisible terminal keyboard open.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  };
+  const mobileWorkspaceVisible = mobilePage === 'terminals' || mobilePage === 'sftp';
+  const mobileTitle = { terminals: 'Terminals', hosts: 'Hosts', sftp: 'Files', assistant: 'AI & Snippets', settings: 'Settings' }[mobilePage];
+
   return (
     <>
     {!unlocked && (
@@ -610,14 +646,15 @@ export default function App() {
           onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
       </div>
     )}
+    <WorkspaceAccessContext.Provider value={unlocked}>
     <div
       inert={!unlocked}
-      className="flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
+      className="nx-app-shell flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
       style={{ background: theme.xterm.background }}
     >
       {/* Top Header Bar — floating controls across the top */}
       {!zen && (
-        <header className="flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 z-30">
+        <header className="max-md:hidden flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 z-30">
           {/* Logo / Sidebar Toggle Button (replaces hamburger menu, aligned with rail below) */}
           <div className="flex w-12 shrink-0 items-center justify-center">
             <button
@@ -832,11 +869,34 @@ export default function App() {
         </header>
       )}
 
+      <header className="nx-mobile-header md:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <img src="/nexus-logo.png" alt="" className="h-7 w-7 rounded-lg" />
+          <h1 className="truncate text-base font-semibold tracking-tight">{mobileTitle}</h1>
+        </div>
+        {mobilePage === 'terminals' && (
+          <button className="nx-pill" onClick={() => setSessionSheet(true)}>Sessions <span className="text-cyan-300">{tabs.reduce((n, t) => n + t.panes.length, 0)}</span></button>
+        )}
+        {mobilePage === 'hosts' && <button className="nx-touch-button" aria-label="Add host" onClick={() => setModal({ host: null })}><Plus size={21} /></button>}
+      </header>
+      {mobile && mobilePage === 'hosts' && <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2">
+        <VaultMenu vaults={vaults} activeVaultId={activeVaultId} onSelectVault={setActiveVaultId}
+          onCreateVault={handleCreateVault} onDeleteVault={handleDeleteVault}
+          onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
+          onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
+          onOpenPairingModal={() => setShowPairing({ initialTab: 'share' })} theme={theme} />
+        <span className="text-xs text-slate-500">Encrypted profiles</span>
+      </div>}
+      {mobile && mobilePage === 'assistant' && <div className="nx-segmented" aria-label="Assistant workspace">
+        <button aria-pressed={showAI} onClick={() => { setShowAI(true); setPanel(null); }}>AI Assistant</button>
+        <button aria-pressed={panel === 'snippets'} onClick={() => { setShowAI(false); setPanel('snippets'); }}>Snippets</button>
+      </div>}
+
       {/* Main App Body */}
       <div className="flex flex-1 min-h-0 min-w-0 relative">
         {/* Icon rail — floating buttons aligned directly underneath the logo button */}
         {!zen && showRail && (
-          <nav className="flex w-12 shrink-0 flex-col items-center gap-1.5 py-1.5 z-20 bg-transparent">
+          <nav className="max-md:hidden flex w-12 shrink-0 flex-col items-center gap-1.5 py-1.5 z-20 bg-transparent">
             {rail.map((r) => (
               <button
                 key={r.id}
@@ -996,11 +1056,11 @@ export default function App() {
         {panel && (
           <>
             <div
-              className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity animate-in fade-in duration-150"
+              className="max-md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity animate-in fade-in duration-150"
               onClick={() => setPanel(null)}
             />
             <aside
-              className="fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
+              className="nx-mobile-panel fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
               style={{
                 left: (zen || !showRail) ? 0 : 48,
                 background: theme.xterm.background || '#0e131d',
@@ -1018,6 +1078,7 @@ export default function App() {
                 style={{ background: `linear-gradient(90deg, transparent, ${theme.accent}, transparent)` }}
               />
 
+              {mobile && mobilePage !== 'hosts' && <button className="nx-settings-row shrink-0 border-b border-white/10 px-4" onClick={() => { if (mobilePage === 'settings') setPanel(null); else navigateMobile('terminals'); }}>← {mobilePage === 'settings' ? 'Settings' : 'Back to terminals'}</button>}
               <div className="relative flex flex-1 flex-col min-h-0 overflow-y-auto">
                 {panel === 'hosts' && (
                   <HostSidebar
@@ -1026,7 +1087,7 @@ export default function App() {
                     activeVaultId={activeVaultId}
                     onConnect={openHost}
                     onOpenSftp={(h) => { openSftpTab(h.id); setPanel(null); }}
-                    onSplit={(h) => splitWith(h)}
+                    onSplit={(h) => { splitWith(h); if (mobile) { setPanel(null); setMobilePage('terminals'); } }}
                     onEdit={(h) => setModal({ host: h })}
                     onDelete={deleteHost}
                     onOpenTerminal={openLocalTerminal}
@@ -1034,7 +1095,7 @@ export default function App() {
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
                     onQuickConnectSsh={handleQuickConnectSsh}
-                    onClose={() => setPanel(null)}
+                    onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
                   />
                 )}
@@ -1072,10 +1133,10 @@ export default function App() {
         )}
 
         {/* Main workspace */}
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main inert={mobile && !mobileWorkspaceVisible} className={cn("relative flex min-w-0 flex-1 flex-col", mobile && !mobileWorkspaceVisible && "invisible")}>
           {/* Panes */}
         <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
-          {!tabs.length && (
+          {(!tabs.length || (mobile && mobilePage === 'terminals' && !tabs.some(t => t.panes.length))) && (
             <Welcome
               hosts={hosts}
               onOpen={openHost}
@@ -1089,10 +1150,11 @@ export default function App() {
               return (
                 <div
                   key={t.id}
-                  className={cn('absolute inset-0', t.id !== activeTabId && 'invisible')}
+                  className={cn('absolute inset-0', (t.id !== activeTabId || (mobile && mobilePage !== 'sftp')) && 'invisible')} inert={t.id !== activeTabId || (mobile && mobilePage !== 'sftp')}
                 >
                   <SftpTab
                     tab={t}
+                    active={unlocked && t.id === activeTabId && (!mobile || mobilePage === 'sftp')}
                     hosts={hosts}
                     onUpdateTab={(patch) =>
                       setTabs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))
@@ -1107,12 +1169,13 @@ export default function App() {
             return (
               <div
                 key={t.id}
+                inert={t.id !== activeTabId || (mobile && mobilePage !== 'terminals')}
                 className={cn(
                   'absolute inset-0',
-                  t.id !== activeTabId && 'invisible',
+                  (t.id !== activeTabId || (mobile && mobilePage !== 'terminals')) && 'invisible',
                   isSplit
                     ? cn(
-                        'grid gap-1 p-1 bg-black/40',
+                        'grid gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0',
                         t.layout === 'vertical' && 'grid-cols-2',
                         t.layout === 'horizontal' && 'grid-rows-2',
                         t.layout === 'grid' && 'grid-cols-2 grid-rows-2'
@@ -1131,7 +1194,8 @@ export default function App() {
                       theme={theme}
                       fontSize={fontSize}
                       lineHeight={lineHeight}
-                      active={t.id === activeTabId && t.activePaneId === p.id}
+                      active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
+                      mobileHidden={t.activePaneId !== p.id}
                       showHeader={isSplit}
                       onFocus={() => focusPane(t.id, p.id)}
                       onClose={() => closePane(t.id, p.id)}
@@ -1148,7 +1212,7 @@ export default function App() {
 
         {/* Status bar */}
         {showStatusBar && (
-          <footer className="flex h-7 shrink-0 items-center gap-4 border-t border-white/5 bg-[#080b12] px-3 text-[10.5px] text-slate-500">
+          <footer className="max-md:hidden flex h-7 shrink-0 items-center gap-4 border-t border-white/5 bg-[#080b12] px-3 text-[10.5px] text-slate-500">
             <span className="flex items-center gap-1 text-emerald-400/90"><ShieldCheck className="h-3 w-3" />{isTauri ? 'SQLCipher AES-256' : 'Vault AES-256-GCM (sandbox)'}</span>
             <span className="flex items-center gap-1"><Activity className="h-3 w-3" />{connected} live session{connected === 1 ? '' : 's'}</span>
             {activeLive && <span className="flex items-center gap-1 font-mono"><History className="h-3 w-3 text-fuchsia-300" />snapshot: {activeLive.cwd}</span>}
@@ -1159,12 +1223,12 @@ export default function App() {
 
         {/* Zen restore */}
         {zen && (
-          <button onClick={() => setZen(false)} title="Exit Zen (⌘⇧Z)" className="absolute bottom-10 right-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#0e131d]/95 text-slate-400 shadow-2xl backdrop-blur hover:text-white"><Minimize2 className="h-4 w-4" /></button>
+          <button onClick={() => setZen(false)} title="Exit Zen (⌘⇧Z)" className="max-md:hidden absolute bottom-10 right-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#0e131d]/95 text-slate-400 shadow-2xl backdrop-blur hover:text-white"><Minimize2 className="h-4 w-4" /></button>
         )}
       </main>
 
       {/* Draggable Resizer Edge for AI Assistant */}
-      {showAI && (
+      {showAI && !mobile && (
         <div
           onMouseDown={startAiResize}
           className={cn(
@@ -1188,18 +1252,70 @@ export default function App() {
 
       <aside
         style={{ width: `${aiWidth}px` }}
-        className={cn("shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", !showAI && "hidden")}
+        className={cn("nx-mobile-ai shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", (!showAI || (mobile && mobilePage !== 'assistant')) && "hidden")}
       >
-        <AIPanel
+        {workspaceReady && <AIPanel
           activePaneId={activePaneId}
           toast={toast}
-          onClose={() => setShowAI(false)}
+          onClose={() => { if (mobile) navigateMobile('terminals'); else setShowAI(false); }}
           theme={theme}
           newConnectionNonce={newConnNonce}
-          visible={showAI}
-        />
+          visible={showAI && unlocked}
+        />}
       </aside>
+      {mobile && mobilePage === 'settings' && !panel && <section className="absolute inset-0 overflow-y-auto p-4" aria-label="Settings">
+        <div className="mb-5 rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} className="text-cyan-300" /> Your workspace, secured</div>
+          <p className="mt-2 text-xs leading-relaxed text-slate-400">{isTauri ? 'SQLCipher encrypted vault' : 'Browser sandbox vault'} · credentials stay in your vault.</p>
+          <button className="nx-settings-row mt-3" onClick={lock}><Lock size={18} /> Lock vault now</button>
+        </div>
+        <h2 className="nx-section-label">Connections & security</h2>
+        <div className="nx-settings-group">
+          <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
+          <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
+          <button className="nx-settings-row" onClick={() => setPanel('keychain')}><KeyRound size={18} /> Keychain</button>
+          <button className="nx-settings-row" onClick={() => setPanel('tunnels')}><Network size={18} /> Port forwarding & tunnels</button>
+          <button className="nx-settings-row" onClick={() => setPanel('known_hosts')}><ShieldCheck size={18} /> Known hosts</button>
+          <button className="nx-settings-row" onClick={() => setPanel('logs')}><Activity size={18} /> Logs</button>
+          <label className="nx-settings-row justify-between">Auto-lock
+            <select aria-label="Auto-lock timeout" value={autoLockMinutes} onChange={e => { const n = Number(e.target.value); setAutoLockMinutes(n); localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(n)); }} className="rounded-lg bg-slate-800 px-2 py-2">
+              {AUTO_LOCK_OPTIONS.map(n => <option key={n} value={n}>{n ? `${n} minutes` : 'Off'}</option>)}
+            </select>
+          </label>
+        </div>
+        <h2 className="nx-section-label">Appearance</h2>
+        <div className="nx-settings-group">
+          <label className="nx-settings-row justify-between">Theme
+            <select aria-label="Terminal theme" value={themeId} onChange={e => setThemeId(e.target.value)} className="max-w-[60%] rounded-lg bg-slate-800 px-2 py-2">
+              {THEMES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          <label className="nx-settings-row flex-wrap justify-between">Line height <span>{lineHeight.toFixed(2)}</span>
+            <input aria-label="Terminal line height" className="w-full accent-cyan-400" type="range" min="1" max="1.5" step="0.05" value={lineHeight} onChange={e => setLineHeight(Number(e.target.value))} />
+          </label>
+        </div>
+        <h2 className="nx-section-label">Terminal input</h2>
+        <label className="nx-settings-row rounded-xl border border-white/10"><input type="checkbox" checked={broadcast} onChange={e => setBroadcast(e.target.checked)} /> Broadcast to all panes in this tab</label>
+        {broadcast && <p className="mt-2 text-xs text-amber-300">Input also reaches hidden sessions in the same split tab.</p>}
+      </section>}
+
       </div>
+
+      <MobileNavigation page={mobilePage} sessions={tabs.reduce((n, t) => n + t.panes.length, 0)} onChange={navigateMobile} />
+      {mobile && unlocked && sessionSheet && <MobileSheet title="Terminal sessions" onClose={() => setSessionSheet(false)}>
+        <p className="mb-3 text-xs text-slate-400">Switch sessions without disconnecting. Desktop splits remain intact.</p>
+        <div className="space-y-2">
+          {tabs.filter(t => t.kind !== 'sftp').flatMap(t => t.panes.map(p => <div key={p.id} className={cn('flex items-center rounded-xl border p-1', t.id === activeTabId && t.activePaneId === p.id ? 'border-cyan-400/40 bg-cyan-400/10' : 'border-white/10 bg-white/[0.03]')}>
+            <button className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3 text-left" onClick={() => { navigateMobile('terminals'); setActiveTabId(t.id); focusPane(t.id, p.id); }}>
+              <TerminalIcon size={19} className="shrink-0 text-cyan-300" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{hostMap.get(p.hostId)?.label ?? t.title}</span><span className="block truncate text-xs text-slate-400">{registry.get(p.id)?.status ?? 'connecting'} · {hostMap.get(p.hostId)?.hostname}</span></span>
+            </button>
+            <button className="nx-touch-button text-slate-400" aria-label={`Close ${hostMap.get(p.hostId)?.label ?? 'session'}`} onClick={() => closePane(t.id, p.id)}><X size={18} /></button>
+          </div>))}
+          {!tabs.some(t => t.panes.length) && <p className="py-6 text-center text-sm text-slate-400">No sessions yet. Connect to a saved host to get started.</p>}
+        </div>
+        <button className="nx-settings-row mt-4 rounded-xl bg-cyan-400/10 text-cyan-200" onClick={() => navigateMobile('hosts')}><Plus size={18} /> Connect to a host</button>
+        <button className="nx-settings-row" onClick={() => { openLocalTerminal(); setSessionSheet(false); }}><TerminalIcon size={18} /> Open local terminal</button>
+      </MobileSheet>}
 
       {/* Quick Connect Floating Palette */}
       {quick && (
@@ -1415,8 +1531,9 @@ export default function App() {
           theme={theme}
         />
       )}
-      {toastMsg && <div className="nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
+      {toastMsg && <div role="status" className="nx-toast nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>
+    </WorkspaceAccessContext.Provider>
     </>
   );
 }
@@ -1435,15 +1552,15 @@ function Welcome({
   onSshConfig: () => void;
 }) {
   return (
-    <div className="relative grid h-full place-items-center overflow-hidden">
+    <div className="relative grid h-full place-items-center overflow-y-auto">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(34,211,238,0.08),transparent_60%)]" />
       <div className="nx-blob pointer-events-none absolute left-1/4 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]" />
       <div className="nx-blob-2 pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-[100px]" />
-      <div className="relative w-full max-w-2xl px-6 text-center">
+      <div className="relative w-full max-w-2xl px-6 py-6 text-center">
         <img src="/nexus-logo.png" alt="" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-white">Where to today?</h1>
-        <p className="mt-2 text-sm text-slate-500">Pick a host to open an encrypted session. Hover a host in the sidebar to open it in a split pane.</p>
-        <div className="mt-8 grid grid-cols-2 gap-3 text-left">
+        <p className="mt-2 text-sm text-slate-500">Pick a host to open an encrypted session. Select a host to get started; your sessions stay connected while you switch.</p>
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
           {hosts.slice(0, 4).map((h) => (
             <button key={h.id} onClick={() => onOpen(h)} className="group flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-3 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.04]">
               <OsIcon os={h.os} color={h.color} size={40} />
@@ -1546,12 +1663,13 @@ function SyncModal({
   ];
   const lastSyncStr = status?.lastSync ? new Date(status.lastSync * 1000).toLocaleString() : 'never';
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+    <ResponsiveOverlay label="Encrypted relay sync" onClose={onClose} className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 p-6 shadow-2xl"
+        className="nx-sheet relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 p-6 shadow-2xl"
         style={{ backgroundColor: bgColor }}
       >
+        <SheetHandle onClose={onClose} />
         {/* Top ambient radial glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -1674,6 +1792,6 @@ function SyncModal({
           </div>
         </div>
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }

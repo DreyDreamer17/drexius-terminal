@@ -138,7 +138,7 @@ export function generateSessionId(): string {
   return `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function formatRelativeTime(timestamp: number): string {
+function formatRelativeTime(timestamp: number): string {
   if (!timestamp) return 'Just now';
   const diffSec = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (diffSec < 60) return 'Just now';

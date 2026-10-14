@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { Vault } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
+import { safeUid } from '../utils/uuid';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -64,7 +65,7 @@ export function VaultMenu({
     setSaving(true);
     try {
       const v: Vault = {
-        id: crypto.randomUUID(),
+        id: safeUid(),
         name: newVaultName.trim(),
         kind: 'team',
         color: newVaultColor,

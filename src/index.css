@@ -77,3 +77,123 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 .nx-blob-2 { animation: nx-drift 22s ease-in-out infinite reverse; }
 .nx-rise { animation: nx-rise .45s cubic-bezier(.2,.8,.2,1) both; }
 .nx-float { animation: nx-float 5s ease-in-out infinite; }
+
+/* Mobile primitives are deliberately scoped; desktop pane geometry is unchanged. */
+html, body { overscroll-behavior: none; }
+body { touch-action: pan-x pan-y; }
+@layer components {
+.nx-touch-button { display: inline-flex; min-width: 44px; min-height: 44px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 12px; }
+.nx-touch-button:active, .nx-settings-row:active { background: rgb(255 255 255 / .08); }
+.nx-pill { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; border-radius: 12px; border: 1px solid rgb(255 255 255 / .1); padding: 0 12px; font-size: 12px; }
+.nx-settings-row { display: flex; width: 100%; min-height: 52px; align-items: center; gap: 12px; padding: 10px 14px; text-align: left; font-size: 14px; }
+.nx-settings-row:disabled { opacity: .4; }
+.nx-settings-group { overflow: hidden; border: 1px solid rgb(255 255 255 / .09); border-radius: 16px; background: rgb(255 255 255 / .025); }
+.nx-settings-group > * + * { border-top: 1px solid rgb(255 255 255 / .06); }
+.nx-section-label { margin: 24px 4px 10px; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #94a3b8; }
+.nx-sheet-handle { position: relative; z-index: 1; width: 100%; height: 28px; min-height: 28px; flex-shrink: 0; align-items: center; justify-content: center; touch-action: none; }
+.nx-sheet-handle span { display: block; width: 36px; height: 4px; margin: auto; border-radius: 99px; background: #64748b; }
+button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 2px solid #22d3ee; outline-offset: 2px; }
+
+}
+
+@media (width < 768px) {
+  html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  .nx-app-shell {
+    position: fixed; left: 0; top: var(--nx-viewport-top, 0px);
+    width: 100%; height: var(--nx-viewport-height, 100dvh);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .nx-mobile-header { display: flex; flex-shrink: 0; min-height: 56px; align-items: center; gap: 2px; padding: 4px 12px; border-bottom: 1px solid rgb(255 255 255 / .07); background: rgb(8 11 18 / .9); }
+  .nx-bottom-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); flex-shrink: 0; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgb(255 255 255 / .1); background: #0b1019; z-index: 45; }
+  .nx-bottom-nav button { display: flex; min-width: 0; min-height: 50px; flex-direction: column; justify-content: center; align-items: center; gap: 5px; color: #94a3b8; border-radius: 12px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+  .nx-bottom-nav button.nx-nav-active { color: #67e8f9; background: rgb(34 211 238 / .09); }
+  .nx-session-badge { position: absolute; top: -6px; left: 14px; min-width: 15px; padding: 1px 4px; border-radius: 20px; background: #155e75; color: #ecfeff; font: 9px/13px var(--font-sans); }
+  [data-keyboard="true"] .nx-bottom-nav { display: none; }
+  .nx-mobile-panel { position: absolute; inset: 0 !important; width: 100%; border-right: 0; box-shadow: none !important; }
+  .nx-mobile-ai:not(.hidden) { position: absolute; inset: 0; width: 100% !important; z-index: 20; background: #0b1019; border: 0; }
+  .nx-segmented { display: flex; flex-shrink: 0; gap: 4px; margin: 10px 12px; padding: 4px; border: 1px solid rgb(255 255 255 / .07); border-radius: 14px; background: rgb(0 0 0 / .22); }
+  .nx-segmented button { display: flex; flex: 1; min-height: 40px; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; color: #94a3b8; font-size: 13px; }
+  .nx-segmented button[aria-pressed="true"] { background: rgb(255 255 255 / .08); color: #e2e8f0; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  .nx-terminal-accessory {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    height: 42px;
+    padding: 4px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap;
+    border-top: 1px solid rgb(255 255 255 / .08);
+  }
+  .nx-terminal-accessory::-webkit-scrollbar { display: none; }
+  .nx-terminal-accessory { -ms-overflow-style: none; scrollbar-width: none; }
+  .nx-terminal-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 38px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid rgb(255 255 255 / .08);
+    border-radius: 8px;
+    background: rgb(255 255 255 / .04);
+    font: 12px/1 var(--font-mono);
+    color: #94a3b8;
+    user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: pan-x;
+    flex-shrink: 0;
+    transition: all .12s ease;
+  }
+  .nx-terminal-key:active { background: rgb(255 255 255 / .15); transform: scale(.96); }
+  .nx-terminal-key.nx-key-latched { color: #ffffff; font-weight: 600; }
+  .nx-selection-actions { display: flex; flex-shrink: 0; gap: 2px; align-items: center; justify-content: space-around; padding: 4px; background: #172033; border-bottom: 1px solid rgb(255 255 255 / .1); }
+  .nx-selection-actions button { min-height: 44px; padding: 0 8px; border-radius: 8px; font-size: 12px; }
+  .xterm { touch-action: pan-y; -webkit-touch-callout: none; }
+  .nx-responsive-overlay { position: fixed; inset: auto 0 0; top: var(--nx-viewport-top, 0px); height: var(--nx-viewport-height, 100dvh); display: flex; align-items: flex-end; justify-content: center; padding: env(safe-area-inset-top, 0px) 0 0; }
+  .nx-sheet { max-width: 100%; max-height: 100%; min-height: 0; overflow-y: auto; border-radius: 22px 22px 0 0; padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain; animation: nx-sheet-enter .2s ease-out; }
+  .nx-sheet-handle { display: flex; }
+  .nx-sheet button:not(.nx-sheet-handle), .nx-sheet input:not([type="checkbox"]):not([type="radio"]), .nx-sheet select,
+  .nx-mobile-panel button, .nx-sftp button, .nx-mobile-ai button { min-height: 44px; }
+  .nx-mobile-panel button, .nx-sftp button, .nx-mobile-ai button { min-width: 44px; }
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea:not(.xterm-helper-textarea) { font-size: 16px; }
+  input, textarea { scroll-margin-block: 24px; }
+  .nx-lock-screen { min-height: var(--nx-viewport-height, 100dvh); padding: calc(24px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px)); }
+  .nx-lock-screen button, .nx-lock-screen input:not([type="checkbox"]) { min-height: 48px; }
+  .nx-lock-screen form { padding: 24px; }
+  .nx-sftp [draggable] { min-height: 60px; }
+  .nx-sftp [draggable] .text-xs { font-size: 13px; }
+  .nx-sftp .h-10, .nx-sftp .h-11, .nx-sftp .h-12 { height: auto; min-height: 48px; }
+  .nx-code-editor > :first-child { flex-wrap: wrap; gap: 8px; padding-block: 8px; }
+  .nx-code-editor textarea, .nx-code-editor pre, .nx-code-measure { font-size: 16px; line-height: 24px; tab-size: 4; }
+  .nx-code-editor textarea { -webkit-overflow-scrolling: touch; touch-action: pan-x pan-y; }
+  .nx-code-editor > :last-child { overflow-x: auto; white-space: nowrap; gap: 16px; }
+  .nx-toast { bottom: calc(90px + env(safe-area-inset-bottom, 0px)); max-width: calc(100% - 32px); width: max-content; z-index: 150; }
+  [data-keyboard="true"] .nx-toast { top: calc(var(--nx-viewport-top, 0px) + env(safe-area-inset-top, 0px) + 8px); bottom: auto; }
+  /* Existing auxiliary dialogs keep their controls reachable, without changing desktop presentation. */
+  .nx-app-shell .fixed.inset-0 > .max-w-lg,
+  .nx-app-shell .fixed.inset-0 > .max-w-md,
+  .nx-lock-screen .fixed.inset-0 > .max-w-lg { max-height: calc(var(--nx-viewport-height, 100dvh) - 32px); overflow-y: auto; }
+}
+
+@keyframes nx-sheet-enter { from { transform: translateY(24px); opacity: .6; } to { transform: translateY(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .nx-sheet, .nx-rise, .nx-float, .nx-blob, .nx-blob-2 { animation: none; }
+}
+@media (width < 768px) {
+  .nx-color-picker { height: auto; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 0; }
+  .nx-color-picker button { width: 100%; min-height: 44px; }
+  .nx-code-gutter { line-height: 24px; }
+  .nx-sftp-toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  .nx-sftp-toolbar > div:last-child { max-width: 100%; flex-wrap: wrap; gap: 4px; }
+  .nx-terminal-search, .nx-editor-search { left: 8px; right: 8px; top: 48px; flex-wrap: wrap; }
+  .nx-terminal-search input, .nx-editor-search input { min-height: 44px; width: 100%; }
+  .nx-terminal-search > input { flex-basis: 100%; }
+  .nx-terminal-search button { min-height: 44px; min-width: 40px; }
+  .nx-selection-actions { flex-wrap: wrap; }
+  .nx-selection-actions button { padding-inline: 6px; }
+}

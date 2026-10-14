@@ -278,7 +278,7 @@ Generated: ${new Date().toISOString()}
 
   return (
     <div
-      className="relative grid min-h-screen place-items-center overflow-hidden px-4 text-slate-200"
+      className="nx-lock-screen relative grid min-h-screen place-items-center overflow-hidden px-4 text-slate-200"
       style={{ backgroundColor: bgColor }}
     >
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />

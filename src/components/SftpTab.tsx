@@ -1,3 +1,5 @@
+import { useMobile } from '../hooks/useMobile';
+import { MobileSheet } from './MobileSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Folder,
@@ -92,13 +94,19 @@ function fileIcon(e: FileEntry) {
 
 interface SftpTabProps {
   tab: Tab;
+  active?: boolean;
   hosts: Host[];
   onUpdateTab: (patch: Partial<Tab>) => void;
   toast: (msg: string) => void;
   theme?: NexusTheme;
 }
 
-export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps) {
+export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }: SftpTabProps) {
+  const mobile = useMobile();
+  const [mobileSide, setMobileSide] = useState<'remote' | 'local'>('remote');
+  const [fileActions, setFileActions] = useState<{ entry: FileEntry; side: 'local' | 'remote' } | null>(null);
+  const [permissions, setPermissions] = useState<FileEntry | null>(null);
+
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
   const accentColor = activeTheme.accent || '#22d3ee';
   const bgColor = activeTheme.xterm.background || '#090d16';
@@ -470,6 +478,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
   // Keyboard shortcut: Delete key for selected item
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!active) return;
       if (
         document.activeElement?.tagName === 'INPUT' ||
         document.activeElement?.tagName === 'TEXTAREA' ||
@@ -501,6 +510,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    active,
     remoteSelected,
     localSelected,
     remoteEntries,
@@ -643,7 +653,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
 
   return (
     <div
-      className="relative flex h-full w-full flex-col overflow-hidden text-slate-200 select-none"
+      className="nx-sftp relative flex h-full w-full flex-col overflow-hidden text-slate-200 select-none"
       style={{ background: bgColor }}
     >
       {/* ── Transfer Float Toast / Banner ── */}
@@ -667,18 +677,42 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
         </div>
       )}
 
+      <div className="nx-segmented md:hidden" aria-label="File location">
+        <button aria-pressed={mobileSide === 'remote'} onClick={() => setMobileSide('remote')}><Server size={16} /> Remote</button>
+        <button aria-pressed={mobileSide === 'local'} onClick={() => setMobileSide('local')}><Laptop size={16} /> Local</button>
+      </div>
+      {mobile && active && fileActions && <MobileSheet title={fileActions.entry.name} onClose={() => setFileActions(null)}>
+        <p className="mb-3 break-all text-xs text-slate-400">{fileActions.entry.path}</p>
+        <div className="nx-settings-group">
+          {fileActions.entry.isDir ? <button className="nx-settings-row" onClick={() => { fileActions.side === 'remote' ? loadRemote(fileActions.entry.path) : loadLocal(fileActions.entry.path); setFileActions(null); }}><Folder size={18} /> Open folder</button> : <>
+            <button className="nx-settings-row" onClick={() => { handleOpenFile(fileActions.entry, fileActions.side === 'remote'); setFileActions(null); }}><FileCode size={18} /> Edit</button>
+            <button className="nx-settings-row" disabled={!!transferStatus || !remoteSessionId || !localPath} onClick={() => { fileActions.side === 'remote' ? handleDownload(fileActions.entry) : handleUpload(fileActions.entry); setFileActions(null); }}><Download size={18} />{fileActions.side === 'remote' ? 'Download to Local' : 'Upload to Remote'}</button>
+          </>}
+          <button className="nx-settings-row" onClick={() => { setPromptDialog({ type: 'rename', side: fileActions.side, title: 'Rename', currentVal: fileActions.entry.name, targetPath: fileActions.entry.path }); setFileActions(null); }}><Edit2 size={18} /> Rename</button>
+          <button className="nx-settings-row" onClick={() => { setPermissions(fileActions.entry); setFileActions(null); }}><ShieldCheck size={18} /> Permissions</button>
+          <button className="nx-settings-row text-rose-300" onClick={() => { requestDelete(fileActions.entry, fileActions.side); setFileActions(null); }}><Trash2 size={18} /> Delete…</button>
+        </div>
+        <p className="mt-3 break-all text-xs text-slate-500">Transfer destination: {fileActions.side === 'remote' ? localPath || 'Select a local folder first' : remotePath || 'Connect to a remote host first'}. Change it in the {fileActions.side === 'remote' ? 'Local' : 'Remote'} tab before transferring.</p>
+      </MobileSheet>}
+      {mobile && active && permissions && <MobileSheet title="File permissions" onClose={() => setPermissions(null)}>
+        <p className="break-all text-sm">{permissions.name}</p>
+        <p className="my-4 rounded-xl bg-black/30 p-4 font-mono text-lg text-cyan-200">{permissions.permissions == null ? 'Not reported' : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}</p>
+        <p className="text-xs leading-relaxed text-slate-400">Read-only metadata. Permission changes are not exposed by the file API; use your terminal to change the mode.</p>
+      </MobileSheet>}
+
       {/* ── Main Dual-Pane View ── */}
-      <div className="flex flex-1 min-h-0 min-w-0 divide-x divide-white/[0.08]">
+      <div className="flex flex-1 min-h-0 min-w-0 md:divide-x divide-white/[0.08]">
         {/* ==================================================================== */}
         {/* LEFT PANE: LOCAL FILESYSTEM */}
         {/* ==================================================================== */}
         <div
-          className="flex flex-1 min-w-0 flex-col bg-transparent"
+          className={cn("flex flex-1 min-w-0 flex-col bg-transparent", mobileSide !== 'local' && "max-md:hidden")}
+          role="region" aria-label="Local files"
           onDragOver={handleDragOver}
           onDrop={handleDropOnLocal}
         >
           {/* Header */}
-          <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
+          <div className="nx-sftp-toolbar flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
             <div className="flex items-center gap-2">
               <div className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-400/30">
                 <Laptop className="h-4 w-4" />
@@ -871,7 +905,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
           {/* Table Header */}
           <div className="flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-black/20 px-4 text-[11px] font-medium text-slate-400">
             <div className="flex-1 min-w-0">Name</div>
-            <div className="w-44 text-left hidden sm:block">Date Modified</div>
+            <div className="w-44 text-left hidden md:block">Date Modified</div>
             <div className="w-24 text-left hidden md:block">Size</div>
             <div className="w-20 text-left hidden lg:block">Kind</div>
           </div>
@@ -887,14 +921,15 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
 
             {!localLoading && localPath !== '/' && (
               <div
-                onDoubleClick={() => loadLocal(localPath.replace(/\/[^/]+\/?$/, '') || '/')}
+                onClick={() => { if (mobile) loadLocal(localPath.replace(/\/[^/]+\/?$/, '') || '/'); }}
+                    onDoubleClick={() => loadLocal(localPath.replace(/\/[^/]+\/?$/, '') || '/')}
                 className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
               >
                 <div className="flex items-center gap-2.5 flex-1 min-w-0">
                   <Folder className="h-4 w-4 text-sky-400" />
                   <span className="font-medium text-sm">..</span>
                 </div>
-                <div className="w-44 text-slate-500 text-xs hidden sm:block">- -</div>
+                <div className="w-44 text-slate-500 text-xs hidden md:block">- -</div>
                 <div className="w-24 text-slate-500 text-xs hidden md:block">- -</div>
                 <div className="w-20 text-slate-500 text-xs hidden lg:block">folder</div>
               </div>
@@ -909,8 +944,13 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                     key={entry.path}
                     draggable
                     onDragStart={(e) => handleDragStart(e, entry, 'local')}
-                    onClick={() => setLocalSelected(entry.path)}
+                    onClick={() => {
+                      setLocalSelected(entry.path);
+                      if (mobile) { if (entry.isDir) loadLocal(entry.path); else setFileActions({ entry, side: 'local' }); }
+                    }}
+                    onContextMenu={e => { if (mobile) { e.preventDefault(); setFileActions({ entry, side: 'local' }); } }}
                     onDoubleClick={() => {
+                      if (mobile) return;
                       if (entry.isDir) {
                         loadLocal(entry.path);
                       } else {
@@ -943,7 +983,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                     </div>
 
                     {/* Date Modified */}
-                    <div className="w-44 text-slate-400 text-xs hidden sm:block truncate">
+                    <div className="w-44 text-slate-400 text-xs hidden md:block truncate">
                       {fmtDate(entry.modified)}
                     </div>
 
@@ -958,7 +998,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                     </div>
 
                     {/* Quick Row Actions on Hover/Select */}
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <button className="nx-touch-button md:hidden" aria-label={`Actions for ${entry.name}`} onClick={e => { e.stopPropagation(); setFileActions({ entry, side: 'local' }); }}>•••</button>
+                    <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                       {remoteSessionId && !entry.isDir && (
                         <button
                           title={`Upload to ${remoteHost?.label || 'Remote'}`}
@@ -1026,7 +1067,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
         {/* RIGHT PANE: REMOTE SFTP HOST */}
         {/* ==================================================================== */}
         <div
-          className="flex flex-1 min-w-0 flex-col bg-transparent relative"
+          className={cn("flex flex-1 min-w-0 flex-col bg-transparent relative", mobileSide !== 'remote' && "max-md:hidden")}
+          role="region" aria-label="Remote files"
           onDragOver={handleDragOver}
           onDrop={handleDropOnRemote}
         >
@@ -1066,7 +1108,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
             /* ── CONNECTED REMOTE BROWSER ── */
             <>
               {/* Header */}
-              <div className="flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
+              <div className="nx-sftp-toolbar flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <OsIcon os={remoteHost?.os} color={remoteHost?.color} size={28} />
                   <span className="font-semibold text-slate-100 text-sm truncate">
@@ -1283,7 +1325,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
               {/* Table Header */}
               <div className="flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-black/20 px-4 text-[11px] font-medium text-slate-400">
                 <div className="flex-1 min-w-0">Name</div>
-                <div className="w-44 text-left hidden sm:block">Date Modified</div>
+                <div className="w-44 text-left hidden md:block">Date Modified</div>
                 <div className="w-24 text-left hidden md:block">Size</div>
                 <div className="w-20 text-left hidden lg:block">Kind</div>
               </div>
@@ -1299,6 +1341,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
 
                 {!remoteLoading && remotePath !== '/' && (
                   <div
+                    onClick={() => { if (mobile) loadRemote(remotePath.replace(/\/[^/]+\/?$/, '') || '/'); }}
                     onDoubleClick={() => loadRemote(remotePath.replace(/\/[^/]+\/?$/, '') || '/')}
                     className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
                   >
@@ -1306,7 +1349,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                       <Folder className="h-4 w-4 text-sky-400" />
                       <span className="font-medium text-sm">..</span>
                     </div>
-                    <div className="w-44 text-slate-500 text-xs hidden sm:block">- -</div>
+                    <div className="w-44 text-slate-500 text-xs hidden md:block">- -</div>
                     <div className="w-24 text-slate-500 text-xs hidden md:block">- -</div>
                     <div className="w-20 text-slate-500 text-xs hidden lg:block">folder</div>
                   </div>
@@ -1321,8 +1364,13 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                         key={entry.path}
                         draggable
                         onDragStart={(e) => handleDragStart(e, entry, 'remote')}
-                        onClick={() => setRemoteSelected(entry.path)}
+                        onClick={() => {
+                      setRemoteSelected(entry.path);
+                      if (mobile) { if (entry.isDir) loadRemote(entry.path); else setFileActions({ entry, side: 'remote' }); }
+                    }}
+                    onContextMenu={e => { if (mobile) { e.preventDefault(); setFileActions({ entry, side: 'remote' }); } }}
                         onDoubleClick={() => {
+                          if (mobile) return;
                           if (entry.isDir) {
                             loadRemote(entry.path);
                           } else {
@@ -1355,7 +1403,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                         </div>
 
                         {/* Date Modified */}
-                        <div className="w-44 text-slate-400 text-xs hidden sm:block truncate">
+                        <div className="w-44 text-slate-400 text-xs hidden md:block truncate">
                           {fmtDate(entry.modified)}
                         </div>
 
@@ -1370,7 +1418,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps)
                         </div>
 
                         {/* Quick Row Actions on Hover/Select */}
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                        <button className="nx-touch-button md:hidden" aria-label={`Actions for ${entry.name}`} onClick={e => { e.stopPropagation(); setFileActions({ entry, side: 'remote' }); }}>•••</button>
+                    <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                           {!entry.isDir && (
                             <button
                               title="Download to Local"

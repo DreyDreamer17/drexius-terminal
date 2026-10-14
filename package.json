@@ -10,7 +10,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "test:mobile": "node --experimental-strip-types --test tests/mobile-terminal.test.mjs",
+    "test:mobile-ui": "node tests/mobile-ui.smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.2",
@@ -36,6 +38,7 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "playwright-core": "^1.64.0",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.2",

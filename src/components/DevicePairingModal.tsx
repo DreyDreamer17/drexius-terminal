@@ -1,3 +1,4 @@
+import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { useEffect, useRef, useState } from 'react';
 import {
   Laptop,
@@ -279,15 +280,16 @@ export function DevicePairingModal({
   };
 
   return (
-    <div
+    <ResponsiveOverlay
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-      onMouseDown={handleClose}
+      onClose={handleClose} label="Device pairing"
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+        className="nx-sheet relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
         style={{ backgroundColor: bgColor }}
       >
+        <SheetHandle onClose={handleClose} />
         {/* Top ambient radial glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -674,6 +676,6 @@ export function DevicePairingModal({
           </div>
         )}
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }

@@ -1,9 +1,11 @@
+import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { useEffect, useState } from 'react';
 import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key, Server } from 'lucide-react';
 import type { AuthMethod, Host, HostSecret, KeychainItem, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { OS_OPTIONS } from '../lib/os';
 import { cn } from '../utils/cn';
+import { safeUid } from '../utils/uuid';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type NexusTheme } from '../lib/themes';
 
@@ -102,12 +104,8 @@ export function HostModal({
     // links the host, and drops any host-level secret. Pre-generate both IDs
     // so the follow-up onSave (close/refresh) reuses the same rows.
     if (saveToKeychain && secretChanged) {
-      const rid = () =>
-        typeof crypto !== 'undefined' && 'randomUUID' in crypto
-          ? crypto.randomUUID()
-          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-      const hostId = finalHost.id || rid();
-      const kid = rid();
+      const hostId = finalHost.id || safeUid();
+      const kid = safeUid();
       finalHost.id = hostId;
       try {
         await bridge.saveHostWithNewKeychain(
@@ -157,12 +155,13 @@ export function HostModal({
   const label = 'mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500';
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onMouseDown={onClose}>
+    <ResponsiveOverlay className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" onClose={onClose} label="Host profile">
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
+        className="nx-sheet relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 shadow-2xl"
         style={{ backgroundColor: bgColor }}
       >
+        <SheetHandle onClose={onClose} />
         {/* Top ambient radial glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -195,10 +194,10 @@ export function HostModal({
           </button>
         </div>
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
-          <div className="grid grid-cols-[1fr_auto] gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
             <div><label className={label}>Label</label><input className={input} value={h.label} onChange={(e) => set('label', e.target.value)} placeholder="prod-web-01" /></div>
             <div><label className={label}>Color</label>
-              <div className="flex h-[38px] items-center gap-1">{COLORS.map((c) => <button key={c} onClick={() => set('color', c)} className={cn('h-5 w-5 rounded-full transition', h.color === c && 'ring-2 ring-white ring-offset-2 ring-offset-[#0e131d]')} style={{ background: c }} />)}</div>
+              <div className="nx-color-picker flex h-[38px] items-center gap-1">{COLORS.map((c) => <button key={c} aria-label={`Host color ${c}`} aria-pressed={h.color === c} onClick={() => set('color', c)} className="grid h-5 w-5 shrink-0 place-items-center rounded-full transition"><span className={cn('h-5 w-5 rounded-full', h.color === c && 'ring-2 ring-white ring-offset-2 ring-offset-[#0e131d]')} style={{ background: c }} /></button>)}</div>
             </div>
           </div>
           <div className="grid grid-cols-[1fr_90px] gap-3">
@@ -453,6 +452,6 @@ export function HostModal({
           </button>
         </div>
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }

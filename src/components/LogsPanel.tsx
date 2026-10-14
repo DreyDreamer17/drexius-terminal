@@ -15,6 +15,7 @@ import {
 import type { ConnectionLog, CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
+import { safeUid } from '../utils/uuid';
 
 interface Props {
   toast: (m: string) => void;
@@ -151,7 +152,7 @@ export function LogsPanel({ toast }: Props) {
     try {
       const name = item.command.slice(0, 32);
       await bridge.saveSnippet({
-        id: crypto.randomUUID(),
+        id: safeUid(),
         name,
         command: item.command,
         tags: [item.hostLabel],

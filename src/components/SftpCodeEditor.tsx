@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from 'react';
 import {
   FileCode,
   Save,
@@ -200,7 +200,7 @@ export function SftpCodeEditor({
   const [content, setContent] = useState<string>(file.content);
   const [originalContent, setOriginalContent] = useState<string>(file.content);
   const [saving, setSaving] = useState<boolean>(false);
-  const [wordWrap, setWordWrap] = useState<boolean>(false);
+  const [wordWrap, setWordWrap] = useState(() => window.matchMedia('(max-width: 767px)').matches);
 
   // Cursor & selection tracking
   const [cursorLine, setCursorLine] = useState<number>(1);
@@ -214,12 +214,29 @@ export function SftpCodeEditor({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLDivElement>(null);
+  const [lineHeights, setLineHeights] = useState<number[]>([]);
   const preRef = useRef<HTMLPreElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const lang = useMemo(() => detectLanguage(file.name), [file.name]);
   const lines = useMemo(() => content.split('\n'), [content]);
   const isDirty = content !== originalContent;
+
+  // Measure actual wrapped line boxes, so line numbers stay aligned on phones.
+  useLayoutEffect(() => {
+    const input = textareaRef.current, mirror = measureRef.current;
+    if (!wordWrap) { setLineHeights([]); return; }
+    if (!input || !mirror) return;
+    const measure = () => {
+      mirror.style.width = `${input.clientWidth}px`;
+      setLineHeights([...mirror.children].map(child => child.getBoundingClientRect().height));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [content, wordWrap]);
 
   // Sync scrolling between line numbers, syntax pre, and textarea
   const handleScroll = useCallback(() => {
@@ -398,7 +415,7 @@ export function SftpCodeEditor({
 
   return (
     <div
-      className="absolute inset-0 z-40 flex flex-col overflow-hidden text-slate-200 select-none animate-in fade-in duration-100"
+      className="nx-code-editor absolute inset-0 z-40 flex flex-col overflow-hidden text-slate-200 select-none animate-in fade-in duration-100"
       style={{ backgroundColor: bgColor }}
     >
       {/* ── Editor Top Header Bar (Clean VS Code style, no distracting gradients) ── */}
@@ -418,13 +435,13 @@ export function SftpCodeEditor({
 
           {/* Active File Tab Pill */}
           <div
-            className="flex items-center gap-2 rounded-xl bg-white/[0.05] border px-3 py-1 shadow-sm shrink-0"
+            className="flex min-w-0 items-center gap-2 rounded-xl bg-white/[0.05] border px-3 py-1 shadow-sm"
             style={{
               borderColor: `${accentColor}35`,
             }}
           >
             <FileCode className="h-3.5 w-3.5 shrink-0" style={{ color: accentColor }} />
-            <span className="text-xs font-semibold text-slate-100">{file.name}</span>
+            <span className="truncate text-xs font-semibold text-slate-100">{file.name}</span>
             {isDirty && (
               <span
                 title="Unsaved changes"
@@ -509,7 +526,7 @@ export function SftpCodeEditor({
 
       {/* ── Floating Search Bar (if ⌘F active) ── */}
       {showSearch && (
-        <div className="absolute right-6 top-13 z-50 flex items-center gap-2 rounded-2xl border border-white/15 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
+        <div className="nx-editor-search absolute right-6 top-13 z-50 flex items-center gap-2 rounded-2xl border border-white/15 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
           <div className="relative flex items-center">
             <Search className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" />
             <input
@@ -563,7 +580,7 @@ export function SftpCodeEditor({
         {/* Line Numbers Gutter */}
         <div
           ref={gutterRef}
-          className="w-14 shrink-0 select-none overflow-hidden border-r border-white/[0.06] bg-black/40 py-3 text-right font-mono text-xs leading-5 text-slate-600"
+          className="nx-code-gutter w-14 shrink-0 select-none overflow-hidden border-r border-white/[0.06] bg-black/40 py-3 text-right font-mono text-xs leading-5 text-slate-600"
           style={{ height: '100%' }}
         >
           {lines.map((_, i) => {
@@ -572,6 +589,7 @@ export function SftpCodeEditor({
             return (
               <div
                 key={lineNum}
+                style={{ height: lineHeights[i] || undefined }}
                 className={cn(
                   'pr-3 font-mono text-[11px]',
                   isCurrent ? 'font-bold text-cyan-300 bg-cyan-400/10' : 'text-slate-600'
@@ -585,6 +603,10 @@ export function SftpCodeEditor({
 
         {/* Code Canvas (Dual-layer: Syntax pre in background + Textarea on top) */}
         <div className="relative flex-1 min-w-0 min-h-0 overflow-hidden">
+          {wordWrap && <div ref={measureRef} aria-hidden="true" className={cn('nx-code-measure pointer-events-none invisible absolute left-0 top-0 p-3 font-mono text-xs leading-5 [tab-size:4]', wordWrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre')}
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>
+            {lines.map((line, i) => <div key={i}>{line || '\u00a0'}</div>)}
+          </div>}
           {/* Syntax Highlighted Background Pre */}
           <pre
             ref={preRef}
@@ -611,6 +633,10 @@ export function SftpCodeEditor({
             onSelect={updateCursorPos}
             onKeyDown={handleKeyDown}
             spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            aria-label={`Edit ${file.name}`}
+            wrap={wordWrap ? 'soft' : 'off'}
             autoFocus
             className={cn(
               'absolute inset-0 h-full w-full resize-none p-3 font-mono text-xs leading-5 bg-transparent text-transparent caret-cyan-400 selection:bg-cyan-500/35 focus:outline-none [tab-size:4]',

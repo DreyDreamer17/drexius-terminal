@@ -1,3 +1,4 @@
+import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { useEffect, useMemo, useState, useRef } from 'react';
 import {
   X,
@@ -154,16 +155,17 @@ export function CommandSearchModal({
   };
 
   return (
-    <div
+    <ResponsiveOverlay
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 select-none"
-      onClick={onClose}
+      onClose={onClose} label="Command history"
       onKeyDown={handleKeyDown}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="nx-sheet relative flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
         style={{ backgroundColor: bgColor }}
       >
+        <SheetHandle onClose={onClose} />
         {/* Top ambient radial glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -399,6 +401,6 @@ export function CommandSearchModal({
           </span>
         </div>
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }
