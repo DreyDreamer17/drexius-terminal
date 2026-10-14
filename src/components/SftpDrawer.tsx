@@ -5,6 +5,7 @@ import { registry } from '../lib/sessions';
 import type { FileEntry } from '../lib/types';
 import { cn } from '../utils/cn';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { confirmDialog } from './ConfirmDialog';
 
 const fmtSize = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 const fmtPerm = (m?: number | null) => m == null ? '' : [6, 3, 0].map((s) => ((m >> s) & 4 ? 'r' : '-') + ((m >> s) & 2 ? 'w' : '-') + ((m >> s) & 1 ? 'x' : '-')).join('');
@@ -102,7 +103,7 @@ export function SftpDrawer({
     setRenaming({ path: `${path.replace(/\/$/, '')}/${name}`, name });
   };
   const remove = async (e: FileEntry) => {
-    if (!sessionId || !confirm(`Delete ${e.name}?`)) return;
+    if (!sessionId || !(await confirmDialog({ title: `Delete ${e.name}?`, confirmLabel: 'Delete', danger: true }))) return;
     try { await bridge.sftpRemove(sessionId, e.path, e.isDir); toast(`Deleted ${e.name}`); load(path); } catch (er) { toast(isBridgeError(er) ? er.message : String(er)); }
   };
   const commitRename = async () => {
@@ -343,9 +344,9 @@ function RemoteFileEditorModal({
     }
   };
 
-  const tryClose = () => {
+  const tryClose = async () => {
     if (isDirty) {
-      if (confirm(`You have unsaved changes in ${file.name}. Close anyway?`)) {
+      if (await confirmDialog({ title: `Discard changes to ${file.name}?`, message: 'You have unsaved changes.', confirmLabel: 'Discard changes', cancelLabel: 'Keep editing', danger: true })) {
         onClose();
       }
     } else {

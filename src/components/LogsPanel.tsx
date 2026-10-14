@@ -16,6 +16,7 @@ import type { ConnectionLog, CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   toast: (m: string) => void;
@@ -95,7 +96,7 @@ export function LogsPanel({ toast }: Props) {
   };
 
   const handleClearSessions = async () => {
-    if (confirm('Clear all unsaved connection history? Bookmarked entries will be kept.')) {
+    if (await confirmDialog({ title: 'Clear connection history?', message: 'Bookmarked entries will be kept.', confirmLabel: 'Clear', danger: true })) {
       try {
         await bridge.clearLogs();
         await refreshSessions();
@@ -130,7 +131,7 @@ export function LogsPanel({ toast }: Props) {
   };
 
   const handleClearCommands = async () => {
-    if (confirm('Clear all unstarred command history?')) {
+    if (await confirmDialog({ title: 'Clear command history?', message: 'Starred commands are kept.', confirmLabel: 'Clear', danger: true })) {
       try {
         await bridge.clearCommandHistory();
         await refreshCommands();

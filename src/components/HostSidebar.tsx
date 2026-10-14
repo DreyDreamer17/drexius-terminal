@@ -19,6 +19,7 @@ import {
   FolderInput,
   X,
   HardDrive,
+  Server,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
@@ -35,6 +36,8 @@ interface Props {
   onSplit: (h: Host) => void;
   onEdit: (h: Host | null) => void;
   onDelete: (h: Host) => void;
+  /** Phone sheet: open another session even when one is already live (row taps resume instead). */
+  onNewSession?: (h: Host) => void;
   onOpenTerminal: () => void;
   onOpenSerial: () => void;
   onOpenShareModal: () => void;
@@ -83,6 +86,7 @@ export function HostSidebar({
   onSplit,
   onEdit,
   onDelete,
+  onNewSession,
   onOpenTerminal,
   onOpenSerial,
   onOpenShareModal,
@@ -167,8 +171,8 @@ export function HostSidebar({
 
   return (
     <div className="flex h-full flex-col">
-      {/* Top Header */}
-      <div className="flex items-center justify-between px-3.5 pb-2.5 pt-3.5 border-b border-white/5">
+      {/* Top Header — desktop only: on phones the app header and vault row above already carry this. */}
+      <div className="max-md:hidden flex items-center justify-between px-3.5 pb-2.5 pt-3.5 border-b border-white/5">
         <div>
           <div className="flex items-center gap-1.5">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-300">
@@ -373,10 +377,15 @@ export function HostSidebar({
         </div>
       )}
 
-      {mobile && actionHost && <MobileSheet title={actionHost.label} onClose={() => setActionHost(null)}>
-        <p className="mb-4 break-all font-mono text-xs text-slate-400">{actionHost.username}@{actionHost.hostname}:{actionHost.port}</p>
+      {mobile && actionHost && <MobileSheet title={actionHost.label} kicker={live.has(actionHost.id) ? 'Host · Active' : 'Host'} icon={Server} theme={theme} onClose={() => setActionHost(null)}>
+        <p className="mb-3 break-all font-mono text-[11px] leading-relaxed text-slate-500">{actionHost.username}@{actionHost.hostname}:{actionHost.port}</p>
         <div className="nx-settings-group">
-          <button className="nx-settings-row" onClick={() => { onConnect(actionHost); setActionHost(null); }}><TerminalIcon size={18} /> Connect</button>
+          {live.has(actionHost.id)
+            ? <>
+                <button className="nx-settings-row" onClick={() => { onConnect(actionHost); setActionHost(null); }}><TerminalIcon size={18} /> Return to session</button>
+                <button className="nx-settings-row" onClick={() => { (onNewSession ?? onConnect)(actionHost); setActionHost(null); }}><Plus size={18} /> New session</button>
+              </>
+            : <button className="nx-settings-row" onClick={() => { onConnect(actionHost); setActionHost(null); }}><TerminalIcon size={18} /> Connect</button>}
           {onOpenSftp && <button className="nx-settings-row" onClick={() => { onOpenSftp(actionHost); setActionHost(null); }}><HardDrive size={18} /> Browse files</button>}
           <button className="nx-settings-row" onClick={() => { onSplit(actionHost); setActionHost(null); }}><Plus size={18} /> Add session to current tab</button>
           <button className="nx-settings-row" onClick={() => { onEdit(actionHost); setActionHost(null); }}><Pencil size={18} /> Edit host</button>
@@ -384,7 +393,7 @@ export function HostSidebar({
         </div>
       </MobileSheet>}
       {/* Host List */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 max-md:pb-24">
         {groups.map(([g, list]) => (
           <div key={g} className="mt-2">
             <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -415,6 +424,7 @@ export function HostSidebar({
                       {h.port !== 22 ? `:${h.port}` : ''}
                     </div>
                   </div>
+                  {live.has(h.id) && <span className="md:hidden shrink-0 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300">Active</span>}
                   <button type="button" aria-label={`Actions for ${h.label}`} className="nx-touch-button md:hidden" onClick={e => { e.stopPropagation(); setActionHost(h); }}>•••</button>
                   <div
                     className="max-md:!hidden absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"

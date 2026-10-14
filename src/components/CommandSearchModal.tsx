@@ -9,11 +9,13 @@ import {
   Folder,
   ArrowRight,
   Code2,
+  Play,
 } from 'lucide-react';
 import type { CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   initialHostLabel?: string;
@@ -22,6 +24,8 @@ interface Props {
   onSaveSnippet?: (command: string) => void;
   toast: (msg: string) => void;
   theme?: NexusTheme;
+  /** Render only the browser (header, search, list) for a host that provides the sheet — the phone drawer. */
+  embedded?: boolean;
 }
 
 const timeAgo = (ts: number): string => {
@@ -41,6 +45,7 @@ export function CommandSearchModal({
   onSaveSnippet,
   toast,
   theme,
+  embedded = false,
 }: Props) {
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
   const accentColor = activeTheme.accent;
@@ -66,7 +71,8 @@ export function CommandSearchModal({
 
   useEffect(() => {
     refresh();
-    inputRef.current?.focus();
+    if (!embedded) inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const hosts = useMemo(() => {
@@ -121,7 +127,7 @@ export function CommandSearchModal({
   };
 
   const handleClear = async () => {
-    if (confirm('Clear all unstarred command history?')) {
+    if (await confirmDialog({ title: 'Clear command history?', message: 'Starred commands are kept.', confirmLabel: 'Clear', danger: true })) {
       try {
         await bridge.clearCommandHistory();
         await refresh();
@@ -154,26 +160,10 @@ export function CommandSearchModal({
     }
   };
 
-  return (
-    <ResponsiveOverlay
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 select-none"
-      onClose={onClose} label="Command history"
-      onKeyDown={handleKeyDown}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="nx-sheet relative flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
-        style={{ backgroundColor: bgColor }}
-      >
-        <SheetHandle onClose={onClose} />
-        {/* Top ambient radial glow */}
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
-          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
-        />
-
+  const body = (
+    <>
         {/* Header */}
-        <div className="relative flex items-center justify-between border-b border-white/10 px-4 py-3 bg-white/[0.02]">
+        <div className={`relative flex items-center justify-between border-b border-white/10 px-4 bg-white/[0.02] ${embedded ? 'pb-3 pt-1' : 'py-3'}`}>
           <div className="flex items-center gap-2.5">
             <div
               className="flex h-9 w-9 items-center justify-center rounded-2xl border transition shadow-lg shrink-0"
@@ -189,14 +179,16 @@ export function CommandSearchModal({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-200">
-                  Command History Search
+                  {embedded ? 'Command History' : 'Command History Search'}
                 </h3>
-                <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-                  Ctrl+Shift+R
-                </span>
+                {!embedded && (
+                  <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+                    Ctrl+Shift+R
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500">
-                Reverse-i-search across all previously executed shell commands
+                {embedded ? 'Tap to put a command on the prompt' : 'Reverse-i-search across all previously executed shell commands'}
               </p>
             </div>
           </div>
@@ -204,15 +196,17 @@ export function CommandSearchModal({
             <button
               onClick={handleClear}
               title="Clear unstarred history"
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/10 hover:text-rose-300 transition"
+              aria-label="Clear unstarred history"
+              className={`rounded-lg text-slate-400 hover:bg-rose-500/10 hover:text-rose-300 transition ${embedded ? 'grid h-11 w-11 place-items-center rounded-xl' : 'p-1.5'}`}
             >
               <Trash2 className="h-4 w-4" />
             </button>
             <button
               onClick={onClose}
-              className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+              aria-label="Close command history"
+              className={`rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition ${embedded ? 'grid h-11 w-11 place-items-center rounded-xl' : 'p-1.5'}`}
             >
-              <X className="h-4 w-4" />
+              <X className={embedded ? 'h-[18px] w-[18px]' : 'h-4 w-4'} />
             </button>
           </div>
         </div>
@@ -224,15 +218,19 @@ export function CommandSearchModal({
             style={{ outlineColor: accentColor }}
           >
             <span className="text-[11px] font-mono font-semibold shrink-0" style={{ color: accentColor }}>
-              (reverse-i-search)`:
+              {embedded ? '(search)`:' : '(reverse-i-search)`:'}
             </span>
             <input
               ref={inputRef}
               type="text"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="type to search history..."
-              className="w-full bg-transparent text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none font-mono"
+              placeholder={embedded ? 'search history…' : 'type to search history...'}
+              aria-label="Search command history"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              className={`w-full bg-transparent text-slate-200 placeholder:text-slate-500 focus:outline-none font-mono ${embedded ? 'text-sm' : 'text-xs'}`}
             />
             {q && (
               <button
@@ -309,8 +307,10 @@ export function CommandSearchModal({
                       className={`shrink-0 p-1 rounded-md transition ${
                         item.starred
                           ? 'text-amber-400 hover:bg-amber-400/20'
-                          : 'text-slate-600 hover:text-slate-300 hover:bg-white/10 opacity-0 group-hover:opacity-100'
-                      }`}
+                          : embedded
+                            ? 'text-slate-600 active:bg-white/10'
+                            : 'text-slate-600 hover:text-slate-300 hover:bg-white/10 opacity-0 group-hover:opacity-100'
+                      } ${embedded ? 'grid h-9 w-9 place-items-center' : ''}`}
                     >
                       <Star className={`h-3.5 w-3.5 ${item.starred ? 'fill-amber-400' : ''}`} />
                     </button>
@@ -323,8 +323,8 @@ export function CommandSearchModal({
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
-                        <span className="flex items-center gap-1 font-mono">
+                      <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500 whitespace-nowrap overflow-hidden">
+                        <span className="flex shrink-0 items-center gap-1 font-mono">
                           <Clock className="h-3 w-3" />
                           {timeAgo(item.executedAt)}
                         </span>
@@ -332,7 +332,7 @@ export function CommandSearchModal({
                         <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-slate-400 truncate max-w-[140px]">
                           {item.hostLabel}
                         </span>
-                        {item.cwd && (
+                        {item.cwd && !embedded && (
                           <>
                             <span>·</span>
                             <span className="flex items-center gap-1 font-mono text-slate-500 truncate max-w-[180px]">
@@ -345,6 +345,40 @@ export function CommandSearchModal({
                     </div>
 
                     {/* Actions on hover / selection */}
+                    {embedded ? (
+                      <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                        {onSaveSnippet && (
+                          <button
+                            type="button"
+                            onClick={() => onSaveSnippet(item.command)}
+                            title="Save as snippet"
+                            aria-label="Save as snippet"
+                            className="grid h-10 w-9 place-items-center rounded-lg text-slate-400 transition active:bg-white/10"
+                          >
+                            <Code2 className="h-4 w-4" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => handleDelete(item, e)}
+                          title="Delete from history"
+                          aria-label="Delete from history"
+                          className="grid h-10 w-9 place-items-center rounded-lg text-slate-400 transition active:bg-rose-500/20 active:text-rose-300"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { onSelect(item.command, true); onClose(); }}
+                          title="Run now"
+                          aria-label={`Run ${item.command}`}
+                          className="grid h-10 w-10 place-items-center rounded-lg border transition active:brightness-125"
+                          style={{ backgroundColor: `${accentColor}20`, borderColor: `${accentColor}40`, color: accentColor }}
+                        >
+                          <Play className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
                     <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
                       {onSaveSnippet && (
                         <button
@@ -382,6 +416,7 @@ export function CommandSearchModal({
                         <ArrowRight className="h-3 w-3" />
                       </button>
                     </div>
+                    )}
                   </div>
               );
             })}
@@ -389,17 +424,50 @@ export function CommandSearchModal({
 
         {/* Footer shortcuts helper */}
         <div className="flex items-center justify-between border-t border-white/10 bg-black/40 px-4 py-2 text-[11px] text-slate-400 font-mono">
-          <div className="flex items-center gap-3">
-            <span>↑↓ Select</span>
-            <span>↵ Insert</span>
-            <span>⇧↵ Run</span>
-            <span>Ctrl+R Cycle</span>
-            <span>Esc Close</span>
-          </div>
+          {embedded ? (
+            <span>Tap = insert · <Play className="inline h-3 w-3 align-[-1px]" /> = run</span>
+          ) : (
+            <div className="flex items-center gap-3">
+              <span>↑↓ Select</span>
+              <span>↵ Insert</span>
+              <span>⇧↵ Run</span>
+              <span>Ctrl+R Cycle</span>
+              <span>Esc Close</span>
+            </div>
+          )}
           <span className="text-slate-500">
             {filtered.length} of {history.length} commands
           </span>
         </div>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="relative flex h-full min-h-0 flex-col" onKeyDown={handleKeyDown}>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveOverlay
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 select-none"
+      onClose={onClose} label="Command history"
+      onKeyDown={handleKeyDown}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="nx-sheet relative flex flex-col w-full max-w-2xl h-[560px] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        style={{ backgroundColor: bgColor }}
+      >
+        <SheetHandle onClose={onClose} />
+        {/* Top ambient radial glow */}
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
+          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
+        />
+        {body}
       </div>
     </ResponsiveOverlay>
   );

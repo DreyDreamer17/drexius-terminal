@@ -40,6 +40,7 @@ function parsePairingLink(link: string): ParsedPairingLink {
   return { host: m[1], port: parseInt(m[2], 10), pin, serverPublicKey: pk.toLowerCase() };
 }
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   onClose: () => void;
@@ -259,7 +260,12 @@ export function DevicePairingModal({
   };
 
   const handleRevoke = async (id: string, name: string) => {
-    if (!confirm(`Revoke pairing for "${name}"? It will be blocked from pairing again.\n\nNote: it keeps the data it already received — rotate host credentials to fully cut its access.`)) return;
+    if (!(await confirmDialog({
+      title: `Revoke pairing for "${name}"?`,
+      message: 'It will be blocked from pairing again.\n\nNote: it keeps the data it already received — rotate host credentials to fully cut its access.',
+      confirmLabel: 'Revoke',
+      danger: true,
+    }))) return;
     try {
       await bridge.pairingRevokeDevice(id);
       setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, revokedAt: Math.floor(Date.now() / 1000) } : d)));

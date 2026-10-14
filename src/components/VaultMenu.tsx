@@ -15,6 +15,7 @@ import type { Vault } from '../lib/types';
 import type { NexusTheme } from '../lib/themes';
 import { safeUid } from '../utils/uuid';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   vaults: Vault[];
@@ -247,7 +248,7 @@ export function VaultMenu({
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
-                            if (confirm(`Delete team vault "${v.name}"? Hosts will return to Personal Vault.`)) {
+                            if (await confirmDialog({ title: `Delete team vault "${v.name}"?`, message: 'Its hosts will move back to your Personal Vault.', confirmLabel: 'Delete vault', danger: true })) {
                               await onDeleteVault(v.id);
                             }
                           }}

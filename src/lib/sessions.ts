@@ -11,6 +11,10 @@ export interface LivePane {
   lastCommand: string | null;
   term: Terminal | null;
   send: (data: string) => void;
+  /** Accessory-key input (modifier latches, application cursor mode) — same path as the phone key row. */
+  key?: (data: string) => void;
+  /** Put a command on the prompt (optionally run it), keeping the pane's suggestion state in sync. */
+  insert?: (command: string, execute?: boolean) => void;
 }
 
 const panes = new Map<string, LivePane>();

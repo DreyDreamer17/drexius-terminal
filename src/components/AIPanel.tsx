@@ -61,6 +61,7 @@ import type { NexusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Msg {
   id?: string;
@@ -283,12 +284,14 @@ export function AIPanel({
   const [opencodeAutonomous, setOpencodeAutonomous] = useState(
     () => localStorage.getItem(OPENCODE_AUTONOMOUS_KEY) === 'true'
   );
-  const toggleOpencodeAutonomous = () => {
+  const toggleOpencodeAutonomous = async () => {
     const next = !opencodeAutonomous;
-    if (next && !window.confirm(
-      'Autonomous OpenCode mode lets the agent run shell commands and tools without asking, ' +
-      'inside ~/NexusTerminal/ai-workspace. Common destructive commands are denied, but this is not a sandbox. Enable?'
-    )) return;
+    if (next && !(await confirmDialog({
+      title: 'Enable autonomous OpenCode mode?',
+      message: 'The agent will run shell commands and tools without asking, inside ~/NexusTerminal/ai-workspace. Common destructive commands are denied, but this is not a sandbox.',
+      confirmLabel: 'Enable',
+      danger: true,
+    }))) return;
     setOpencodeAutonomous(next);
     localStorage.setItem(OPENCODE_AUTONOMOUS_KEY, String(next));
     toast(next ? 'Autonomous OpenCode mode ON' : 'Autonomous OpenCode mode off');
@@ -988,7 +991,7 @@ export function AIPanel({
   };
 
   const handleClearAllKeys = async () => {
-    if (window.confirm(`Clear all ${activeConfig.apiKeys.length} keys for ${activeConfig.name}?`)) {
+    if (await confirmDialog({ title: `Clear all ${activeConfig.apiKeys.length} keys for ${activeConfig.name}?`, confirmLabel: 'Clear keys', danger: true })) {
       const updated = await runListOp(() => bridge.clearAiKeys(activeConfig.providerId));
       if (updated) toast('All keys cleared');
     }
@@ -1059,7 +1062,7 @@ export function AIPanel({
 
   const handleClearAllProxies = async () => {
     const count = (activeConfig.proxyUrls ?? []).length;
-    if (window.confirm(`Clear all ${count} proxies for ${activeConfig.name}?`)) {
+    if (await confirmDialog({ title: `Clear all ${count} proxies for ${activeConfig.name}?`, confirmLabel: 'Clear proxies', danger: true })) {
       const updated = await runListOp(() => bridge.clearAiProxies(activeConfig.providerId));
       if (updated) toast('All proxies cleared');
     }

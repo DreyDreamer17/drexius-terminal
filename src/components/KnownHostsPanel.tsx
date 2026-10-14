@@ -3,6 +3,7 @@ import { Search, ShieldCheck, Trash2, RotateCw, Fingerprint } from 'lucide-react
 import type { KnownHost } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   toast: (m: string) => void;
@@ -31,9 +32,12 @@ export function KnownHostsPanel({ toast }: Props) {
 
   const handleDelete = async (kh: KnownHost) => {
     if (
-      confirm(
-        `Revoke host key for ${kh.host}:${kh.port}?\nNexusTerminal will ask you to verify identity again on next connection.`
-      )
+      await confirmDialog({
+        title: `Revoke host key for ${kh.host}:${kh.port}?`,
+        message: 'NexusTerminal will ask you to verify this host\u2019s identity again on the next connection.',
+        confirmLabel: 'Revoke key',
+        danger: true,
+      })
     ) {
       try {
         await bridge.deleteKnownHost(kh.host, kh.port);

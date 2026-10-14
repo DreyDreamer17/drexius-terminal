@@ -1,15 +1,15 @@
 import { useMobile } from '../hooks/useMobile';
-import { useTerminalTouch } from '../hooks/useTerminalTouch';
-import { isTerminalModifierKey, modifiedTerminalInput, type TerminalModifiers } from '../lib/mobileTerminal';
+import { useTerminalTouch, type TerminalTouchGesture } from '../hooks/useTerminalTouch';
+import { TerminalSelection } from './TerminalSelection';
+import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, type TerminalModifiers } from '../lib/mobileTerminal';
 import { TerminalAccessory } from './TerminalAccessory';
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import {
   ShieldAlert,
@@ -27,6 +27,12 @@ import {
   ChevronDown,
   Terminal as TerminalIcon,
   Clipboard,
+  Keyboard,
+  KeyboardOff,
+  ChevronLeft,
+  Plus,
+  HardDrive,
+  Server,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
@@ -94,6 +100,8 @@ interface Props {
   host: Host;
   theme: NexusTheme;
   fontSize: number;
+  /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
+  onFontSizeChange?: (size: number) => void;
   lineHeight?: number;
   active: boolean;
   showHeader: boolean;
@@ -103,6 +111,25 @@ interface Props {
   onChange: () => void;
   onData?: (data: string) => void;
   toast?: (msg: string) => void;
+  /** Mobile only: wiring for the session bar that sits under the terminal (back, switcher, new connection). */
+  mobileBar?: MobileSessionBarActions;
+  /** Mobile only: fraction of the pane height covered by a half-open drawer; the terminal gives up that space. */
+  drawerInset?: number;
+}
+
+/** What the phone session bar can do; the pane itself owns close + keyboard. */
+export interface MobileSessionBarActions {
+  sessionCount: number;
+  onBack: () => void;
+  onOpenSessions: () => void;
+  onConnectHost: () => void;
+  onLocalTerminal: () => void;
+  onSftp: () => void;
+  onSerial: () => void;
+  onAssistant: () => void;
+  onSnippets: () => void;
+  onKeypad: () => void;
+  onHistory: () => void;
 }
 
 export const TerminalPane = memo(function TerminalPane({
@@ -110,6 +137,7 @@ export const TerminalPane = memo(function TerminalPane({
   host,
   theme,
   fontSize,
+  onFontSizeChange,
   lineHeight = 1.0,
   active,
   showHeader,
@@ -119,6 +147,8 @@ export const TerminalPane = memo(function TerminalPane({
   onChange,
   onData,
   toast = () => {},
+  mobileBar,
+  drawerInset = 0,
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -673,8 +703,100 @@ export const TerminalPane = memo(function TerminalPane({
   const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
   const modifiersRef = useRef(modifiers);
   const swallowRef = useRef<{ char: string; until: number } | null>(null);
-  const [touchActions, setTouchActions] = useState(false);
-  const openTouchActions = useCallback(() => setTouchActions(true), []);
+
+  /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
+  const sendAccessoryKey = useCallback((data: string) => {
+    const term = termRef.current;
+    if (term?.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(data)) data = data.replace('[', 'O');
+    if (data === '\x03') {
+      modifiersRef.current = { ctrl: false, alt: false };
+      setModifiers(modifiersRef.current);
+      swallowRef.current = { char: 'c', until: Date.now() + 1200 };
+      if (term?.textarea) term.textarea.value = '';
+    } else if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
+      modifiersRef.current = { ctrl: false, alt: false };
+      setModifiers(modifiersRef.current);
+    }
+    term?.input(data, true);
+    term?.focus();
+  }, []);
+
+  // Latest callbacks for the registry entry (created once in the mount effect) — the phone's
+  // keypad and history drawers live in App and reach the pane through these.
+  const accessoryKeyRef = useRef(sendAccessoryKey); accessoryKeyRef.current = sendAccessoryKey;
+  const insertRef = useRef(handleSelectCommand); insertRef.current = handleSelectCommand;
+
+  // Phone selection UI: the long-press paste menu (no selection) and the live terminal for the overlay.
+  const [touchMenu, setTouchMenu] = useState<{ x: number; y: number } | null>(null);
+  const [termInstance, setTermInstance] = useState<Terminal | null>(null);
+  const [connectMenu, setConnectMenu] = useState(false);
+  // Pinch-to-zoom. While the fingers move the terminal is only *transformed* (a composited CSS
+  // scale anchored bottom-left, so the prompt stays put and nothing reflows mid-gesture); on
+  // release the preview eases onto the nearest whole font size, which is then committed and the
+  // transform dropped in the same frame xterm repaints at the real size.
+  const [zoomHud, setZoomHud] = useState<{ size: number; leaving: boolean } | null>(null);
+  const pinch = useRef<{ base: number; preview: number; timer: number; hud: number }>({ base: fontSize, preview: 1, timer: 0, hud: 0 });
+  const fontSizeRef = useRef(fontSize); fontSizeRef.current = fontSize;
+  const onFontSizeChangeRef = useRef(onFontSizeChange); onFontSizeChangeRef.current = onFontSizeChange;
+  const pinchAwaitingCommit = useRef(false);
+  const onPinch = useCallback((phase: 'start' | 'move' | 'end', scale: number) => {
+    const el = elRef.current, box = containerRef.current, p = pinch.current;
+    if (!el) return;
+    const clampScale = (s: number) => Math.max(TERMINAL_FONT_MIN / p.base, Math.min(TERMINAL_FONT_MAX / p.base, s));
+    if (phase === 'start') {
+      window.clearTimeout(p.timer); window.clearTimeout(p.hud);
+      p.base = fontSizeRef.current; p.preview = 1; pinchAwaitingCommit.current = false;
+      el.style.transition = 'none'; el.style.transformOrigin = '0 100%'; el.style.willChange = 'transform';
+      if (box) box.style.overflow = 'hidden';
+      setZoomHud({ size: p.base, leaving: false });
+      return;
+    }
+    if (phase === 'move') {
+      p.preview = clampScale(scale);
+      el.style.transform = `scale(${p.preview})`;
+      const size = Math.round(p.base * p.preview);
+      setZoomHud((h) => (h && h.size === size && !h.leaving ? h : { size, leaving: false }));
+      return;
+    }
+    const next = Math.max(TERMINAL_FONT_MIN, Math.min(TERMINAL_FONT_MAX, Math.round(p.base * clampScale(scale))));
+    const settle = () => {
+      el.style.transition = ''; el.style.transform = ''; el.style.transformOrigin = ''; el.style.willChange = '';
+      if (box) box.style.overflow = '';
+      pinchAwaitingCommit.current = false;
+      setZoomHud((h) => (h ? { ...h, leaving: true } : h));
+      p.hud = window.setTimeout(() => setZoomHud(null), 260);
+    };
+    // Ease the live preview onto the exact scale of the chosen size, then swap the real font in.
+    el.style.transition = 'transform 110ms cubic-bezier(.2,.8,.2,1)';
+    el.style.transform = `scale(${next / p.base})`;
+    setZoomHud({ size: next, leaving: false });
+    p.timer = window.setTimeout(() => {
+      if (next === fontSizeRef.current || !onFontSizeChangeRef.current) { settle(); return; }
+      pinchAwaitingCommit.current = true;
+      pinchSettleRef.current = settle;
+      onFontSizeChangeRef.current(next);
+    }, 130);
+  }, []);
+  const pinchSettleRef = useRef<(() => void) | null>(null);
+  const onTouchGesture = useCallback((g: TerminalTouchGesture) => {
+    if (g.kind === 'pinch') { onPinch(g.phase, g.scale); return; }
+    setTouchMenu(g.kind === 'menu' ? { x: g.x, y: g.y } : null);
+  }, [onPinch]);
+  // On phones the virtual keyboard is opened only by the explicit keyboard button:
+  // xterm focuses its textarea on every tap, so the textarea carries inputmode="none"
+  // (focusable, hardware keys work, no on-screen keyboard) until that button flips it.
+  const showKeyboard = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    if (term.textarea) { term.textarea.inputMode = 'text'; term.textarea.blur(); }
+    term.focus();
+  }, []);
+  const hideKeyboard = useCallback(() => {
+    const term = termRef.current;
+    if (term?.textarea) term.textarea.inputMode = 'none';
+    term?.blur();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  }, []);
   const toggleModifier = (key: keyof TerminalModifiers) => {
     const next = { ...modifiersRef.current, [key]: !modifiersRef.current[key] };
     modifiersRef.current = next; setModifiers(next);
@@ -682,7 +804,7 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     if (!active || !mobile) {
       modifiersRef.current = { ctrl: false, alt: false };
-      setModifiers(modifiersRef.current); setTouchActions(false);
+      setModifiers(modifiersRef.current); setTouchMenu(null); setConnectMenu(false);
     }
   }, [active, mobile]);
 
@@ -690,7 +812,7 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     const term = new Terminal({
       fontFamily:
-        '"JetBrainsMono Nerd Font", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
+        '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
       fontSize,
       lineHeight,
       letterSpacing: 0,
@@ -719,24 +841,21 @@ export const TerminalPane = memo(function TerminalPane({
 
     term.open(elRef.current!);
 
-    // Load hardware-accelerated WebGL or 2D Canvas renderer for seamless, gapless box/block drawing
+    // Prefer the hardware-accelerated WebGL renderer for gapless box/block drawing.
+    // If WebGL2 is unavailable, or the context is lost later (common on phones when
+    // the app is backgrounded or under memory pressure), xterm 6 falls back to its
+    // built-in DOM renderer: disposing the addon restores it automatically.
+    // Note: @xterm/addon-canvas only supports xterm 5 and crashes on dispose under
+    // xterm 6, so it must not be used as a fallback here.
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => {
-        webgl.dispose();
-        try {
-          const canvas = new CanvasAddon();
-          term.loadAddon(canvas);
-        } catch {}
+        console.warn('WebGL context lost; terminal switched to the DOM renderer');
+        try { webgl.dispose(); } catch { /* already disposed */ }
       });
       term.loadAddon(webgl);
-    } catch {
-      try {
-        const canvas = new CanvasAddon();
-        term.loadAddon(canvas);
-      } catch (err) {
-        console.warn('WebGL/Canvas renderers unavailable, using DOM renderer:', err);
-      }
+    } catch (err) {
+      console.warn('WebGL renderer unavailable, using DOM renderer:', err);
     }
 
     const helperTextarea = term.textarea;
@@ -796,6 +915,7 @@ export const TerminalPane = memo(function TerminalPane({
     termRef.current = term;
     fitRef.current = fit;
     searchRef.current = search;
+    setTermInstance(term);
 
     // Synchronous immediate fit so cols/rows are initialized before connect()
     try {
@@ -1041,6 +1161,8 @@ export const TerminalPane = memo(function TerminalPane({
           term.focus();
         }
       },
+      key: (d) => accessoryKeyRef.current(d),
+      insert: (c, execute) => insertRef.current(c, execute),
     });
 
     const ro = new ResizeObserver(() => {
@@ -1077,12 +1199,13 @@ export const TerminalPane = memo(function TerminalPane({
       sessionRef.current = null;
       registry.delete(pane.id);
       term.dispose();
+      setTermInstance(null);
       onChangeRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useTerminalTouch(elRef, termRef, mobile && active, openTouchActions);
+  useTerminalTouch(elRef, termRef, mobile && active, onTouchGesture);
 
   // Fit once the keyboard animation/viewport resize has settled; ResizeObserver
   // handles intermediate frames. Hidden sessions keep their last valid dimensions.
@@ -1112,6 +1235,12 @@ export const TerminalPane = memo(function TerminalPane({
       if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
     } catch {
       /* */
+    }
+    if (pinchAwaitingCommit.current) {
+      // xterm repaints at the new size in the animation frame it queued just now; our callback is
+      // queued after it, so the preview transform disappears in the very same painted frame.
+      const settle = pinchSettleRef.current;
+      requestAnimationFrame(() => settle?.());
     }
   }, [fontSize]);
 
@@ -1158,6 +1287,144 @@ export const TerminalPane = memo(function TerminalPane({
     return () => clearTimeout(t);
   }, [countdown, connect]);
 
+  // Keep the textarea's inputmode in step with the phone layout and with the keyboard
+  // actually being up: once the system dismisses it, a later tap must not bring it back.
+  useEffect(() => {
+    const ta = termRef.current?.textarea;
+    if (!ta) return;
+    if (!mobile) { ta.inputMode = ''; return; }
+    ta.inputMode = 'none';
+    const root = document.documentElement;
+    const observer = new MutationObserver((records) => {
+      // Only a real open -> closed transition counts; the flag is rewritten on every viewport event.
+      if (records.some((r) => r.oldValue === 'true') && root.dataset.keyboard !== 'true') ta.inputMode = 'none';
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ['data-keyboard'], attributeOldValue: true });
+    return () => observer.disconnect();
+  }, [mobile]);
+
+  // Phones: the Search key both shows the bar and raises the keyboard. Layout effect = still inside the
+  // tap (iOS only opens the keyboard for focus() during a user gesture); keyed on the toggle, not on
+  // mount, so the bar re-appearing after a drawer closes does not pop the keyboard again.
+  useLayoutEffect(() => {
+    if (mobile && showSearch) searchInputRef.current?.focus();
+  }, [mobile, showSearch]);
+
+  const searchAccent = theme.accent || '#22d3ee';
+  const searchToggle = (on: boolean) => (on
+    ? { backgroundColor: `${searchAccent}26`, color: searchAccent, borderColor: `${searchAccent}60` }
+    : undefined);
+  const searchControls = (
+    <>
+      <div className="nx-terminal-search-field flex items-center gap-1.5">
+        <Search className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
+        <input
+          ref={searchInputRef}
+          type="text"
+          value={searchQuery}
+          enterKeyHint="search"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            performSearch(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              performSearch(searchQuery, e.shiftKey);
+            } else if (e.key === 'Escape') {
+              setShowSearch(false);
+              termRef.current?.focus();
+            }
+          }}
+          placeholder="Find in terminal…"
+          aria-label="Find in terminal"
+          className="w-44 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => performSearch(searchQuery, true)}
+        onMouseDown={(e) => e.preventDefault()}
+        title="Previous match (Shift+Enter)"
+        aria-label="Previous match"
+        className="nx-terminal-search-btn rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+      >
+        <ChevronUp className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => performSearch(searchQuery, false)}
+        onMouseDown={(e) => e.preventDefault()}
+        title="Next match (Enter)"
+        aria-label="Next match"
+        className="nx-terminal-search-btn rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+      >
+        <ChevronDown className="h-3.5 w-3.5" />
+      </button>
+      <div className="nx-terminal-search-sep h-3.5 w-[1px] bg-white/10" />
+      <button
+        type="button"
+        onClick={() => setMatchCase(!matchCase)}
+        onMouseDown={(e) => e.preventDefault()}
+        title="Match Case"
+        aria-label="Match case"
+        aria-pressed={matchCase}
+        style={mobile ? searchToggle(matchCase) : undefined}
+        className={cn(
+          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
+          matchCase ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+        )}
+      >
+        Aa
+      </button>
+      <button
+        type="button"
+        onClick={() => setMatchWholeWord(!matchWholeWord)}
+        onMouseDown={(e) => e.preventDefault()}
+        title="Match Whole Word"
+        aria-label="Match whole word"
+        aria-pressed={matchWholeWord}
+        style={mobile ? searchToggle(matchWholeWord) : undefined}
+        className={cn(
+          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
+          matchWholeWord ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+        )}
+      >
+        \b
+      </button>
+      <button
+        type="button"
+        onClick={() => setMatchRegex(!matchRegex)}
+        onMouseDown={(e) => e.preventDefault()}
+        title="Use Regular Expression"
+        aria-label="Use regular expression"
+        aria-pressed={matchRegex}
+        style={mobile ? searchToggle(matchRegex) : undefined}
+        className={cn(
+          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
+          matchRegex ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+        )}
+      >
+        .*
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setShowSearch(false);
+          termRef.current?.focus();
+        }}
+        onMouseDown={(e) => e.preventDefault()}
+        className="nx-terminal-search-btn nx-terminal-search-close rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+        title="Close (Esc)"
+        aria-label="Close search"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </>
+  );
+
   const statusColor = {
     connecting: 'bg-amber-400',
     connected: 'bg-emerald-400',
@@ -1175,7 +1442,7 @@ export const TerminalPane = memo(function TerminalPane({
       }}
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
       onContextMenu={async (e) => {
-        if (mobile) { e.preventDefault(); setTouchActions(true); return; }
+        if (mobile) { e.preventDefault(); return; }
         if (termRef.current?.hasSelection()) return;
         e.preventDefault();
         try {
@@ -1211,30 +1478,6 @@ export const TerminalPane = memo(function TerminalPane({
       )}
       style={{ background: theme.xterm.background }}
     >
-      {mobile && active && <div className="flex shrink-0 items-center gap-1 border-b border-white/10 px-2 text-xs">
-        <span className={cn('ml-1 h-2 w-2 shrink-0 rounded-full', statusColor)} />
-        <span className="min-w-0 flex-1 truncate px-2">{host.label}</span>
-        <button className="nx-touch-button" aria-label="Search terminal" onClick={() => setShowSearch(v => !v)}><Search size={17} /></button>
-        <button className="nx-touch-button" aria-label="Command history" onClick={() => setShowCmdSearch(true)}><History size={17} /></button>
-        <button className="nx-touch-button" aria-label="Terminal actions" onClick={() => setTouchActions(v => !v)}><Clipboard size={17} /></button>
-        <button className="nx-touch-button" aria-label="Show terminal keyboard" onClick={() => termRef.current?.focus()}>⌨</button>
-      </div>}
-      {mobile && active && touchActions && <div className="nx-selection-actions" role="toolbar" aria-label="Terminal selection actions">
-        <button onClick={async () => {
-          const selected = termRef.current?.getSelection();
-          if (!selected) { toast('Long-press a word or select all first'); return; }
-          try { await navigator.clipboard.writeText(selected); toast('Copied selection'); }
-          catch { toast('Clipboard access denied'); }
-        }}>Copy</button>
-        <button onClick={async () => {
-          try { const text = await navigator.clipboard.readText(); termRef.current?.paste(text); }
-          catch { toast('Clipboard access denied — use your keyboard’s Paste action'); }
-        }}>Paste</button>
-        <button onClick={() => termRef.current?.clear()}>Clear</button>
-        <button onClick={() => termRef.current?.selectAll()}>Select All</button>
-        <button onClick={() => { setTouchActions(false); setShowClipboard(true); }}>Clips</button>
-        <button aria-label="Close terminal actions" onClick={() => setTouchActions(false)}>×</button>
-      </div>}
       {showHeader && !mobile && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
           <span className={cn('h-1.5 w-1.5 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
@@ -1302,93 +1545,51 @@ export const TerminalPane = memo(function TerminalPane({
         </div>
       )}
 
-      {/* Floating In-Terminal Search Widget */}
-      {showSearch && (
+      {/* Desktop: floating in-terminal search widget (top-right). Phones get the docked bar under the terminal. */}
+      {showSearch && !mobile && (
         <div
           className={cn(
             'nx-terminal-search absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur',
             showHeader ? 'top-10' : 'top-2'
           )}
         >
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              performSearch(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                performSearch(searchQuery, e.shiftKey);
-              } else if (e.key === 'Escape') {
-                setShowSearch(false);
-                termRef.current?.focus();
-              }
-            }}
-            placeholder="Find in terminal…"
-            className="w-44 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
-          />
-          <button
-            onClick={() => performSearch(searchQuery, true)}
-            title="Previous match (Shift+Enter)"
-            className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-          >
-            <ChevronUp className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={() => performSearch(searchQuery, false)}
-            title="Next match (Enter)"
-            className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-          >
-            <ChevronDown className="h-3.5 w-3.5" />
-          </button>
-          <div className="h-3.5 w-[1px] bg-white/10" />
-          <button
-            onClick={() => setMatchCase(!matchCase)}
-            title="Match Case"
-            className={cn(
-              'rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-              matchCase ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
-            )}
-          >
-            Aa
-          </button>
-          <button
-            onClick={() => setMatchWholeWord(!matchWholeWord)}
-            title="Match Whole Word"
-            className={cn(
-              'rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-              matchWholeWord ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
-            )}
-          >
-            \b
-          </button>
-          <button
-            onClick={() => setMatchRegex(!matchRegex)}
-            title="Use Regular Expression"
-            className={cn(
-              'rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-              matchRegex ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
-            )}
-          >
-            .*
-          </button>
-          <button
-            onClick={() => {
-              setShowSearch(false);
-              termRef.current?.focus();
-            }}
-            className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-            title="Close (Esc)"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+          {searchControls}
         </div>
       )}
 
-      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}>
+      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}
+        // A half-open drawer takes the bottom of the pane; the rows refit to what is left so the prompt stays in view.
+        // Mirrors the drawer's settled min-height (min(320px, 70%)) so the terminal never runs under it.
+        style={mobile && active && drawerInset > 0 ? { flex: `0 0 ${(1 - drawerInset) * 100}%`, maxHeight: 'max(calc(100% - 320px), 30%)' } : undefined}>
         <div ref={elRef} className="h-full w-full" />
+        {mobile && active && (
+          <TerminalSelection
+            term={termInstance}
+            host={containerRef.current}
+            accent={theme.accent || '#22d3ee'}
+            background={theme.xterm.background || '#0e131d'}
+            menuAt={touchMenu}
+            onCopy={async (text) => {
+              try { await navigator.clipboard.writeText(text); toast('Copied'); }
+              catch { toast('Clipboard access denied'); }
+              bridge.addClipboardHistory(text, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
+            }}
+            onPaste={async () => {
+              setTouchMenu(null);
+              try { const text = await navigator.clipboard.readText(); if (text) handlePasteClipboard(text); else toast('Clipboard is empty'); }
+              catch { toast('Clipboard access denied — use your keyboard’s Paste action'); }
+            }}
+            onClips={() => { setTouchMenu(null); setShowClipboard(true); }}
+          />
+        )}
+        {mobile && zoomHud && (
+          <div className={cn('nx-zoom-hud', zoomHud.leaving && 'nx-zoom-hud-out')} role="status" aria-live="polite"
+            style={{ background: theme.xterm.background || '#0e131d', '--nx-accent': theme.accent || '#22d3ee' } as React.CSSProperties}>
+            <span className="nx-zoom-hud-glyph">Aa</span>
+            <span className="nx-zoom-hud-size">{zoomHud.size}</span>
+            <span className="nx-zoom-hud-unit">px</span>
+          </div>
+        )}
 
         {/* Real-time Inline Ghost Text Autosuggestion (Fish / Zsh / Copilot style) */}
         {suggestion && ghostPos && (
@@ -1400,7 +1601,7 @@ export const TerminalPane = memo(function TerminalPane({
               height: `${ghostPos.cellHeight}px`,
               lineHeight: `${ghostPos.cellHeight}px`,
               fontFamily:
-                '"JetBrainsMono Nerd Font", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
+                '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
               fontSize: `${fontSize}px`,
               pointerEvents: 'none',
               zIndex: 20,
@@ -1412,24 +1613,59 @@ export const TerminalPane = memo(function TerminalPane({
           </div>
         )}
       </div>
-      {mobile && active && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
-        onKey={data => {
-          const term = termRef.current;
-          if (term?.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(data)) data = data.replace('[', 'O');
-          if (data === '\x03') {
-            modifiersRef.current = { ctrl: false, alt: false };
-            setModifiers(modifiersRef.current);
-            swallowRef.current = { char: 'c', until: Date.now() + 1200 };
-            if (term?.textarea) {
-              term.textarea.value = '';
-            }
-          } else if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
-            modifiersRef.current = { ctrl: false, alt: false };
-            setModifiers(modifiersRef.current);
-          }
-          term?.input(data, true);
-          term?.focus();
-        }} />}
+      {showSearch && mobile && active && drawerInset <= 0 && (
+        <div
+          className="nx-terminal-search nx-terminal-search-docked md:hidden"
+          role="search"
+          aria-label="Find in terminal"
+          style={{ background: theme.xterm.background, '--nx-accent': theme.accent || '#22d3ee' } as React.CSSProperties}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-16 opacity-20" style={{ background: `radial-gradient(ellipse at top, ${theme.accent || '#22d3ee'} 0%, transparent 70%)` }} />
+          {searchControls}
+        </div>
+      )}
+      {mobile && active && drawerInset <= 0 && (() => {
+        const accent = theme.accent || '#22d3ee';
+        const sessionName = isSerial ? host.label : isLocal ? 'Local Terminal' : `${host.username}@${host.hostname}${host.port && host.port !== 22 ? `:${host.port}` : ''}`;
+        const count = mobileBar?.sessionCount ?? 1;
+        const pick = (fn?: () => void) => () => { setConnectMenu(false); fn?.(); };
+        return (
+          // Clicks must not bubble to the workspace, whose click handler closes the side panel
+          // (that would undo the "back to hosts" navigation this bar triggers).
+          <div className="nx-session-bar md:hidden" role="toolbar" aria-label="Session" onClick={e => e.stopPropagation()}>
+            <button type="button" className="nx-bar-button" aria-label="Back to hosts" onClick={mobileBar?.onBack}><ChevronLeft size={22} /></button>
+            <div className="nx-session-pill" style={{ borderColor: `${accent}45`, background: `${accent}12`, color: accent }}>
+              <button type="button" className="nx-session-pill-main" aria-label={`Sessions · ${count} open`} onClick={mobileBar?.onOpenSessions}>
+                <span className={cn('h-2 w-2 shrink-0 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
+                <span className="min-w-0 truncate font-mono text-[12.5px] font-medium">{sessionName}</span>
+                {count > 1 && <span className="nx-session-count" style={{ background: `${accent}22`, color: accent }}>{count}</span>}
+              </button>
+              <button type="button" className="nx-session-pill-close" aria-label="Close session" onClick={onClose}><X size={17} /></button>
+            </div>
+            <div className="relative shrink-0">
+              <button type="button" className="nx-bar-button" aria-label="New connection" aria-haspopup="menu" aria-expanded={connectMenu} onClick={() => setConnectMenu(v => !v)}><Plus size={22} /></button>
+              {connectMenu && (
+                <>
+                  <div className="fixed inset-0 z-50" onClick={() => setConnectMenu(false)} />
+                  <div role="menu" aria-label="New connection" className="nx-connect-menu" onKeyDown={e => { if (e.key === 'Escape') setConnectMenu(false); }}>
+                    <button type="button" role="menuitem" onClick={pick(mobileBar?.onConnectHost)}><Server size={18} style={{ color: accent }} /> Connect to host</button>
+                    <button type="button" role="menuitem" onClick={pick(mobileBar?.onLocalTerminal)}><TerminalIcon size={18} style={{ color: accent }} /> Local terminal</button>
+                    <button type="button" role="menuitem" onClick={pick(mobileBar?.onSftp)}><HardDrive size={18} style={{ color: accent }} /> Connect via SFTP</button>
+                    <button type="button" role="menuitem" onClick={pick(mobileBar?.onSerial)}><Unplug size={18} style={{ color: accent }} /> Connect via Serial</button>
+                  </div>
+                </>
+              )}
+            </div>
+            {/* Both rendered; CSS picks one from the keyboard state so no extra listeners are needed. */}
+            <button type="button" className="nx-bar-button nx-kbd-show" aria-label="Show terminal keyboard" onClick={showKeyboard}><Keyboard size={20} /></button>
+            <button type="button" className="nx-bar-button nx-kbd-hide" aria-label="Hide terminal keyboard" onMouseDown={e => e.preventDefault()} onClick={hideKeyboard}><KeyboardOff size={20} /></button>
+          </div>
+        );
+      })()}
+      {mobile && active && drawerInset <= 0 && mobileBar && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
+        tools={{ onKeypad: mobileBar.onKeypad, onSearch: () => setShowSearch(v => !v), onHistory: mobileBar.onHistory, onAssistant: mobileBar.onAssistant, onSnippets: mobileBar.onSnippets }}
+        onKey={sendAccessoryKey} />}
 
 
       {status === 'connecting' && (

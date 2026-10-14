@@ -20,6 +20,7 @@ import {
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 function getPasswordStrength(p: string): { score: number; label: string; color: string } {
   if (!p) return { score: 0, label: '', color: 'transparent' };
   let score = 0;
@@ -565,7 +566,7 @@ Generated: ${new Date().toISOString()}
             {isTauri
               ? <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
-                {initialized && <button type="button" onClick={async () => { if (confirm('Erase the sandbox vault?')) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
+                {initialized && <button type="button" onClick={async () => { if (await confirmDialog({ title: 'Erase the sandbox vault?', message: 'All hosts, snippets and keys stored in this browser preview will be deleted.', confirmLabel: 'Erase vault', danger: true })) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
           </div>
         </form>
       </div>

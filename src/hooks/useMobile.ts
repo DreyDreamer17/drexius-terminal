@@ -1,10 +1,35 @@
 import { useEffect, useState } from 'react';
 
-export const mobileQuery = '(max-width: 767px)';
+/**
+ * Single source of truth for the phone layout.
+ *
+ * A phone is any touch-first device whose screen's shorter edge fits in a hand
+ * (≤ 480 CSS px) — in *either* orientation, so rotating to landscape never drops
+ * the user into the desktop chrome mid-session. Narrow windows (< 768px) on any
+ * device use the phone layout too. `device-width/height` are screen-based, so the
+ * virtual keyboard shrinking the viewport can't flip the layout while typing.
+ *
+ * The Tailwind `md` / `max-md` variants and the mobile CSS blocks in index.css are
+ * compiled from this same expression (see the `@custom-variant` declarations there).
+ * Keep them in sync.
+ */
+export const mobileQuery =
+  '(width < 768px) or ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px)))';
+
+/** Same test in Media Queries Level 3 syntax for engines without MQ4 boolean logic. */
+const legacyMobileQuery =
+  '(max-width: 767px), (pointer: coarse) and (max-device-width: 480px), (pointer: coarse) and (max-device-height: 480px)';
+
+export function mobileMedia(): MediaQueryList {
+  const modern = window.matchMedia(mobileQuery);
+  // An unparseable query yields `media: "not all"` rather than throwing.
+  return modern.media === 'not all' ? window.matchMedia(legacyMobileQuery) : modern;
+}
+
 export function useMobile() {
-  const [mobile, setMobile] = useState(() => window.matchMedia(mobileQuery).matches);
+  const [mobile, setMobile] = useState(() => mobileMedia().matches);
   useEffect(() => {
-    const query = window.matchMedia(mobileQuery);
+    const query = mobileMedia();
     const update = () => setMobile(query.matches);
     query.addEventListener('change', update);
     update();

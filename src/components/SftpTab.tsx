@@ -681,8 +681,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         <button aria-pressed={mobileSide === 'remote'} onClick={() => setMobileSide('remote')}><Server size={16} /> Remote</button>
         <button aria-pressed={mobileSide === 'local'} onClick={() => setMobileSide('local')}><Laptop size={16} /> Local</button>
       </div>
-      {mobile && active && fileActions && <MobileSheet title={fileActions.entry.name} onClose={() => setFileActions(null)}>
-        <p className="mb-3 break-all text-xs text-slate-400">{fileActions.entry.path}</p>
+      {mobile && active && fileActions && <MobileSheet title={fileActions.entry.name} kicker={fileActions.entry.isDir ? 'Folder' : 'File'} subtitle={fileActions.side === 'remote' ? 'Remote' : 'Local'}
+        icon={fileActions.entry.isDir ? Folder : FileCode} theme={activeTheme} onClose={() => setFileActions(null)}>
+        <p className="mb-3 break-all font-mono text-[11px] leading-relaxed text-slate-500">{fileActions.entry.path}</p>
         <div className="nx-settings-group">
           {fileActions.entry.isDir ? <button className="nx-settings-row" onClick={() => { fileActions.side === 'remote' ? loadRemote(fileActions.entry.path) : loadLocal(fileActions.entry.path); setFileActions(null); }}><Folder size={18} /> Open folder</button> : <>
             <button className="nx-settings-row" onClick={() => { handleOpenFile(fileActions.entry, fileActions.side === 'remote'); setFileActions(null); }}><FileCode size={18} /> Edit</button>
@@ -694,10 +695,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         </div>
         <p className="mt-3 break-all text-xs text-slate-500">Transfer destination: {fileActions.side === 'remote' ? localPath || 'Select a local folder first' : remotePath || 'Connect to a remote host first'}. Change it in the {fileActions.side === 'remote' ? 'Local' : 'Remote'} tab before transferring.</p>
       </MobileSheet>}
-      {mobile && active && permissions && <MobileSheet title="File permissions" onClose={() => setPermissions(null)}>
-        <p className="break-all text-sm">{permissions.name}</p>
-        <p className="my-4 rounded-xl bg-black/30 p-4 font-mono text-lg text-cyan-200">{permissions.permissions == null ? 'Not reported' : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}</p>
-        <p className="text-xs leading-relaxed text-slate-400">Read-only metadata. Permission changes are not exposed by the file API; use your terminal to change the mode.</p>
+      {mobile && active && permissions && <MobileSheet title="File permissions" subtitle={permissions.name} icon={ShieldCheck} theme={activeTheme} onClose={() => setPermissions(null)}>
+        <p className="my-1 rounded-xl border border-white/[0.06] bg-black/30 p-4 font-mono text-lg" style={{ color: activeTheme.accent }}>{permissions.permissions == null ? 'Not reported' : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}</p>
+        <p className="mt-3 text-xs leading-relaxed text-slate-400">Read-only metadata. Permission changes are not exposed by the file API; use your terminal to change the mode.</p>
       </MobileSheet>}
 
       {/* ── Main Dual-Pane View ── */}

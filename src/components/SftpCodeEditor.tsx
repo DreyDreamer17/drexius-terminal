@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { confirmDialog } from './ConfirmDialog';
 
 export interface EditorFile {
   path: string;
@@ -277,9 +278,9 @@ export function SftpCodeEditor({
   }, [saving, onSave, content, file.name, toast]);
 
   // Confirm close if unsaved
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
     if (isDirty) {
-      if (!confirm(`You have unsaved changes in "${file.name}". Discard changes?`)) {
+      if (!(await confirmDialog({ title: `Discard changes to "${file.name}"?`, message: 'You have unsaved changes. They will be lost if you close the editor now.', confirmLabel: 'Discard changes', cancelLabel: 'Keep editing', danger: true }))) {
         return;
       }
     }

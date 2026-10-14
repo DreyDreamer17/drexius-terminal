@@ -13,6 +13,7 @@ import {
 import type { ClipboardItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   onClose: () => void;
@@ -100,7 +101,7 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
   };
 
   const handleClear = async () => {
-    if (confirm('Clear all unpinned clipboard history?')) {
+    if (await confirmDialog({ title: 'Clear clipboard history?', message: 'Pinned clips are kept.', confirmLabel: 'Clear', danger: true })) {
       try {
         await bridge.clearClipboardHistory();
         await refresh();

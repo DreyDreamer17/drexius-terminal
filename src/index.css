@@ -1,9 +1,25 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+/* Fonts ship with the app (offline-first): no render-blocking third-party request on
+   every launch, and xterm cell metrics stay identical on desktop, phone and in the
+   native build. Subsets are split by unicode-range, so only the ones in use download. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
 
+/* ─── Phone layout breakpoint ──────────────────────────────────────────────────
+   One definition, three consumers: these two variants (every `md:` / `max-md:`
+   utility in the codebase), the `@variant max-md` blocks further down, and
+   `mobileQuery` in src/hooks/useMobile.ts, which must stay identical.
+
+   A phone is a touch-first device whose screen's shorter edge is ≤ 480 CSS px in
+   either orientation (so rotating to landscape never switches to the desktop
+   chrome), plus any window narrower than 768px. `device-*` is screen-based, so
+   the virtual keyboard can't flip the layout while typing. */
+@custom-variant md (@media (width >= 768px) and (not ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px)))));
+@custom-variant max-md (@media (width < 768px) or ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px))));
+
 @theme {
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, monospace;
 }
 
 html, body, #root { height: 100%; background: #06080d; }
@@ -89,6 +105,30 @@ body { touch-action: pan-x pan-y; }
 .nx-settings-row:disabled { opacity: .4; }
 .nx-settings-group { overflow: hidden; border: 1px solid rgb(255 255 255 / .09); border-radius: 16px; background: rgb(255 255 255 / .025); }
 .nx-settings-group > * + * { border-top: 1px solid rgb(255 255 255 / .06); }
+/* Settings rows that open a picker: trailing value + chevron; picker rows: check mark on the choice. */
+.nx-settings-value { display: inline-flex; min-width: 0; align-items: center; gap: 6px; font-size: 13px; color: #94a3b8; }
+.nx-settings-value > svg:last-child { color: #64748b; flex-shrink: 0; }
+.nx-option-row[aria-checked="true"] { color: #f1f5f9; background: color-mix(in srgb, var(--nx-accent, #22d3ee) 8%, transparent); }
+.nx-theme-swatch { display: inline-flex; width: 30px; height: 18px; flex-shrink: 0; overflow: hidden; border-radius: 5px; }
+.nx-theme-swatch i { margin-top: auto; height: 5px; flex: 1; }
+.nx-theme-swatch-lg { width: 40px; height: 24px; border-radius: 7px; }
+.nx-theme-swatch-lg i { height: 7px; }
+/* Stepper: two round glyph buttons around a mono value. */
+.nx-stepper { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: 12px; border: 1px solid rgb(255 255 255 / .08); background: rgb(0 0 0 / .25); }
+.nx-stepper button { display: grid; place-items: center; width: 36px; height: 32px; min-width: 0 !important; min-height: 0 !important; border-radius: 9px; color: #cbd5e1; -webkit-tap-highlight-color: transparent; transition: background .12s ease, color .12s ease; }
+.nx-stepper button:active { background: color-mix(in srgb, var(--nx-accent, #22d3ee) 18%, transparent); color: var(--nx-accent, #22d3ee); }
+.nx-stepper button:disabled { opacity: .3; }
+.nx-stepper > span { min-width: 44px; text-align: center; font: 600 14px/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--nx-accent, #22d3ee); }
+.nx-stepper > span small { margin-left: 2px; font: 500 10px/1 var(--font-sans); color: #94a3b8; }
+/* Themed range slider: accent-filled track up to the thumb, glowing round thumb. */
+.nx-range { width: 100%; height: 28px; margin: 2px 0 0; appearance: none; -webkit-appearance: none; background: transparent; touch-action: pan-y; }
+.nx-range:focus-visible { outline: none; }
+.nx-range::-webkit-slider-runnable-track { height: 4px; border-radius: 99px; background: linear-gradient(90deg, var(--nx-accent, #22d3ee) 0 var(--nx-fill, 0%), rgb(255 255 255 / .12) var(--nx-fill, 0%) 100%); }
+.nx-range::-moz-range-track { height: 4px; border-radius: 99px; background: rgb(255 255 255 / .12); }
+.nx-range::-moz-range-progress { height: 4px; border-radius: 99px; background: var(--nx-accent, #22d3ee); }
+.nx-range::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 22px; height: 22px; margin-top: -9px; border-radius: 50%; border: 2px solid var(--nx-accent, #22d3ee); background: #0b1019; box-shadow: 0 0 0 4px color-mix(in srgb, var(--nx-accent, #22d3ee) 18%, transparent), 0 2px 8px rgb(0 0 0 / .5); transition: box-shadow .12s ease; }
+.nx-range::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--nx-accent, #22d3ee); background: #0b1019; box-shadow: 0 0 0 4px color-mix(in srgb, var(--nx-accent, #22d3ee) 18%, transparent), 0 2px 8px rgb(0 0 0 / .5); }
+.nx-range:active::-webkit-slider-thumb, .nx-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px color-mix(in srgb, var(--nx-accent, #22d3ee) 24%, transparent), 0 2px 10px rgb(0 0 0 / .5); }
 .nx-section-label { margin: 24px 4px 10px; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #94a3b8; }
 .nx-sheet-handle { position: relative; z-index: 1; width: 100%; height: 28px; min-height: 28px; flex-shrink: 0; align-items: center; justify-content: center; touch-action: none; }
 .nx-sheet-handle span { display: block; width: 36px; height: 4px; margin: auto; border-radius: 99px; background: #64748b; }
@@ -96,7 +136,7 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
 
 }
 
-@media (width < 768px) {
+@variant max-md {
   html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   .nx-app-shell {
     position: fixed; left: 0; top: var(--nx-viewport-top, 0px);
@@ -105,29 +145,77 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
     padding-left: env(safe-area-inset-left, 0px);
     padding-right: env(safe-area-inset-right, 0px);
   }
-  .nx-mobile-header { display: flex; flex-shrink: 0; min-height: 56px; align-items: center; gap: 2px; padding: 4px 12px; border-bottom: 1px solid rgb(255 255 255 / .07); background: rgb(8 11 18 / .9); }
-  .nx-bottom-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); flex-shrink: 0; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgb(255 255 255 / .1); background: #0b1019; z-index: 45; }
-  .nx-bottom-nav button { display: flex; min-width: 0; min-height: 50px; flex-direction: column; justify-content: center; align-items: center; gap: 5px; color: #94a3b8; border-radius: 12px; font-size: 10px; font-weight: 500; white-space: nowrap; }
-  .nx-bottom-nav button.nx-nav-active { color: #67e8f9; background: rgb(34 211 238 / .09); }
-  .nx-session-badge { position: absolute; top: -6px; left: 14px; min-width: 15px; padding: 1px 4px; border-radius: 20px; background: #155e75; color: #ecfeff; font: 9px/13px var(--font-sans); }
+  .nx-bottom-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); flex-shrink: 0; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid rgb(255 255 255 / .08); background: color-mix(in srgb, var(--nx-nav-bg, #0e131d) 86%, #000); z-index: 45; }
+  .nx-bottom-nav button { display: flex; min-width: 0; min-height: 50px; flex-direction: column; justify-content: center; align-items: center; gap: 5px; color: #94a3b8; border-radius: 12px; font-size: 10px; font-weight: 500; white-space: nowrap; -webkit-tap-highlight-color: transparent; transition: color .12s ease, background .12s ease; }
+  .nx-bottom-nav button:active { background: rgb(255 255 255 / .06); }
+  .nx-bottom-nav button.nx-nav-active { color: var(--nx-accent, #67e8f9); background: color-mix(in srgb, var(--nx-accent, #22d3ee) 10%, transparent); }
+  .nx-session-badge { position: absolute; top: -6px; left: 14px; min-width: 15px; padding: 1px 4px; border-radius: 20px; background: var(--nx-accent, #22d3ee); color: #050810; font: 600 9px/13px var(--font-sans); text-align: center; }
   [data-keyboard="true"] .nx-bottom-nav { display: none; }
+  /* Terminal screen session bar (under the terminal, above the key row): back · session pill · new · keyboard. */
+  /* No rules between terminal, session bar and key row: the whole bottom block floats on the terminal background. */
+  .nx-session-bar { display: flex; flex-shrink: 0; align-items: center; gap: 2px; min-height: 44px; padding: 4px 6px 2px; }
+  /* Bar buttons float like the key row: the session pill is the only solid element on the bar. */
+  .nx-session-bar .nx-bar-button { display: grid; place-items: center; width: 40px; height: 38px; flex-shrink: 0; border-radius: 11px; border: 0; background: transparent; color: #cbd5e1; -webkit-tap-highlight-color: transparent; transition: background .12s ease, transform .12s ease; }
+  .nx-session-bar .nx-bar-button:active { background: rgb(255 255 255 / .1); transform: scale(.94); }
+  .nx-session-pill { display: flex; flex: 1; min-width: 0; align-items: center; height: 36px; margin: 0 4px; overflow: hidden; border-radius: 11px; border: 1px solid; }
+  .nx-session-pill-main { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; height: 100%; padding: 0 4px 0 12px; text-align: left; }
+  .nx-session-pill-main:active { background: rgb(255 255 255 / .06); }
+  .nx-session-pill-close { display: grid; place-items: center; width: 38px; height: 100%; flex-shrink: 0; opacity: .8; }
+  .nx-session-pill-close:active { background: rgb(255 255 255 / .08); opacity: 1; }
+  .nx-session-count { flex-shrink: 0; min-width: 18px; padding: 0 5px; border-radius: 20px; background: rgb(34 211 238 / .15); color: #67e8f9; font: 600 10px/18px var(--font-sans); text-align: center; }
+  [data-keyboard="true"] .nx-session-bar { min-height: 40px; padding: 2px 6px 0; }
+  [data-keyboard="true"] .nx-session-bar .nx-bar-button { height: 36px; }
+  [data-keyboard="true"] .nx-session-pill { height: 34px; }
+  /* Keyboard toggle: both buttons exist; the keyboard state picks one (after .nx-bar-button so it wins). */
+  .nx-session-bar .nx-kbd-hide { display: none; }
+  [data-keyboard="true"] .nx-session-bar .nx-kbd-hide { display: grid; }
+  [data-keyboard="true"] .nx-session-bar .nx-kbd-show { display: none; }
+  /* Small anchored menu for the + button (same surface as the desktop dropdowns, touch-sized rows). */
+  .nx-connect-menu { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 60; width: 224px; padding: 6px; border-radius: 16px; border: 1px solid rgb(255 255 255 / .1); background: #0e131d; box-shadow: 0 20px 50px rgb(0 0 0 / .7), 0 0 0 1px rgb(0 0 0 / .4); animation: nx-pop-in .15s ease-out; transform-origin: bottom right; }
+  .nx-connect-menu button { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 12px; padding: 0 12px; border-radius: 11px; font-size: 13px; color: #e2e8f0; text-align: left; }
+  .nx-connect-menu button:active { background: rgb(255 255 255 / .08); }
+  /* Floating "add host" action on the Hosts page; sits above the list, below sheets (z-50+). */
+  .nx-fab { position: absolute; right: 16px; bottom: 16px; z-index: 42; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 9999px; color: #050810; transition: transform .15s ease, filter .15s ease; }
+  .nx-fab:active { transform: scale(.93); filter: brightness(1.08); }
+  [data-keyboard="true"] .nx-fab { display: none; }
   .nx-mobile-panel { position: absolute; inset: 0 !important; width: 100%; border-right: 0; box-shadow: none !important; }
   .nx-mobile-ai:not(.hidden) { position: absolute; inset: 0; width: 100% !important; z-index: 20; background: #0b1019; border: 0; }
+  /* Drawers over the terminal screen (AI, snippets): anchored to the bottom of the workspace, height = detent.
+     Declared after .nx-mobile-ai so the AI aside can wear both classes. */
+  .nx-drawer:not(.hidden) {
+    position: absolute; inset: auto 0 0 0; width: 100% !important; height: 100%; z-index: 46;
+    display: flex; flex-direction: column; overflow: hidden;
+    border: 0; border-top: 1px solid rgb(255 255 255 / .12); border-radius: 22px 22px 0 0;
+    box-shadow: 0 -24px 60px rgb(0 0 0 / .55), 0 -1px 0 rgb(255 255 255 / .04);
+    transition: height .28s cubic-bezier(.32, .72, 0, 1), transform .22s cubic-bezier(.32, .72, 0, 1);
+    animation: nx-drawer-enter .32s cubic-bezier(.32, .72, 0, 1);
+  }
+  /* Settled drawers keep enough room for their header + composer when the keyboard shrinks the viewport;
+     the terminal container mirrors this (TerminalPane) so the two never overlap. Free while dragging/closing. */
+  .nx-drawer:not(.hidden):not(.nx-drawer-dragging):not(.nx-drawer-closing) { min-height: min(320px, 70%); }
+  .nx-drawer-dragging { transition: none !important; }
+  .nx-drawer-closing { transform: translateY(100%); }
+  .nx-drawer-grip { display: flex; flex-shrink: 0; align-items: center; justify-content: center; height: 30px; touch-action: none; cursor: grab; }
+  .nx-drawer-grip span { width: 40px; height: 5px; border-radius: 99px; background: #64748b; transition: background .15s ease, width .15s ease; }
+  .nx-drawer-grip:active span, .nx-drawer-dragging .nx-drawer-grip span { width: 52px; background: #94a3b8; }
+  .nx-drawer-grip:focus-visible { outline: none; }
+  .nx-drawer-grip:focus-visible span { box-shadow: 0 0 0 3px rgb(34 211 238 / .5); }
   .nx-segmented { display: flex; flex-shrink: 0; gap: 4px; margin: 10px 12px; padding: 4px; border: 1px solid rgb(255 255 255 / .07); border-radius: 14px; background: rgb(0 0 0 / .22); }
   .nx-segmented button { display: flex; flex: 1; min-height: 40px; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; color: #94a3b8; font-size: 13px; }
   .nx-segmented button[aria-pressed="true"] { background: rgb(255 255 255 / .08); color: #e2e8f0; box-shadow: 0 2px 8px rgb(0 0 0 / .2); }
+  /* Key row: a thin strip of floating labels (Termius-style) — no boxes, only a soft pressed tint
+     and a filled accent pill for latched modifiers. Buttons keep a 34px hit height. */
   .nx-terminal-accessory {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 0;
     flex-shrink: 0;
-    height: 42px;
-    padding: 4px 8px;
+    height: 38px;
+    padding: 0 6px;
     overflow-x: auto;
     overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     white-space: nowrap;
-    border-top: 1px solid rgb(255 255 255 / .08);
   }
   .nx-terminal-accessory::-webkit-scrollbar { display: none; }
   .nx-terminal-accessory { -ms-overflow-style: none; scrollbar-width: none; }
@@ -136,27 +224,72 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
     align-items: center;
     justify-content: center;
     min-width: 38px;
-    height: 32px;
-    padding: 0 10px;
-    border: 1px solid rgb(255 255 255 / .08);
-    border-radius: 8px;
-    background: rgb(255 255 255 / .04);
-    font: 12px/1 var(--font-mono);
-    color: #94a3b8;
+    height: 34px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    font: 12.5px/1 var(--font-mono);
+    color: #a3adc2;
     user-select: none;
     -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
     touch-action: pan-x;
     flex-shrink: 0;
-    transition: all .12s ease;
+    transition: background .12s ease, color .12s ease, transform .12s ease;
   }
-  .nx-terminal-key:active { background: rgb(255 255 255 / .15); transform: scale(.96); }
-  .nx-terminal-key.nx-key-latched { color: #ffffff; font-weight: 600; }
-  .nx-selection-actions { display: flex; flex-shrink: 0; gap: 2px; align-items: center; justify-content: space-around; padding: 4px; background: #172033; border-bottom: 1px solid rgb(255 255 255 / .1); }
-  .nx-selection-actions button { min-height: 44px; padding: 0 8px; border-radius: 8px; font-size: 12px; }
+  .nx-terminal-key:active { background: rgb(255 255 255 / .1); color: #e2e8f0; transform: scale(.94); }
+  .nx-terminal-key.nx-key-latched { background: color-mix(in srgb, var(--nx-accent) 22%, transparent); color: var(--nx-accent); font-weight: 600; }
+  .nx-terminal-key.nx-key-interrupt { color: #fb7185; }
+  .nx-terminal-key.nx-key-interrupt:active { background: rgb(251 113 133 / .15); color: #fda4af; }
+  .nx-terminal-tool { min-width: 36px; padding: 0 8px; color: var(--nx-tool, #94a3b8); }
+  .nx-terminal-tool:active { background: color-mix(in srgb, var(--nx-tool, #94a3b8) 16%, transparent); color: var(--nx-tool, #e2e8f0); }
+  .nx-terminal-divider { width: 1px; height: 16px; margin: 0 6px 0 4px; flex-shrink: 0; background: rgb(255 255 255 / .1); }
+  [data-keyboard="true"] .nx-terminal-accessory { height: 36px; }
+  /* Pinch-to-zoom size readout: a small centred pill while the fingers are down, fades on release. */
+  .nx-zoom-hud {
+    position: absolute; left: 50%; top: 18px; z-index: 30; display: flex; align-items: baseline; gap: 6px;
+    padding: 10px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--nx-accent) 30%, transparent);
+    box-shadow: 0 12px 32px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .06);
+    color: #e2e8f0; pointer-events: none; translate: -50% 0;
+    animation: nx-pop-in .14s ease-out; transition: opacity .22s ease, transform .22s ease;
+  }
+  .nx-zoom-hud-out { opacity: 0; transform: scale(.94); }
+  .nx-zoom-hud-glyph { font: 600 13px/1 var(--font-sans); color: var(--nx-accent); letter-spacing: .02em; }
+  .nx-zoom-hud-size { font: 600 22px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+  .nx-zoom-hud-unit { font: 500 11px/1 var(--font-sans); color: #94a3b8; }
+  /* Native-style text selection: drag handles at the selection edges + floating action bubble. */
+  .nx-sel-layer { position: absolute; inset: 0; z-index: 25; pointer-events: none; }
+  .nx-sel-handle { position: absolute; width: 44px; height: 44px; margin-top: -4px; pointer-events: auto; touch-action: none; }
+  .nx-sel-handle-start { transform: translateX(-100%); }
+  .nx-sel-handle span {
+    position: absolute; top: 4px; width: 16px; height: 16px; background: var(--nx-accent);
+    box-shadow: 0 2px 8px rgb(0 0 0 / .6), 0 0 0 2px color-mix(in srgb, var(--nx-accent) 35%, transparent);
+  }
+  .nx-sel-handle-start span { right: 0; border-radius: 50% 0 50% 50%; }
+  .nx-sel-handle-end span { left: 0; border-radius: 0 50% 50% 50%; }
+  .nx-sel-handle:active span { filter: brightness(1.15); }
+  .nx-sel-bubble {
+    position: absolute; display: flex; align-items: stretch; overflow: hidden; pointer-events: auto;
+    border: 1px solid color-mix(in srgb, var(--nx-accent) 30%, transparent); border-radius: 14px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .06);
+    animation: nx-sheet-enter .16s ease-out;
+  }
+  .nx-sel-bubble::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at top, color-mix(in srgb, var(--nx-accent) 22%, transparent) 0%, transparent 70%); }
+  .nx-sel-item {
+    position: relative; min-height: 44px; min-width: 44px; padding: 0 14px; font: 600 11px/1 var(--font-sans);
+    letter-spacing: .08em; text-transform: uppercase; color: #e2e8f0; white-space: nowrap; user-select: none;
+  }
+  .nx-sel-item + .nx-sel-item { border-left: 1px solid rgb(255 255 255 / .1); }
+  .nx-sel-item:active { background: color-mix(in srgb, var(--nx-accent) 18%, transparent); color: var(--nx-accent); }
+  .nx-sel-item-icon { display: grid; place-items: center; padding: 0 12px; color: var(--nx-accent); }
   .xterm { touch-action: pan-y; -webkit-touch-callout: none; }
   .nx-responsive-overlay { position: fixed; inset: auto 0 0; top: var(--nx-viewport-top, 0px); height: var(--nx-viewport-height, 100dvh); display: flex; align-items: flex-end; justify-content: center; padding: env(safe-area-inset-top, 0px) 0 0; }
   .nx-sheet { max-width: 100%; max-height: 100%; min-height: 0; overflow-y: auto; border-radius: 22px 22px 0 0; padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain; animation: nx-sheet-enter .2s ease-out; }
   .nx-sheet-handle { display: flex; }
+  /* Confirm sheets: stacked full-width actions, primary on top (thumb reach), Cancel beneath. */
+  .nx-confirm-actions { flex-direction: column-reverse; gap: 8px; }
+  .nx-confirm-actions button { width: 100%; min-height: 48px; font-size: 14px; }
   .nx-sheet button:not(.nx-sheet-handle), .nx-sheet input:not([type="checkbox"]):not([type="radio"]), .nx-sheet select,
   .nx-mobile-panel button, .nx-sftp button, .nx-mobile-ai button { min-height: 44px; }
   .nx-mobile-panel button, .nx-sftp button, .nx-mobile-ai button { min-width: 44px; }
@@ -180,20 +313,53 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   .nx-lock-screen .fixed.inset-0 > .max-w-lg { max-height: calc(var(--nx-viewport-height, 100dvh) - 32px); overflow-y: auto; }
 }
 
+@keyframes nx-pop-in { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes nx-drawer-enter { from { transform: translateY(100%); } to { transform: none; } }
 @keyframes nx-sheet-enter { from { transform: translateY(24px); opacity: .6; } to { transform: translateY(0); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
-  .nx-sheet, .nx-rise, .nx-float, .nx-blob, .nx-blob-2 { animation: none; }
+  .nx-sheet, .nx-connect-menu, .nx-drawer, .nx-rise, .nx-float, .nx-blob, .nx-blob-2 { animation: none; }
+  .nx-drawer { transition: none; }
 }
-@media (width < 768px) {
+@variant max-md {
   .nx-color-picker { height: auto; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 0; }
   .nx-color-picker button { width: 100%; min-height: 44px; }
   .nx-code-gutter { line-height: 24px; }
   .nx-sftp-toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
   .nx-sftp-toolbar > div:last-child { max-width: 100%; flex-wrap: wrap; gap: 4px; }
-  .nx-terminal-search, .nx-editor-search { left: 8px; right: 8px; top: 48px; flex-wrap: wrap; }
-  .nx-terminal-search input, .nx-editor-search input { min-height: 44px; width: 100%; }
-  .nx-terminal-search > input { flex-basis: 100%; }
-  .nx-terminal-search button { min-height: 44px; min-width: 40px; }
-  .nx-selection-actions { flex-wrap: wrap; }
-  .nx-selection-actions button { padding-inline: 6px; }
+  .nx-editor-search { left: 8px; right: 8px; top: 48px; flex-wrap: wrap; }
+  .nx-editor-search input { min-height: 44px; width: 100%; }
+  /* Find-in-terminal on phones: docked under the terminal (rows refit above it), themed like the modals. */
+  .nx-terminal-search-docked {
+    position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; overflow: hidden;
+    margin: 0 8px 6px; padding: 8px;
+    border: 1px solid color-mix(in srgb, var(--nx-accent) 30%, transparent); border-radius: 16px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / .45), inset 0 1px 0 rgb(255 255 255 / .05);
+    animation: nx-sheet-enter .2s ease-out;
+  }
+  .nx-terminal-search-docked .nx-terminal-search-field {
+    position: relative; flex: 1 1 100%; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px;
+    border: 1px solid rgb(255 255 255 / .1); border-radius: 12px; background: rgb(0 0 0 / .35); transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .nx-terminal-search-docked .nx-terminal-search-field:focus-within {
+    border-color: color-mix(in srgb, var(--nx-accent) 55%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--nx-accent) 18%, transparent);
+  }
+  .nx-terminal-search-docked .nx-terminal-search-field svg { color: var(--nx-accent); }
+  .nx-terminal-search-docked input, .nx-terminal-search-docked input:focus { flex: 1; width: auto; min-height: 42px; padding: 0; border: 0; background: transparent; box-shadow: none; outline: none; font-size: 16px; }
+  .nx-terminal-search-docked .nx-terminal-search-btn, .nx-terminal-search-docked .nx-terminal-search-toggle { position: relative; min-height: 40px; min-width: 44px; border-radius: 10px; border: 1px solid transparent; }
+  .nx-terminal-search-docked .nx-terminal-search-toggle { font-size: 12px; color: #94a3b8; }
+  .nx-terminal-search-docked .nx-terminal-search-btn:active, .nx-terminal-search-docked .nx-terminal-search-toggle:active { background: rgb(255 255 255 / .12); }
+  .nx-terminal-search-docked .nx-terminal-search-sep { position: relative; margin: 0 4px; height: 20px; }
+  .nx-terminal-search-docked .nx-terminal-search-close { margin-left: auto; }
+  /* Extended keypad drawer: the key-row look, grown to thumb size, accent-lit while pressed. */
+  .nx-keypad-key {
+    display: flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 6px;
+    border: 1px solid rgb(255 255 255 / .1); border-radius: 12px; background: rgb(255 255 255 / .04);
+    font: 500 12px/1 var(--font-mono); color: #e2e8f0; user-select: none; -webkit-touch-callout: none;
+    transition: background .12s ease, border-color .12s ease, color .12s ease, transform .12s ease;
+  }
+  .nx-keypad-key:active {
+    background: color-mix(in srgb, var(--nx-accent) 22%, transparent); border-color: color-mix(in srgb, var(--nx-accent) 60%, transparent);
+    color: var(--nx-accent); transform: scale(.96); box-shadow: 0 0 12px color-mix(in srgb, var(--nx-accent) 25%, transparent);
+  }
 }

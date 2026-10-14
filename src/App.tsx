@@ -1,5 +1,6 @@
 import { useMobile, useMobileViewport } from './hooks/useMobile';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
+import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX } from './lib/mobileTerminal';
 import { MobileSheet, ResponsiveOverlay, SheetHandle, WorkspaceAccessContext } from './components/MobileSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -33,6 +34,9 @@ import {
   Timer,
   Check,
   Folder,
+  LayoutGrid,
+  ChevronRight,
+  Type,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -55,11 +59,22 @@ import { LogsPanel } from './components/LogsPanel';
 import { KnownHostsPanel } from './components/KnownHostsPanel';
 import { AIPanel } from './components/AIPanel';
 import { SftpTab } from './components/SftpTab';
+import { PaneErrorBoundary } from './components/PaneErrorBoundary';
 import { cn } from './utils/cn';
 import { safeUid } from './utils/uuid';
+import { ConfirmHost, cancelPendingConfirm, confirmDialog, hasPendingConfirm } from './components/ConfirmDialog';
+import { DrawerGrip, DrawerShell, useBottomDrawer } from './components/BottomDrawer';
+import { ExtendedKeypad } from './components/ExtendedKeypad';
+import { CommandSearchModal } from './components/CommandSearchModal';
 
 const uid = safeUid;
 const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
+
+/** Tools that slide up over the phone terminal screen. */
+type TerminalDrawerKind = 'assistant' | 'snippets' | 'keypad' | 'history';
+/** Identity tints of the AI and Snippets keys (fuchsia / violet), reused by their drawers. */
+const AI_TINT = '#e879f9';
+const SNIPPET_TINT = '#a78bfa';
 
 const LOCAL_HOST: Host = {
   id: '__local__',
@@ -90,10 +105,22 @@ function readAutoLockMinutes(): number {
   return AUTO_LOCK_DEFAULT;
 }
 
+
+/** Tiny theme preview: terminal background with its red/green/blue/magenta strip (same as the desktop theme popover). */
+function ThemeSwatch({ t, large = false }: { t: NexusTheme; large?: boolean }) {
+  return (
+    <span className={cn('nx-theme-swatch', large && 'nx-theme-swatch-lg')} style={{ background: t.xterm.background, boxShadow: `0 0 0 1px ${t.accent}55` }} aria-hidden="true">
+      {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <i key={i} style={{ background: c }} />)}
+    </span>
+  );
+}
+
 export default function App() {
   const mobile = useMobile();
   useMobileViewport();
   const [mobilePage, setMobilePage] = useState<MobilePage>('terminals');
+  // Phone settings pickers (auto-lock, theme) open as themed sheets instead of native selects.
+  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | null>(null);
   const [sessionSheet, setSessionSheet] = useState(false);
 
   const [unlocked, setUnlocked] = useState(false);
@@ -101,6 +128,8 @@ export default function App() {
   // the panel mounted through auto-lock and mobile navigation.
   const [workspaceReady, setWorkspaceReady] = useState(false);
   useEffect(() => { if (unlocked) setWorkspaceReady(true); }, [unlocked]);
+  // A confirm left open across an auto-lock must not fire once the vault is locked.
+  useEffect(() => { if (!unlocked) cancelPendingConfirm(); }, [unlocked]);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(readAutoLockMinutes);
   const [showAutoLockMenu, setShowAutoLockMenu] = useState(false);
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -111,6 +140,12 @@ export default function App() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
   const [showAI, setShowAI] = useState(false);
+  // Phone terminal screen: AI / snippets slide up over the terminal as drawers (one at a time).
+  // Phone terminal screen: which tool is drawn up over the terminal. The AI opens as a full overlay;
+  // the tools that are used *with* the terminal in view (snippets, keypad, history) open at half.
+  const [terminalDrawer, setTerminalDrawer] = useState<TerminalDrawerKind | null>(null);
+  const drawer = useBottomDrawer({ open: terminalDrawer, onClose: () => setTerminalDrawer(null), defaultDetent: terminalDrawer === 'assistant' ? 1 : 0.5 });
+  const closeTerminalDrawerRef = useRef<(() => boolean) | null>(null);
   const [newConnNonce, setNewConnNonce] = useState(0);
   const [aiWidth, setAiWidth] = useState<number>(() => {
     try {
@@ -462,6 +497,23 @@ export default function App() {
     setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
   }, []);
 
+  // Phone host list: tapping a host that already has a live session returns to that
+  // session (Termius behaviour); a second session is an explicit action in the host sheet.
+  const resumeOrOpenHost = useCallback((h: Host) => {
+    if (mobile) {
+      for (const t of tabs) {
+        if (t.kind === 'sftp') continue;
+        const p = t.panes.find((p) => p.hostId === h.id && !p.isLocal && ['connected', 'connecting'].includes(registry.get(p.id)?.status ?? ''));
+        if (p) {
+          setActiveTabId(t.id); focusPane(t.id, p.id);
+          setPanel(null); setShowAI(false); setQuick(false); setMobilePage('terminals');
+          return;
+        }
+      }
+    }
+    openHost(h);
+  }, [mobile, tabs, openHost, focusPane]);
+
   useEffect(() => {
     if (activeTabId && !tabs.some((t) => t.id === activeTabId)) {
       setActiveTabId(tabs[tabs.length - 1]?.id ?? null);
@@ -521,6 +573,10 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // An open confirm sheet owns Escape (it cancels itself); don't tear down the panel under it.
+        if (hasPendingConfirm()) return;
+        // A terminal-screen drawer (AI / snippets) is the topmost layer on mobile: Escape dismisses it first.
+        if (closeTerminalDrawerRef.current?.()) { e.preventDefault(); e.stopPropagation(); return; }
         if (quick || showThemes || panel || modal || showAutoLockMenu) {
           e.preventDefault();
           e.stopPropagation();
@@ -570,7 +626,12 @@ export default function App() {
     toast(`Saved ${h.label} to vault`);
     refresh();
   };
-  const deleteHost = async (h: Host) => { if (confirm(`Delete ${h.label}? Stored credentials will be wiped.`)) { await bridge.deleteHost(h.id); refresh(); } };
+  const deleteHost = async (h: Host) => {
+    if (await confirmDialog({ title: `Delete ${h.label}?`, message: 'Stored credentials for this host will be wiped from the vault.', confirmLabel: 'Delete host', danger: true })) {
+      await bridge.deleteHost(h.id);
+      refresh();
+    }
+  };
   const saveSnippet = async (s: Snippet) => { await bridge.saveSnippet(s); refresh(); toast('Snippet saved'); };
   const deleteSnippet = async (id: string) => { await bridge.deleteSnippet(id); refresh(); };
 
@@ -625,6 +686,7 @@ export default function App() {
 
   const navigateMobile = (page: MobilePage) => {
     setMobilePage(page);
+    setTerminalDrawer(null);
     setPanel(page === 'hosts' ? 'hosts' : null);
     setShowAI(page === 'assistant');
     setSessionSheet(false);
@@ -636,7 +698,25 @@ export default function App() {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   };
   const mobileWorkspaceVisible = mobilePage === 'terminals' || mobilePage === 'sftp';
-  const mobileTitle = { terminals: 'Terminals', hosts: 'Hosts', sftp: 'Files', assistant: 'AI & Snippets', settings: 'Settings' }[mobilePage];
+  const terminalSessionCount = tabs.filter((t) => t.kind !== 'sftp').reduce((n, t) => n + t.panes.length, 0);
+  // Phone terminal screen: only the terminal and its own bar — the bottom navigation gets out of the way.
+  const terminalScreen = mobile && mobilePage === 'terminals' && terminalSessionCount > 0;
+  const aiDrawerOpen = terminalScreen && terminalDrawer === 'assistant';
+  const toolDrawer = terminalScreen && terminalDrawer && terminalDrawer !== 'assistant' ? terminalDrawer : null;
+  const openDrawer = aiDrawerOpen || toolDrawer ? drawer : null;
+  closeTerminalDrawerRef.current = openDrawer ? () => { openDrawer.requestClose(); return true; } : null;
+  // The drawers only exist on the terminal screen; drop the state if it goes away underneath them
+  // (last session closed, viewport grew past the mobile breakpoint).
+  useEffect(() => { if (terminalDrawer && !terminalScreen) setTerminalDrawer(null); }, [terminalDrawer, terminalScreen]);
+  // Half-open drawer: the terminal shrinks to the uncovered half; full / closed / closing: untouched.
+  const terminalDrawerInset = openDrawer && !openDrawer.closing && openDrawer.detent < 1 ? openDrawer.detent : 0;
+  const drawerBg = theme.xterm.background || '#0e131d';
+  const aiVisible = unlocked && (mobile ? (mobilePage === 'assistant' && showAI) || aiDrawerOpen : showAI);
+  useEffect(() => {
+    if (!terminalScreen || activeTab?.kind !== 'sftp') return;
+    const t = tabs.find((t) => t.id === lastTerminalTab.current && t.panes.length) ?? [...tabs].reverse().find((t) => t.kind !== 'sftp' && t.panes.length);
+    if (t) setActiveTabId(t.id);
+  }, [terminalScreen, activeTab, tabs]);
 
   return (
     <>
@@ -845,9 +925,9 @@ export default function App() {
                   <div className="mt-2 flex items-center justify-between border-t border-white/5 px-2 pt-2 text-xs text-slate-400">
                     Font size
                     <div className="flex items-center gap-1">
-                      <button onClick={() => setFontSize((f) => Math.max(10, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
+                      <button onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
                       <span className="w-6 text-center font-mono text-white">{fontSize}</span>
-                      <button onClick={() => setFontSize((f) => Math.min(22, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+                      <button onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
                     </div>
                   </div>
                   <div className="mt-1 flex items-center justify-between px-2 pt-1 text-xs text-slate-400">
@@ -869,27 +949,18 @@ export default function App() {
         </header>
       )}
 
-      <header className="nx-mobile-header md:hidden">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <img src="/nexus-logo.png" alt="" className="h-7 w-7 rounded-lg" />
-          <h1 className="truncate text-base font-semibold tracking-tight">{mobileTitle}</h1>
-        </div>
-        {mobilePage === 'terminals' && (
-          <button className="nx-pill" onClick={() => setSessionSheet(true)}>Sessions <span className="text-cyan-300">{tabs.reduce((n, t) => n + t.panes.length, 0)}</span></button>
-        )}
-        {mobilePage === 'hosts' && <button className="nx-touch-button" aria-label="Add host" onClick={() => setModal({ host: null })}><Plus size={21} /></button>}
-      </header>
+      {/* No page header on phones: the bottom navigation already says where you are, and every
+          section starts with its own working row (vault switcher, pane bar, panel header). The AI page
+          is the assistant alone — snippets live in the terminal key row's Snippets drawer. */}
       {mobile && mobilePage === 'hosts' && <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2">
         <VaultMenu vaults={vaults} activeVaultId={activeVaultId} onSelectVault={setActiveVaultId}
           onCreateVault={handleCreateVault} onDeleteVault={handleDeleteVault}
           onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
           onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
           onOpenPairingModal={() => setShowPairing({ initialTab: 'share' })} theme={theme} />
-        <span className="text-xs text-slate-500">Encrypted profiles</span>
-      </div>}
-      {mobile && mobilePage === 'assistant' && <div className="nx-segmented" aria-label="Assistant workspace">
-        <button aria-pressed={showAI} onClick={() => { setShowAI(true); setPanel(null); }}>AI Assistant</button>
-        <button aria-pressed={panel === 'snippets'} onClick={() => { setShowAI(false); setPanel('snippets'); }}>Snippets</button>
+        <span className="text-xs text-slate-500">
+          {(() => { const n = activeVaultId === 'all' ? hosts.length : hosts.filter((h) => (h.vaultId || 'personal') === activeVaultId).length; return `${n} ${n === 1 ? 'profile' : 'profiles'}`; })()}
+        </span>
       </div>}
 
       {/* Main App Body */}
@@ -1085,7 +1156,8 @@ export default function App() {
                     hosts={hosts}
                     vaults={vaults}
                     activeVaultId={activeVaultId}
-                    onConnect={openHost}
+                    onConnect={resumeOrOpenHost}
+                    onNewSession={openHost}
                     onOpenSftp={(h) => { openSftpTab(h.id); setPanel(null); }}
                     onSplit={(h) => { splitWith(h); if (mobile) { setPanel(null); setMobilePage('terminals'); } }}
                     onEdit={(h) => setModal({ host: h })}
@@ -1132,6 +1204,18 @@ export default function App() {
           </>
         )}
 
+        {mobile && mobilePage === 'hosts' && panel === 'hosts' && (
+          <button
+            type="button"
+            className="nx-fab"
+            aria-label="Add host"
+            onClick={() => setModal({ host: null })}
+            style={{ background: `linear-gradient(145deg, ${theme.accent}, ${theme.accent}c0)`, boxShadow: `0 10px 26px -8px ${theme.accent}b0, 0 3px 8px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .25)` }}
+          >
+            <Plus size={24} strokeWidth={2.5} />
+          </button>
+        )}
+
         {/* Main workspace */}
         <main inert={mobile && !mobileWorkspaceVisible} className={cn("relative flex min-w-0 flex-1 flex-col", mobile && !mobileWorkspaceVisible && "invisible")}>
           {/* Panes */}
@@ -1152,16 +1236,18 @@ export default function App() {
                   key={t.id}
                   className={cn('absolute inset-0', (t.id !== activeTabId || (mobile && mobilePage !== 'sftp')) && 'invisible')} inert={t.id !== activeTabId || (mobile && mobilePage !== 'sftp')}
                 >
-                  <SftpTab
-                    tab={t}
-                    active={unlocked && t.id === activeTabId && (!mobile || mobilePage === 'sftp')}
-                    hosts={hosts}
-                    onUpdateTab={(patch) =>
-                      setTabs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))
-                    }
-                    toast={toast}
-                    theme={theme}
-                  />
+                  <PaneErrorBoundary label={t.title} background={theme.xterm.background} onClose={() => closeTab(t.id)}>
+                    <SftpTab
+                      tab={t}
+                      active={unlocked && t.id === activeTabId && (!mobile || mobilePage === 'sftp')}
+                      hosts={hosts}
+                      onUpdateTab={(patch) =>
+                        setTabs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))
+                      }
+                      toast={toast}
+                      theme={theme}
+                    />
+                  </PaneErrorBoundary>
                 </div>
               );
             }
@@ -1187,22 +1273,44 @@ export default function App() {
                   const h = hostMap.get(p.hostId);
                   if (!h) return null;
                   return (
-                    <TerminalPane
+                    <PaneErrorBoundary
                       key={p.id}
-                      pane={p}
-                      host={h}
-                      theme={theme}
-                      fontSize={fontSize}
-                      lineHeight={lineHeight}
-                      active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
-                      mobileHidden={t.activePaneId !== p.id}
-                      showHeader={isSplit}
-                      onFocus={() => focusPane(t.id, p.id)}
+                      label={h.label}
+                      background={theme.xterm.background}
+                      className={cn(t.activePaneId !== p.id && 'max-md:hidden')}
                       onClose={() => closePane(t.id, p.id)}
-                      onChange={bump}
-                      onData={(d) => handlePaneData(t.id, p.id, d)}
-                      toast={toast}
-                    />
+                    >
+                      <TerminalPane
+                        pane={p}
+                        host={h}
+                        theme={theme}
+                        fontSize={fontSize}
+                        onFontSizeChange={setFontSize}
+                        lineHeight={lineHeight}
+                        active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
+                        mobileHidden={t.activePaneId !== p.id}
+                        showHeader={isSplit}
+                        onFocus={() => focusPane(t.id, p.id)}
+                        onClose={() => closePane(t.id, p.id)}
+                        onChange={bump}
+                        onData={(d) => handlePaneData(t.id, p.id, d)}
+                        toast={toast}
+                        mobileBar={mobile ? {
+                          sessionCount: terminalSessionCount,
+                          onBack: () => navigateMobile('hosts'),
+                          onOpenSessions: () => setSessionSheet(true),
+                          onConnectHost: () => navigateMobile('hosts'),
+                          onLocalTerminal: openLocalTerminal,
+                          onSftp: () => openSftpTab(p.isLocal || p.kind === 'serial' ? undefined : h.id),
+                          onSerial: () => setShowSerial(true),
+                          onAssistant: () => setTerminalDrawer('assistant'),
+                          onSnippets: () => setTerminalDrawer('snippets'),
+                          onKeypad: () => setTerminalDrawer('keypad'),
+                          onHistory: () => setTerminalDrawer('history'),
+                        } : undefined}
+                        drawerInset={terminalDrawerInset}
+                      />
+                    </PaneErrorBoundary>
                   );
                 })}
               </div>
@@ -1251,21 +1359,53 @@ export default function App() {
       )}
 
       <aside
-        style={{ width: `${aiWidth}px` }}
-        className={cn("nx-mobile-ai shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", (!showAI || (mobile && mobilePage !== 'assistant')) && "hidden")}
+        ref={aiDrawerOpen ? (drawer.ref as React.RefObject<HTMLElement>) : undefined}
+        style={aiDrawerOpen ? { ...drawer.style, background: drawerBg } : { width: `${aiWidth}px` }}
+        className={cn("nx-mobile-ai shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", !aiVisible && "hidden", aiDrawerOpen && drawer.className)}
+        aria-label={aiDrawerOpen ? 'AI Assistant drawer' : 'AI Assistant'}
       >
-        {workspaceReady && <AIPanel
-          activePaneId={activePaneId}
-          toast={toast}
-          onClose={() => { if (mobile) navigateMobile('terminals'); else setShowAI(false); }}
-          theme={theme}
-          newConnectionNonce={newConnNonce}
-          visible={showAI && unlocked}
-        />}
+        {aiDrawerOpen && <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-40 opacity-25" style={{ background: `radial-gradient(ellipse at top, ${AI_TINT} 0%, transparent 70%)` }} />}
+        {aiDrawerOpen && <DrawerGrip label="Drag to resize or dismiss the assistant" detent={drawer.detent} {...drawer.gripProps} />}
+        <div className="flex min-h-0 flex-1 flex-col">
+          {workspaceReady && <AIPanel
+            activePaneId={activePaneId}
+            toast={toast}
+            onClose={() => { if (aiDrawerOpen) drawer.requestClose(); else if (mobile) navigateMobile('terminals'); else setShowAI(false); }}
+            theme={theme}
+            newConnectionNonce={newConnNonce}
+            visible={aiVisible}
+          />}
+        </div>
       </aside>
-      {mobile && mobilePage === 'settings' && !panel && <section className="absolute inset-0 overflow-y-auto p-4" aria-label="Settings">
-        <div className="mb-5 rounded-2xl border border-cyan-400/15 bg-cyan-400/5 p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} className="text-cyan-300" /> Your workspace, secured</div>
+      {toolDrawer === 'snippets' && (
+        <DrawerShell drawer={drawer} label="Snippets drawer" background={drawerBg} accent={SNIPPET_TINT}>
+          <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast}
+            drawer={{ accent: SNIPPET_TINT, onClose: drawer.requestClose }} />
+        </DrawerShell>
+      )}
+      {toolDrawer === 'keypad' && (
+        <DrawerShell drawer={drawer} label="Extended keypad" background={drawerBg} accent={theme.accent}
+          icon={LayoutGrid} title="Extended Keypad" subtitle="tmux · navigation · function keys · symbols">
+          <ExtendedKeypad onKey={(data) => { const live = activePaneId ? registry.get(activePaneId) : undefined; if (live?.key) live.key(data); else toast('No active terminal'); }} />
+        </DrawerShell>
+      )}
+      {toolDrawer === 'history' && (
+        <DrawerShell drawer={drawer} label="Command history" background={drawerBg} accent={theme.accent}>
+          <CommandSearchModal
+            embedded
+            theme={theme}
+            toast={toast}
+            initialHostLabel={activeLive ? hostMap.get(activeLive.hostId)?.label : undefined}
+            onClose={drawer.requestClose}
+            onSelect={(cmd, execute) => { const live = activePaneId ? registry.get(activePaneId) : undefined; if (live?.insert) live.insert(cmd, execute); else toast('No active terminal'); }}
+            onSaveSnippet={(cmd) => saveSnippet({ id: uid(), name: cmd.slice(0, 32), command: cmd, tags: [(activeLive && hostMap.get(activeLive.hostId)?.label) || 'terminal'] })}
+          />
+        </DrawerShell>
+      )}
+      {mobile && mobilePage === 'settings' && !panel && <section className="absolute inset-0 overflow-y-auto p-4" aria-label="Settings" style={{ '--nx-accent': theme.accent } as React.CSSProperties}>
+        <div className="relative mb-5 overflow-hidden rounded-2xl border p-4" style={{ borderColor: `${theme.accent}26`, background: `${theme.accent}0d` }}>
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-24 opacity-20" style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }} />
+          <div className="relative flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={18} style={{ color: theme.accent }} /> Your workspace, secured</div>
           <p className="mt-2 text-xs leading-relaxed text-slate-400">{isTauri ? 'SQLCipher encrypted vault' : 'Browser sandbox vault'} · credentials stay in your vault.</p>
           <button className="nx-settings-row mt-3" onClick={lock}><Lock size={18} /> Lock vault now</button>
         </div>
@@ -1277,43 +1417,77 @@ export default function App() {
           <button className="nx-settings-row" onClick={() => setPanel('tunnels')}><Network size={18} /> Port forwarding & tunnels</button>
           <button className="nx-settings-row" onClick={() => setPanel('known_hosts')}><ShieldCheck size={18} /> Known hosts</button>
           <button className="nx-settings-row" onClick={() => setPanel('logs')}><Activity size={18} /> Logs</button>
-          <label className="nx-settings-row justify-between">Auto-lock
-            <select aria-label="Auto-lock timeout" value={autoLockMinutes} onChange={e => { const n = Number(e.target.value); setAutoLockMinutes(n); localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(n)); }} className="rounded-lg bg-slate-800 px-2 py-2">
-              {AUTO_LOCK_OPTIONS.map(n => <option key={n} value={n}>{n ? `${n} minutes` : 'Off'}</option>)}
-            </select>
-          </label>
+          <button className="nx-settings-row justify-between" aria-haspopup="dialog" aria-label={`Auto-lock: ${autoLockMinutes ? `${autoLockMinutes} minutes` : 'Off'}`} onClick={() => setSettingsPicker('autolock')}>
+            <span className="flex items-center gap-3"><Timer size={18} /> Auto-lock</span>
+            <span className="nx-settings-value">{autoLockMinutes ? `${autoLockMinutes} min` : 'Off'}<ChevronRight size={16} /></span>
+          </button>
         </div>
         <h2 className="nx-section-label">Appearance</h2>
         <div className="nx-settings-group">
-          <label className="nx-settings-row justify-between">Theme
-            <select aria-label="Terminal theme" value={themeId} onChange={e => setThemeId(e.target.value)} className="max-w-[60%] rounded-lg bg-slate-800 px-2 py-2">
-              {THEMES.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-          </label>
-          <label className="nx-settings-row flex-wrap justify-between">Line height <span>{lineHeight.toFixed(2)}</span>
-            <input aria-label="Terminal line height" className="w-full accent-cyan-400" type="range" min="1" max="1.5" step="0.05" value={lineHeight} onChange={e => setLineHeight(Number(e.target.value))} />
+          <button className="nx-settings-row justify-between" aria-haspopup="dialog" aria-label={`Theme: ${theme.name}`} onClick={() => setSettingsPicker('theme')}>
+            <span className="flex items-center gap-3"><Palette size={18} /> Theme</span>
+            <span className="nx-settings-value"><ThemeSwatch t={theme} />{theme.name}<ChevronRight size={16} /></span>
+          </button>
+          <div className="nx-settings-row justify-between">
+            <span className="flex items-center gap-3"><Type size={18} /> Font size</span>
+            <span className="nx-stepper" role="group" aria-label="Terminal font size">
+              <button type="button" aria-label="Smaller font" disabled={fontSize <= TERMINAL_FONT_MIN} onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))}><Minus size={16} /></button>
+              <span aria-live="polite">{fontSize}<small>px</small></span>
+              <button type="button" aria-label="Larger font" disabled={fontSize >= TERMINAL_FONT_MAX} onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))}><Plus size={16} /></button>
+            </span>
+          </div>
+          <label className="nx-settings-row flex-wrap justify-between gap-y-1">
+            <span className="flex items-center gap-3"><Rows2 size={18} /> Line height</span>
+            <span className="nx-settings-value font-mono" style={{ color: theme.accent }}>{lineHeight.toFixed(2)}</span>
+            <input aria-label="Terminal line height" className="nx-range" type="range" min="1" max="1.5" step="0.05" value={lineHeight}
+              style={{ '--nx-fill': `${((lineHeight - 1) / 0.5) * 100}%` } as React.CSSProperties}
+              onChange={e => setLineHeight(Number(e.target.value))} />
           </label>
         </div>
         <h2 className="nx-section-label">Terminal input</h2>
         <label className="nx-settings-row rounded-xl border border-white/10"><input type="checkbox" checked={broadcast} onChange={e => setBroadcast(e.target.checked)} /> Broadcast to all panes in this tab</label>
         {broadcast && <p className="mt-2 text-xs text-amber-300">Input also reaches hidden sessions in the same split tab.</p>}
       </section>}
+      {mobile && settingsPicker === 'autolock' && <MobileSheet title="Auto-lock" kicker="Security" subtitle="Lock the vault after a period of inactivity" icon={Timer} theme={theme} onClose={() => setSettingsPicker(null)}>
+        <div className="nx-settings-group" role="radiogroup" aria-label="Auto-lock timeout">
+          {AUTO_LOCK_OPTIONS.map((n) => {
+            const on = autoLockMinutes === n;
+            return <button key={n} type="button" role="radio" aria-checked={on} className="nx-settings-row nx-option-row justify-between"
+              onClick={() => { setAutoLockMinutes(n); localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(n)); setSettingsPicker(null); }}>
+              <span>{n ? `${n} minutes` : 'Off'}</span>
+              {on && <Check size={18} style={{ color: theme.accent }} />}
+            </button>;
+          })}
+        </div>
+      </MobileSheet>}
+      {mobile && settingsPicker === 'theme' && <MobileSheet title="Theme" kicker="Appearance" subtitle="Applies everywhere, instantly" icon={Palette} theme={theme} onClose={() => setSettingsPicker(null)}>
+        <div className="nx-settings-group" role="radiogroup" aria-label="Terminal theme">
+          {THEMES.map((t) => {
+            const on = t.id === themeId;
+            return <button key={t.id} type="button" role="radio" aria-checked={on} className="nx-settings-row nx-option-row justify-between" onClick={() => setThemeId(t.id)}>
+              <span className="flex min-w-0 items-center gap-3"><ThemeSwatch t={t} large /><span className="truncate">{t.name}</span></span>
+              {on && <Check size={18} style={{ color: t.accent }} />}
+            </button>;
+          })}
+        </div>
+      </MobileSheet>}
 
       </div>
 
-      <MobileNavigation page={mobilePage} sessions={tabs.reduce((n, t) => n + t.panes.length, 0)} onChange={navigateMobile} />
-      {mobile && unlocked && sessionSheet && <MobileSheet title="Terminal sessions" onClose={() => setSessionSheet(false)}>
+      {!terminalScreen && <MobileNavigation page={mobilePage} sessions={terminalSessionCount} onChange={navigateMobile} theme={theme} />}
+      {mobile && unlocked && sessionSheet && <MobileSheet title="Terminal sessions" kicker={`${terminalSessionCount} open`} icon={TerminalIcon} theme={theme} onClose={() => setSessionSheet(false)}>
         <p className="mb-3 text-xs text-slate-400">Switch sessions without disconnecting. Desktop splits remain intact.</p>
         <div className="space-y-2">
-          {tabs.filter(t => t.kind !== 'sftp').flatMap(t => t.panes.map(p => <div key={p.id} className={cn('flex items-center rounded-xl border p-1', t.id === activeTabId && t.activePaneId === p.id ? 'border-cyan-400/40 bg-cyan-400/10' : 'border-white/10 bg-white/[0.03]')}>
+          {tabs.filter(t => t.kind !== 'sftp').flatMap(t => t.panes.map(p => { const current = t.id === activeTabId && t.activePaneId === p.id; return <div key={p.id} className={cn('flex items-center rounded-xl border p-1', !current && 'border-white/10 bg-white/[0.03]')}
+            style={current ? { borderColor: `${theme.accent}66`, background: `${theme.accent}1a` } : undefined}>
             <button className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3 text-left" onClick={() => { navigateMobile('terminals'); setActiveTabId(t.id); focusPane(t.id, p.id); }}>
-              <TerminalIcon size={19} className="shrink-0 text-cyan-300" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{hostMap.get(p.hostId)?.label ?? t.title}</span><span className="block truncate text-xs text-slate-400">{registry.get(p.id)?.status ?? 'connecting'} · {hostMap.get(p.hostId)?.hostname}</span></span>
+              <TerminalIcon size={19} className="shrink-0" style={{ color: theme.accent }} /><span className="min-w-0"><span className="block truncate text-sm font-medium">{hostMap.get(p.hostId)?.label ?? t.title}</span><span className="block truncate text-xs text-slate-400">{registry.get(p.id)?.status ?? 'connecting'} · {hostMap.get(p.hostId)?.hostname}</span></span>
             </button>
             <button className="nx-touch-button text-slate-400" aria-label={`Close ${hostMap.get(p.hostId)?.label ?? 'session'}`} onClick={() => closePane(t.id, p.id)}><X size={18} /></button>
-          </div>))}
+          </div>; }))}
           {!tabs.some(t => t.panes.length) && <p className="py-6 text-center text-sm text-slate-400">No sessions yet. Connect to a saved host to get started.</p>}
         </div>
-        <button className="nx-settings-row mt-4 rounded-xl bg-cyan-400/10 text-cyan-200" onClick={() => navigateMobile('hosts')}><Plus size={18} /> Connect to a host</button>
+        <button className="nx-settings-row mt-4 rounded-xl" style={{ background: `${theme.accent}1a`, color: theme.accent }} onClick={() => navigateMobile('hosts')}><Plus size={18} /> Connect to a host</button>
         <button className="nx-settings-row" onClick={() => { openLocalTerminal(); setSessionSheet(false); }}><TerminalIcon size={18} /> Open local terminal</button>
       </MobileSheet>}
 
@@ -1534,6 +1708,8 @@ export default function App() {
       {toastMsg && <div role="status" className="nx-toast nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>
     </WorkspaceAccessContext.Provider>
+    {/* In-app replacement for window.confirm(); portaled above the lock screen so it also serves the lock UI. */}
+    <ConfirmHost theme={theme} />
     </>
   );
 }

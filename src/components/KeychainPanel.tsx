@@ -21,6 +21,7 @@ import {
 import { bridge } from '../lib/bridge';
 import type { AuthMethod, DetectedLocalKey, GeneratedKeyPair, KeychainInput, KeychainItem } from '../lib/types';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   keychain: KeychainItem[];
@@ -183,7 +184,7 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
   };
 
   const handleDelete = async (item: KeychainItem) => {
-    if (confirm(`Delete identity "${item.label}"? Hosts referencing this identity may lose authentication.`)) {
+    if (await confirmDialog({ title: `Delete identity "${item.label}"?`, message: 'Hosts referencing this identity may lose authentication.', confirmLabel: 'Delete identity', danger: true })) {
       try {
         await onDelete(item.id);
         toast(`Identity "${item.label}" removed`);

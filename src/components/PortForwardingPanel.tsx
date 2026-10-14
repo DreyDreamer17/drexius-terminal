@@ -4,6 +4,7 @@ import type { ActiveTunnelInfo, Host, TunnelConfig } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
+import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   hosts: Host[];
@@ -118,7 +119,7 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
   };
 
   const handleDelete = async (t: TunnelConfig) => {
-    if (confirm(`Delete tunnel "${t.label}"?`)) {
+    if (await confirmDialog({ title: `Delete tunnel "${t.label}"?`, message: activeMap.get(t.id)?.running ? 'The tunnel is running and will be stopped first.' : undefined, confirmLabel: 'Delete tunnel', danger: true })) {
       if (activeMap.get(t.id)?.running) {
         await bridge.stopTunnel(t.id).catch(() => {});
       }

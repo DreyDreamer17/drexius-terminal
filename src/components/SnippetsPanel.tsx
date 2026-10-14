@@ -11,11 +11,13 @@ interface Props {
   onSave: (s: Snippet) => void;
   onDelete: (id: string) => void;
   toast: (m: string) => void;
+  /** Phone drawer: the header is drawn in the modal language (badge, uppercase title, close). */
+  drawer?: { accent: string; onClose: () => void };
 }
 
 const placeholders = (cmd: string) => [...new Set([...cmd.matchAll(/\{\{\s*(\w+)\s*\}\}/g)].map((m) => m[1]))];
 
-export function SnippetsPanel({ snippets, activePaneId, onSave, onDelete, toast }: Props) {
+export function SnippetsPanel({ snippets, activePaneId, onSave, onDelete, toast, drawer }: Props) {
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<Snippet | null>(null);
   const [running, setRunning] = useState<{ s: Snippet; vars: Record<string, string>; broadcast: boolean } | null>(null);
@@ -44,10 +46,46 @@ export function SnippetsPanel({ snippets, activePaneId, onSave, onDelete, toast 
 
   return (
     <div className="flex h-full flex-col">
+      {drawer ? (
+        <header className="relative flex shrink-0 items-center justify-between gap-3 border-b border-white/10 bg-white/[0.02] px-4 pb-3 pt-1">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border shadow-lg"
+              style={{ backgroundColor: `${drawer.accent}18`, borderColor: `${drawer.accent}35`, color: drawer.accent, boxShadow: `0 0 20px ${drawer.accent}25` }}
+            >
+              <Code2 className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-200">Snippets</h3>
+              <p className="truncate text-[11px] text-slate-500">Tap to run · {'{{vars}}'} supported</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              aria-label="New snippet"
+              onClick={() => setEditing({ id: '', name: '', command: '', folder: '', tags: [] })}
+              className="grid h-11 w-11 place-items-center rounded-xl border transition active:brightness-125"
+              style={{ backgroundColor: `${drawer.accent}20`, borderColor: `${drawer.accent}40`, color: drawer.accent }}
+            >
+              <Plus className="h-[18px] w-[18px]" />
+            </button>
+            <button
+              type="button"
+              aria-label="Close snippets drawer"
+              onClick={drawer.onClose}
+              className="grid h-11 w-11 place-items-center rounded-xl text-slate-400 transition hover:bg-white/10 hover:text-white active:bg-white/10"
+            >
+              <X className="h-[18px] w-[18px]" />
+            </button>
+          </div>
+        </header>
+      ) : (
       <div className="flex items-center justify-between px-4 pb-3 pt-4">
         <div><h2 className="text-sm font-semibold text-white">Snippets</h2><p className="text-[11px] text-slate-500">Reusable commands · {'{{vars}}'} supported</p></div>
         <button onClick={() => setEditing({ id: '', name: '', command: '', folder: '', tags: [] })} className="grid h-7 w-7 place-items-center rounded-lg bg-violet-400/10 text-violet-300 ring-1 ring-violet-400/20 hover:bg-violet-400/20"><Plus className="h-4 w-4" /></button>
       </div>
+      )}
       <div className="px-3 pb-2">
         <div className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.03] px-2.5 py-1.5">
           <Search className="h-3.5 w-3.5 text-slate-500" />

@@ -1,28 +1,28 @@
-import { useEffect, useRef, useState } from 'react';
-import { LayoutGrid } from 'lucide-react';
+import { useEffect, useRef, type CSSProperties } from 'react';
+import { LayoutGrid, Search, History, Sparkles, Code2, type LucideIcon } from 'lucide-react';
 import {
   scrollableAccessoryKeys,
-  keyPaletteGroups,
   type TerminalModifiers,
 } from '../lib/mobileTerminal';
 import type { NexusTheme } from '../lib/themes';
-import { MobileSheet } from './MobileSheet';
 
 export function TerminalAccessory({
   modifiers,
   onModifier,
   onKey,
   theme,
+  tools,
 }: {
   modifiers: TerminalModifiers;
   onModifier: (key: keyof TerminalModifiers) => void;
   onKey: (data: string) => void;
   theme?: NexusTheme;
+  /** Pane tools that used to live in the (removed) top bar; the drawers (keypad, AI, snippets, history) are owned by the app. */
+  tools?: { onKeypad: () => void; onSearch: () => void; onHistory: () => void; onAssistant?: () => void; onSnippets?: () => void };
 }) {
   const touched = useRef(0);
   const toolbar = useRef<HTMLDivElement>(null);
   const actions = useRef<Record<string, () => void>>({});
-  const [showPalette, setShowPalette] = useState(false);
 
   const accentColor = theme?.accent || '#22d3ee';
   const bgColor = theme?.xterm.background || '#0e131d';
@@ -58,23 +58,7 @@ export function TerminalAccessory({
         type="button"
         aria-label={ariaLabel}
         aria-pressed={pressed}
-        style={
-          pressed
-            ? {
-                backgroundColor: `${accentColor}28`,
-                borderColor: `${accentColor}90`,
-                color: accentColor,
-                boxShadow: `0 0 10px ${accentColor}30`,
-              }
-            : opts?.interrupt
-            ? {
-                color: '#fb7185',
-                borderColor: 'rgba(251, 113, 133, 0.3)',
-                backgroundColor: 'rgba(251, 113, 133, 0.08)',
-              }
-            : undefined
-        }
-        className={`nx-terminal-key ${pressed ? 'nx-key-latched' : ''}`}
+        className={`nx-terminal-key ${pressed ? 'nx-key-latched' : ''} ${opts?.interrupt ? 'nx-key-interrupt' : ''}`}
         onMouseDown={(e) => {
           e.preventDefault();
           if (Date.now() - touched.current > 700) action();
@@ -88,28 +72,32 @@ export function TerminalAccessory({
     );
   };
 
+  const tool = (label: string, Icon: LucideIcon, tint: string, action: () => void) => (
+    <button type="button" aria-label={label} className="nx-terminal-key nx-terminal-tool" style={{ '--nx-tool': tint } as CSSProperties}
+      onMouseDown={(e) => e.preventDefault()} onClick={action}>
+      <Icon size={16} strokeWidth={1.9} />
+    </button>
+  );
+
   return (
-    <>
       <div
         ref={toolbar}
         className="nx-terminal-accessory md:hidden"
-        style={{
-          backgroundColor: `${bgColor}fa`,
-          borderTopColor: 'rgba(255, 255, 255, 0.08)',
-        }}
+        style={{ backgroundColor: `${bgColor}fa`, '--nx-accent': accentColor } as CSSProperties}
         role="toolbar"
         aria-label="Terminal keyboard keys"
       >
-        {/* Toggle Full Palette Button (Termius style) */}
-        <button
-          type="button"
-          aria-label="Open extended keys palette"
-          onClick={() => setShowPalette(true)}
-          className="nx-terminal-key shrink-0"
-          style={{ borderColor: `${accentColor}40`, color: accentColor }}
-        >
-          <LayoutGrid size={15} />
-        </button>
+        {/* Pane tools: borderless tinted glyphs, separated from the keys by a hairline. */}
+        {tools && (
+          <>
+            {tool('Open extended keys palette', LayoutGrid, accentColor, tools.onKeypad)}
+            {tools.onAssistant && tool('AI Assistant', Sparkles, '#f0abfc', tools.onAssistant)}
+            {tools.onSnippets && tool('Snippets', Code2, '#c4b5fd', tools.onSnippets)}
+            {tool('Search terminal', Search, '#94a3b8', tools.onSearch)}
+            {tool('Command history', History, '#94a3b8', tools.onHistory)}
+            <span className="nx-terminal-divider" aria-hidden="true" />
+          </>
+        )}
 
         {button('esc', () => onKey('\x1b'), false, { ariaLabel: 'Escape' })}
         {button('tab', () => onKey('\t'), false, { ariaLabel: 'Tab' })}
@@ -125,34 +113,5 @@ export function TerminalAccessory({
           )
         )}
       </div>
-
-      {showPalette && (
-        <MobileSheet title="Extended Keypad" onClose={() => setShowPalette(false)}>
-          <div className="space-y-4 pb-6">
-            {keyPaletteGroups.map((group) => (
-              <div key={group.title}>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                  {group.title}
-                </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {group.keys.map((k) => (
-                    <button
-                      key={k.label}
-                      type="button"
-                      onClick={() => {
-                        onKey(k.data);
-                      }}
-                      className="flex h-11 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] font-mono text-xs font-medium text-slate-200 active:bg-white/20 active:scale-95 transition"
-                    >
-                      {k.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </MobileSheet>
-      )}
-    </>
   );
 }
