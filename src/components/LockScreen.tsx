@@ -393,9 +393,9 @@ Generated: ${new Date().toISOString()}
               }}
             >
               {bioBusy ? (
-                <><Loader2 className="h-4 w-4 animate-spin" />Waiting for biometrics…</>
+                <><Loader2 className="h-4 w-4 animate-spin" />Unlocking…</>
               ) : (
-                <><Fingerprint className="h-4 w-4" />Unlock with Touch ID / Windows Hello</>
+                <><Fingerprint className="h-4 w-4" />{typeof navigator !== 'undefined' && /macintosh|mac os x/i.test(navigator.userAgent) ? 'Unlock with Touch ID' : typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent) ? 'Unlock with Windows Hello' : 'Unlock with OS Keyring'}</>
               )}
             </button>
           )}

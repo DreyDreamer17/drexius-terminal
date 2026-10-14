@@ -36,7 +36,7 @@ sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }   # Device pairing
 rand = "0.8"
 zeroize = { version = "1.8", features = ["derive"] }
-keyring = "3"                        # Optional OS keychain unlock
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 # ── Serial port (UART / RS-232 / USB-Serial) ────────────────
 serialport = "4.2"
