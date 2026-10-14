@@ -107,7 +107,9 @@ export function SshConfigModal({
     setImporting(true);
     try {
       const imported = await bridge.importSshConfig(toImport, targetVaultId);
-      toast(`Successfully imported ${imported} host${imported === 1 ? '' : 's'} from SSH config`);
+      toast(imported === 0
+        ? 'No new hosts to import — existing profiles were left unchanged'
+        : `Imported ${imported} host${imported === 1 ? '' : 's'} from SSH config${imported < toImport.length ? ' (existing profiles skipped)' : ''}`);
       onSuccess();
       onClose();
     } catch (err) {
