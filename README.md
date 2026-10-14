@@ -3,7 +3,7 @@
 > **Local-first, secure, open-source terminal workspace and Termius alternative.**  
 > Built with **Tauri 2 (Rust)**, **React 19**, **Tailwind CSS 4**, and **xterm.js 6**.
 
-NexusTerminal provides a high-performance terminal environment featuring multi-pane splits, SSH/SFTP, serial hardware connections, zero-knowledge encrypted vaults, team sharing, and an integrated multi-provider AI assistant with local execution relays.
+NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, serial connections, a local SQLCipher vault, encrypted team bundles, and a multi-provider AI assistant. LAN pairing transfers a one-time vault snapshot; cloud sync is experimental and does not yet work across independently initialized devices (see [limitations](#sync-and-pairing-limitations)).
 
 ---
 
@@ -20,24 +20,30 @@ NexusTerminal provides a high-performance terminal environment featuring multi-p
   - **SQLCipher AES-256 Store**: PBKDF2 bypassed in favor of high-memory **Argon2id** key derivation.
   - **OS Keychain Integration**: Optional master password storage via macOS Keychain, Windows Credential Manager, or Linux Secret Service (`keyring`).
   - **Sensitive Data Hygiene**: Secret filtering across command history, session snapshots, and clipboard ingestion.
-  - **Zero-Knowledge Sync & LAN Pairing**: P2P device pairing over LAN using X25519, HKDF, and XChaCha20-Poly1305; E2EE cloud sync with Hybrid Logical Clocks (HLC) and tombstone propagation.
+  - **LAN Pairing & Experimental Relay Sync**: X25519/HKDF/XChaCha20-Poly1305 encrypted one-time LAN transfer; the relay sync implementation has encrypted blobs, HLC merge and tombstones, but lacks cross-device key transfer.
   - **Multi-Vault & Team Bundles**: Partition personal and team workspaces; export encrypted `.nxvault` bundles without leaking AI settings.
 - **AI Workspace & OpenCode**:
   - **Multi-Provider AI Relay**: Support for Ollama, OpenAI-compatible APIs (OpenAI, DeepSeek, Groq, OpenRouter), Anthropic, and Gemini.
-  - **Secure Outbound Relay**: AI keys and proxies are stored exclusively in the Rust vault; outbound routes enforce strict origin allowlists and loopback SOCKS5 tunnel overrides.
-  - **OpenCode Agent Integration**: Background execution via OpenCode CLI in an isolated scratch workspace (`~/NexusTerminal/ai-workspace`) with strict security filters against dangerous primitives and shell escapes.
+  - **Secure Outbound Relay (desktop)**: AI keys and proxy settings are stored in the encrypted SQLCipher vault; Rust injects credentials for configured provider origins. Browser demo mode handles credentials in JavaScript.
+  - **OpenCode Agent Integration**: Background execution via OpenCode CLI locally in a scratch workspace (`~/NexusTerminal/ai-workspace`) or over SSH, with deny-by-default tool permissions (read-only or autonomous modes).
 
 ---
 
 ## Security Architecture
 
-NexusTerminal is built around a rigorous threat model where the WebView is treated as a presentation layer and all sensitive state remains strictly within Rust:
+The desktop app stores vault data in SQLCipher and handles SSH connections and AI HTTP requests in Rust. **The WebView is not a secret-free boundary**: master passwords and recovery codes are entered/displayed there; host credentials and imported keys can be entered in forms, and `keychain_generate_key` returns the generated private key to JavaScript before the UI saves it to the vault. Avoid untrusted frontend code.
 
-1. **Host Credentials**: Private keys and passwords never leak into JavaScript. The frontend references connections via opaque UUIDs and masked credentials.
-2. **Fail-Closed Verification**: Unknown host keys prompt explicit approval; modified keys reject immediately.
-3. **AI Proxy Relay**: API keys and proxy credentials never reach webview code. Outbound connections are authenticated and routed within Rust.
+1. **Host verification**: Unknown host keys require explicit approval; changed keys are rejected.
+2. **AI proxy relay (desktop)**: Configured API keys and proxy credentials are stored in SQLCipher and injected by Rust. Browser demo mode uses JavaScript-held demo credentials.
+3. **CSP**: The desktop `connect-src` currently permits any HTTPS origin and localhost, not just approved provider origins. The Rust AI relay applies its own origin checks before attaching pooled credentials; CSP alone is not a network allowlist.
 
-For full architecture diagrams and cryptographic specifications, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+### Sync and pairing limitations
+
+- LAN pairing sends a **one-time snapshot**, not a continuing sync connection. It transfers host/keychain credentials, snippets, tunnels and AI provider configuration **without API keys or proxy URLs**. A revoked device keeps data it already received.
+- The relay sync derives its encryption and blinded-ID keys from the local vault root key. Separately initialized devices have different salts and root keys, even with the same master password; no shared-key transfer is implemented yet. **Do not rely on relay sync to populate or back up another device.** The current synced tables are hosts, keychain (including private keys), snippets, tunnels and vault metadata; host-specific secrets, AI configs and known-host trust records are not in that set. The relay stores ciphertext but can see traffic metadata.
+- Team bundles exclude AI configurations; they are separate from LAN pairing and relay sync.
 
 ---
 

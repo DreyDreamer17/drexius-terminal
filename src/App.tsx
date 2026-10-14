@@ -1470,16 +1470,25 @@ function SyncModal({
 
   const save = async () => {
     try {
-      localStorage.removeItem('nx.sync.token');
-      if (url) localStorage.setItem('nx.sync.relay', url);
-      else localStorage.removeItem('nx.sync.relay');
-    } catch {}
-    if (isTauri) {
-      const tokenArg = token ? token : (token === '' && status?.hasToken ? undefined : '');
-      await bridge.syncConfigure(url || null, tokenArg).catch(() => {});
+      if (isTauri) {
+        const tokenArg = token ? token : (status?.hasToken ? undefined : '');
+        await bridge.syncConfigure(url || null, tokenArg);
+        const updated = await bridge.syncStatus();
+        if (updated.relayUrl !== (url || null) || updated.enabled !== !!url) {
+          throw new Error(updated.lastError || 'Relay settings were not applied');
+        }
+        setStatus(updated);
+      }
+      try {
+        localStorage.removeItem('nx.sync.token');
+        if (url) localStorage.setItem('nx.sync.relay', url);
+        else localStorage.removeItem('nx.sync.relay');
+      } catch {}
+      toast(url ? 'Relay settings saved (cross-device sync is not supported yet)' : 'Relay sync disabled');
+      onClose();
+    } catch (e) {
+      toast(`Could not save relay settings: ${String(e)}`);
     }
-    toast(url ? 'Relay configured — secrets stored exclusively in encrypted vault' : 'Sync disabled');
-    onClose();
   };
   const doSync = async () => {
     setBusy(true);
@@ -1490,7 +1499,7 @@ function SyncModal({
       }
       const out = await bridge.syncNow();
       setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken });
-      toast('Sync complete');
+      toast('Relay operation finished (cross-device restore is not supported yet)');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
@@ -1533,8 +1542,8 @@ function SyncModal({
             <Cloud className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-white">Zero-knowledge sync</h3>
-            <p className="text-[11px] text-slate-500">End-to-end encrypted · bring your own relay</p>
+            <h3 className="text-sm font-semibold text-white">Encrypted relay sync (experimental)</h3>
+            <p className="text-[11px] text-slate-500">Cross-device restore is not supported yet</p>
           </div>
         </div>
 
@@ -1548,7 +1557,7 @@ function SyncModal({
         >
           <div>
             <div className="text-xs font-semibold" style={{ color: accentColor }}>No relay? Link directly over LAN</div>
-            <div className="text-[10.5px] text-slate-400">Clone your vault to a second device in 2 seconds via QR & PIN.</div>
+            <div className="text-[10.5px] text-slate-400">Transfer a one-time vault snapshot by QR & PIN (AI keys and proxy URLs excluded).</div>
           </div>
           <button
             type="button"
@@ -1596,7 +1605,8 @@ function SyncModal({
             placeholder={status?.hasToken ? '•••••••• (leave blank to keep existing)' : '••••••••'}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none"
           />
-          <p className="mt-2 text-[11px] text-slate-500">The relay only ever sees opaque, padded ciphertext blobs with HMAC-blinded IDs. Hosts, keys, snippets and tunnels sync E2EE.</p>
+          <p className="mt-2 text-[11px] text-slate-500">The relay stores padded ciphertext with blinded IDs, but can see traffic metadata. Only hosts, keychain (including private keys), snippets, tunnels and vault metadata are covered; host-specific secrets, AI configs and known-host trust are not.</p>
+          <p className="mt-2 text-[11px] text-amber-300/90">Not a cross-device backup: each new vault derives a different sync key, even with the same password. Pairing transfers a snapshot, not that key. Do not rely on relay sync to restore another device.</p>
 
           {status && (
             <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">

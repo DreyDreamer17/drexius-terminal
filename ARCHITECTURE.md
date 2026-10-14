@@ -14,7 +14,7 @@ nexusterminal/
 │   │   ├── HostSidebar.tsx / HostModal.tsx   # Connection profiles (vault-backed) + Quick Connect
 │   │   ├── TerminalPane.tsx            # xterm.js, OSC-7 cwd tracking, search, broadcast input
 │   │   ├── AIPanel.tsx                 # AI assistant, provider/key/proxy settings, Run/Insert gating
-│   │   ├── SftpDrawer.tsx              # Graphical remote file manager
+│   │   ├── SftpTab.tsx                 # Graphical local/remote file manager
 │   │   ├── SnippetsPanel.tsx           # Snippet library → broadcast to sessions
 │   │   ├── KeychainPanel.tsx           # Reusable identities, key import/generation
 │   │   ├── PortForwardingPanel.tsx     # Local / remote (reverse) / dynamic (SOCKS5) tunnels
@@ -28,7 +28,7 @@ nexusterminal/
 │       ├── ollama.ts                   # AI provider engine (all providers, not just Ollama)
 │       ├── sessions.ts · themes.ts · os.ts · types.ts
 │       └── (utils/cn.ts)
-└── src-tauri/                          # Rust core (all secrets live here, never in JS)
+└── src-tauri/                          # Rust core (vault, SSH, AI relay; WebView can handle secrets)
     ├── Cargo.toml · build.rs · tauri.conf.json
     ├── capabilities/default.json       # Least-privilege IPC permissions
     └── src/
@@ -42,7 +42,9 @@ nexusterminal/
         ├── snapshot.rs                 # cwd / last-command snapshots → vault, resume on reconnect
         ├── ai_client.rs                # AI HTTP relay: key/proxy pools, auth injection, failover, cancel
         ├── pairing.rs                  # Direct device-to-device pairing over the LAN
-        ├── sync.rs                     # Zero-knowledge sync: encrypted push/pull, HLC LWW, tombstones
+        ├── sync.rs                     # Experimental encrypted relay sync (no cross-device key transfer yet)
+        ├── ssh_config.rs               # SSH config preview/import
+        ├── fs_guard.rs                 # Filesystem access guardrails
         ├── serial.rs                   # Hardware serial port connections (UART) via serialport
         └── opencode.rs                 # OpenCode runner: isolated scratch workspace, streaming, security filters
 ```
@@ -50,10 +52,11 @@ nexusterminal/
 ## 1. Trust boundaries
 
 ```
-┌──────────────── WebView (untrusted-ish UI) ────────────────┐
+┌──────────────── WebView (privileged UI) ───────────────────┐
 │  React · xterm.js · AI panel                               │
-│  ▸ refers to hosts and AI providers by opaque id           │
-│  ▸ only ever holds MASKED API keys / proxy URLs            │
+│  ▸ enters passwords, displays recovery codes               │
+│  ▸ generated private keys pass through JS before storage   │
+│  ▸ AI config listings mask API keys / proxy URLs           │
 └───────────────┬────────────────────────────────────────────┘
                 │ Tauri IPC (allow-listed commands only, CSP set)
 ┌───────────────▼────────────────────────────────────────────┐
@@ -78,12 +81,16 @@ nexusterminal/
   visible "Unlock with Touch ID" button. If the OS keychain is unavailable (headless
   Linux, sandboxed builds) commands return an error and the UI falls back to password
   entry.
-* Host passwords and private keys are read by Rust only; the UI refers to hosts by UUID.
-* **AI keys and proxy credentials never reach the webview** (see §5). `ai_configs_list` returns
-  masked values, `ai_config_save` never writes secrets, and secrets are changed only through
-  dedicated commands (`ai_keys_*`, `ai_proxies_*`).
-* The CSP allows `https:` and localhost for `connect-src` so the browser-only demo mode works;
-  in the desktop app AI traffic goes through the Rust relay, not the webview.
+* **The WebView can handle secrets.** Host credentials are entered in React forms before IPC
+  saves them; `keychain_generate_key` returns a private key to JS for `KeychainPanel` to save;
+  master passwords and recovery codes also pass through the lock UI. Vault *storage* and SSH
+  authentication live in Rust, but the WebView must be treated as trusted application code.
+* **AI keys/proxy credentials (desktop):** `ai_configs_list` masks stored credentials and the
+  AI relay injects them in Rust; when the user adds a key or proxy, its input necessarily passes
+  through the WebView. Browser demo mode keeps credentials client-side (not a security boundary).
+* The desktop CSP's `connect-src` permits `https:` to **any** HTTPS host plus localhost/IPC;
+  it is not a provider allowlist. The Rust AI relay checks configured origins before attaching
+  pooled credentials, but do not treat the CSP as an exfiltration defense.
 * **Not shared with teams:** team vault bundles exclude AI configs, and importing a bundle never
   touches the recipient's own AI settings.
 
@@ -116,8 +123,20 @@ every 10 s. On reconnect with `resume: true`, the session replays `cd <cwd>`.
   ephemeral key plus an HMAC proof of PIN knowledge, bound to the ECDH secret and both public keys. The PIN
   is only the HKDF salt and is never sent. A checks the proof (constant-time), then returns the vault archive
   under an XChaCha20-Poly1305 key derived from the same secret. Plain HTTP carries only proof and ciphertext,
-  and the pairing responses send no CORS headers. Because this is *your own* device, the archive includes AI configs.
-* **Cloud sync (`sync.rs`):** end-to-end encrypted push/pull sync. The crypto core uses `K_sync`/`K_index` derived via HKDF from the master vault key, HMAC-blinded record IDs, 256-byte padded sealed CBOR blobs (`XChaCha20-Poly1305`), and Hybrid Logical Clocks (HLC last-writer-wins). Pushes and pulls run over `HttpRelay` with optional bearer authentication; credentials and tokens are persisted securely in the encrypted SQLCipher vault, and the relay only ever sees ciphertext.
+  and the pairing responses send no CORS headers. The archive is a **one-time transfer**, not
+  continuous synchronization. It includes hosts (and their secrets), keychain, tunnels, snippets
+  and AI provider configuration, but `dump_full_vault` clears AI API keys and proxy URLs before
+  encryption. Revoking a peer prevents future pairing, not use of data it already received.
+* **Relay sync (`sync.rs`, experimental):** `K_sync`/`K_index` are derived via HKDF from the local
+  vault root key; HMAC-blinded IDs and 256-byte-bucket padded CBOR blobs are sealed with
+  XChaCha20-Poly1305 and merged using HLC last-writer-wins/tombstones. The relay can observe
+  access patterns, timing and blob sizes (at bucket granularity), not plaintext. **Cross-device
+  sync is not functional for separately initialized vaults:** each uses its own random KDF salt
+  and therefore different root/sync keys, even with the same password. LAN pairing transfers a
+  snapshot, not the shared sync key. There is no cross-device key-transfer flow yet. Current
+  synced tables: `hosts`, `keychain` (**including passwords/private keys**), `snippets`, `tunnels`,
+  `vaults`; `secrets` (host-specific credentials), `ai_configs` and `known_hosts` are omitted.
+  Do not rely on this feature for cross-device backup until the key-transfer design is implemented.
 
 ## 5. AI assistant
 
@@ -167,10 +186,12 @@ ai_client::ai_stream_proxy
 
 ## 6. OpenCode agent & serial UART
 
-* **OpenCode CLI (`opencode.rs`):** executes background inference and multi-step tool workflows via local or remote `opencode` binary. When connected to an active SSH session, NexusTerminal detects whether OpenCode is installed on the remote host (`opencode_detect_session`). If installed on the remote machine, it executes natively over an SSH exec channel streaming structured JSON events from the server; if not detected on the host, it gracefully falls back to local execution and presents a notice with a one-click host installer (`curl -fsSL https://opencode.ai/install.sh | bash`). Local runs operate inside an isolated scratch workspace (`~/NexusTerminal/ai-workspace`). In read-only mode, tools default to non-interactive reject; in autonomous mode, shell commands are protected by an extensive denylist against subshell escapes, dangerous binaries, and privilege escalation.
+* **OpenCode CLI (`opencode.rs`):** runs a local or remote `opencode` binary; remote execution uses an SSH exec channel streaming JSON events and falls back to local execution if OpenCode is unavailable on the host. Local runs use `~/NexusTerminal/ai-workspace`. Tool permissions are deny-by-default: read-only and autonomous modes differ in which actions they allow/ask for; sensitive paths and dangerous shell patterns are denied. This is policy-based filtering, not a sandbox or a guarantee against every shell escape.
 * **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
-**Known limitations**
+**Build/config notes and known limitations**
 
-* The AI relay resolves outbound routes through an origin check (`resolve_route`), verifying targets against configured provider endpoints before attaching credentials. Requests without a matching provider carry no pooled keys.
-* Secret redaction is pattern-based and can miss unusual formats.
+* The npm package name is still `react-vite-tailwind` (a project scaffold label), not the desktop product name. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
+* On Windows, local PTYs launch `%COMSPEC%` when set (normally `cmd.exe`), falling back to `powershell.exe` only if that variable is absent. Do not assume PowerShell is the default.
+* The AI relay verifies configured provider origins before attaching pooled credentials. Requests without a matching provider carry no pooled keys. The WebView CSP is broader (see §1).
+* Secret redaction is pattern-based and can miss unusual formats. Relay sync is not a working cross-device backup (see §4).

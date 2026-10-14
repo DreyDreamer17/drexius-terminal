@@ -302,7 +302,7 @@ export function DevicePairingModal({
               <h3 className="text-sm font-semibold text-white">Direct Device Pairing</h3>
               <p className="flex items-center gap-1 text-[11px] text-slate-400">
                 <ShieldCheck className="h-3 w-3 text-emerald-400" />
-                X25519 Authenticated Key Exchange · Direct LAN Sync
+                X25519 Authenticated Key Exchange · One-time LAN Transfer
               </p>
             </div>
           </div>
@@ -478,7 +478,7 @@ export function DevicePairingModal({
           <form onSubmit={handleJoin} className="p-5 space-y-4">
             <div>
               <p className="text-xs text-slate-400">
-                Enter the host IP and 6-digit PIN shown on your existing device to clone your vaults and profiles in 2 seconds.
+                Use the pairing link from your existing device for a one-time transfer of vaults and profiles. AI API keys and proxy URLs are not transferred; this does not enable ongoing sync.
               </p>
             </div>
 
