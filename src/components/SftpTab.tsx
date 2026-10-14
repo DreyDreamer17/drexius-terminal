@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Folder,
   FileText,
@@ -94,12 +94,11 @@ interface SftpTabProps {
   tab: Tab;
   hosts: Host[];
   onUpdateTab: (patch: Partial<Tab>) => void;
-  onClose?: () => void;
   toast: (msg: string) => void;
   theme?: NexusTheme;
 }
 
-export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, theme }: SftpTabProps) {
+export function SftpTab({ tab, hosts, onUpdateTab, toast, theme }: SftpTabProps) {
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
   const accentColor = activeTheme.accent || '#22d3ee';
   const bgColor = activeTheme.xterm.background || '#090d16';
@@ -119,6 +118,29 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
   // ── Remote SFTP State ──
   const [remoteHostId, setRemoteHostId] = useState<string | null>(tab.sftpHostId || null);
   const [remoteSessionId, setRemoteSessionId] = useState<string | null>(tab.sftpSessionId || null);
+  const remoteSessionRef = useRef<string | null>(tab.sftpSessionId || null);
+  const mountedRef = useRef(true);
+  const connectingRef = useRef(false);
+  const connectGenerationRef = useRef(0);
+  // The tab owns its SFTP session. Close it when the tab is removed, even if
+  // the user never clicked Disconnect (and avoid leaking in-flight connects).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // React StrictMode immediately re-runs effects in development without
+      // actually removing the tab. Defer the close one tick so that rehearsal
+      // cleanup does not tear down a live session.
+      setTimeout(() => {
+        if (mountedRef.current) return;
+        connectGenerationRef.current++;
+        if (remoteSessionRef.current) {
+          bridge.sftpClose(remoteSessionRef.current).catch(() => {});
+          remoteSessionRef.current = null;
+        }
+      }, 0);
+    };
+  }, []);
   const [remoteConnecting, setRemoteConnecting] = useState<boolean>(false);
   const [remotePath, setRemotePath] = useState<string>('');
   const [remoteEntries, setRemoteEntries] = useState<FileEntry[]>([]);
@@ -195,9 +217,22 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
   // ── Remote SFTP Connect & Load ──
   const connectRemote = useCallback(
     async (hostId: string) => {
+      if (connectingRef.current) return;
+      connectingRef.current = true;
+      const generation = ++connectGenerationRef.current;
       setRemoteConnecting(true);
+      let sid: string | null = null;
       try {
-        const sid = await bridge.sftpConnect(hostId);
+        sid = await bridge.sftpConnect(hostId);
+        // Do not replace a working session until the new one can list files.
+        const list = await bridge.sftpList(sid, '');
+        if (!mountedRef.current || generation !== connectGenerationRef.current) {
+          await bridge.sftpClose(sid);
+          return;
+        }
+        const previous = remoteSessionRef.current;
+        remoteSessionRef.current = sid;
+        if (previous && previous !== sid) bridge.sftpClose(previous).catch(() => {});
         setRemoteSessionId(sid);
         setRemoteHostId(hostId);
         onUpdateTab({
@@ -205,9 +240,6 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
           sftpSessionId: sid,
           title: `SFTP: ${hosts.find((h) => h.id === hostId)?.label || 'Remote'}`,
         });
-        // Initial list
-        setRemoteLoading(true);
-        const list = await bridge.sftpList(sid, '');
         setRemoteEntries(list);
         const initialRemotePath =
           list[0]?.path.slice(0, list[0].path.lastIndexOf('/')) || bridge.homeFor(sid) || '/';
@@ -217,19 +249,23 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
         setShowHostPicker(false);
         toast(`Connected to ${hosts.find((h) => h.id === hostId)?.label || 'Host'}`);
       } catch (err) {
-        toast(isBridgeError(err) ? err.message : `Connection failed: ${err}`);
+        if (sid) await bridge.sftpClose(sid);
+        if (mountedRef.current && generation === connectGenerationRef.current) {
+          toast(isBridgeError(err) ? err.message : `Connection failed: ${err}`);
+        }
       } finally {
-        setRemoteConnecting(false);
-        setRemoteLoading(false);
+        connectingRef.current = false;
+        if (mountedRef.current) setRemoteConnecting(false);
       }
     },
     [hosts, onUpdateTab, toast]
   );
 
   const disconnectRemote = useCallback(() => {
-    if (remoteSessionId) {
-      bridge.sftpClose(remoteSessionId).catch(() => {});
-    }
+    connectGenerationRef.current++;
+    const sid = remoteSessionRef.current;
+    remoteSessionRef.current = null;
+    if (sid) bridge.sftpClose(sid).catch(() => {});
     setRemoteSessionId(null);
     setRemoteHostId(null);
     setRemoteEntries([]);
@@ -237,7 +273,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
     setRemoteHistory([]);
     setRemoteHistoryIdx(-1);
     onUpdateTab({ sftpHostId: null, sftpSessionId: null, title: 'SFTP' });
-  }, [remoteSessionId, onUpdateTab]);
+  }, [onUpdateTab]);
 
   // If tab already had a hostId on launch but no session, connect automatically
   useEffect(() => {
@@ -1401,9 +1437,6 @@ export function SftpTab({ tab, hosts, onUpdateTab, onClose: _onClose, toast, the
         </div>
       </div>
 
-      {/* ==================================================================== */}
-      {/* HOST PICKER MODAL */}
-      {/* ==================================================================== */}
       {/* ==================================================================== */}
       {/* HOST PICKER MODAL */}
       {/* ==================================================================== */}

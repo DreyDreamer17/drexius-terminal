@@ -833,13 +833,18 @@ async fn opencode_stream_remote(
             let mut reader = StdBufReader::new(ch);
             let mut line = String::new();
             loop {
-                line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        if line_tx.blocking_send(Ok(line.clone())).is_err() {
+                        if line_tx.blocking_send(Ok(std::mem::take(&mut line))).is_err() {
                             break;
                         }
+                    }
+                    // SSH's 30-second socket timeout is an idle interval,
+                    // not a deadline for a model response. Keep any partial
+                    // line: read_line may append bytes before timing out.
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {
+                        if line_tx.is_closed() { break; }
                     }
                     Err(e) => {
                         let _ = line_tx.blocking_send(Err(e.to_string()));

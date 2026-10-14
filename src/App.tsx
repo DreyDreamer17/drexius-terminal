@@ -1064,7 +1064,6 @@ export default function App() {
                     onUpdateTab={(patch) =>
                       setTabs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...patch } : x)))
                     }
-                    onClose={() => closeTab(t.id)}
                     toast={toast}
                     theme={theme}
                   />

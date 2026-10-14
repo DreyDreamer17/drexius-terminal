@@ -789,6 +789,11 @@ export const TerminalPane = memo(function TerminalPane({
     const dScroll = term.onScroll(updateGhostPos);
 
     term.attachCustomKeyEventHandler((e) => {
+      // Terminal Find is handled by the scoped window keydown listener below;
+      // do not also send ^F to the remote shell.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
+        return false;
+      }
       // NOTE: ^T / ^K / ^R belong to the shell (readline transpose & kill-line,
       // nano/history-search) — never swallow plain Ctrl combos here. App-level
       // bindings use the Ctrl/Cmd+Shift+* family.
@@ -1008,14 +1013,15 @@ export const TerminalPane = memo(function TerminalPane({
   // Handle Ctrl+F / Cmd+F for search inside active terminal
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!active) return;
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-        e.preventDefault();
-        setShowSearch((v) => {
-          if (!v) setTimeout(() => searchInputRef.current?.select(), 50);
-          return true;
-        });
-      }
+      if (!active || e.shiftKey || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'f') return;
+      // Only take the shortcut while focus is actually in this terminal.
+      // Ctrl/Cmd+Shift+F belongs to the workspace's SFTP shortcut; inputs
+      // elsewhere (including the SFTP editor) keep their own Find behavior.
+      const target = e.target;
+      if (!(target instanceof Node) || !elRef.current?.contains(target)) return;
+      e.preventDefault();
+      setShowSearch(true);
+      setTimeout(() => searchInputRef.current?.select(), 0);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
