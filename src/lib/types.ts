@@ -31,6 +31,8 @@ export interface PairedDevice {
   publicKey?: string | null;
   pairedAt: number;
   lastSync: number;
+  deviceId?: string;
+  revokedAt?: number | null;
 }
 
 export interface PairingHostInfo {

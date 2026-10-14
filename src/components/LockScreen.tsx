@@ -180,8 +180,8 @@ Generated: ${new Date().toISOString()}
       setRecoveryErr('Please enter your emergency recovery key');
       return;
     }
-    if (recoveryNewPw.length < 4) {
-      setRecoveryErr('New password must be at least 4 characters');
+    if (recoveryNewPw.length < 8) {
+      setRecoveryErr('New password must be at least 8 characters');
       return;
     }
     if (recoveryNewPw !== recoveryNewPw2) {
@@ -230,7 +230,9 @@ Generated: ${new Date().toISOString()}
     e.preventDefault();
     const isNew = initialized === false;
     if (isNew && pw !== pw2) { setErr('Passwords do not match'); return; }
-    if (pw.length < 4) { setErr('Use at least 4 characters (12+ recommended)'); return; }
+    // New vaults need a real password; unlocking keeps accepting whatever the
+    // vault was created with (older 4-char vaults must not be bricked).
+    if (isNew && pw.length < 8) { setErr('Use at least 8 characters (12+ recommended)'); return; }
     await doUnlock(pw, isNew);
   };
 

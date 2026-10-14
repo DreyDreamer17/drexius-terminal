@@ -31,6 +31,18 @@ use tauri::State;
 const MAX_FORWARD_CONNECTIONS: usize = 64;
 const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Monotonic token identifying one specific worker incarnation of a tunnel
+/// slot. Worker exit may only clear the map entry if it still owns the slot —
+/// a stop + quick restart must never be wiped by the OLD worker's cleanup.
+static NEXT_TUNNEL_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+fn remove_tunnel_if_owner(map: &Mutex<HashMap<String, RunningTunnel>>, id: &str, token: u64) {
+    let mut g = map.lock();
+    if g.get(id).map(|t| t.token == token).unwrap_or(false) {
+        g.remove(id);
+    }
+}
+
 /// Validate tunnel configuration before saving or starting.
 /// Rejects non-loopback bind addresses on dynamic SOCKS5 tunnels to prevent
 /// creating an unauthenticated open proxy on the local area network.
@@ -98,6 +110,8 @@ struct RunningTunnel {
     /// For remote forwards: the port the remote server actually bound (may differ from
     /// the requested port when the server allocates one, e.g. remote_port = 0).
     bound_remote_port: u16,
+    /// Ownership token — see [`remove_tunnel_if_owner`].
+    token: u64,
 }
 
 pub struct TunnelManager {
@@ -196,6 +210,14 @@ pub fn tunnel_start(
     vault: State<'_, Vault>,
 ) -> AppResult<ActiveTunnelInfo> {
     if !mgr.try_claim_starting(&id) {
+        // Already running, or another start is in flight — wait briefly for
+        // the slot rather than reporting a half-started tunnel as stopped.
+        for _ in 0..200 {
+            if mgr.running.lock().contains_key(&id) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
         return Ok(mgr.status(&id));
     }
 
@@ -253,6 +275,7 @@ fn spawn_local_worker(
     let bytes_up = Arc::new(AtomicU64::new(0));
     let bytes_down = Arc::new(AtomicU64::new(0));
     let transport_lock = Arc::new(parking_lot::Mutex::new(()));
+    let token = NEXT_TUNNEL_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     let running_tunnel = RunningTunnel {
         stop_flag: stop_flag.clone(),
@@ -261,6 +284,7 @@ fn spawn_local_worker(
         _session: session.clone(),
         local_port,
         bound_remote_port: 0,
+        token,
     };
 
     mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
@@ -303,12 +327,14 @@ fn spawn_local_worker(
                     Err(_) => break,
                 }
             }
-            // Cleanup on listener exit so tunnel status correctly reports stopped
-            mgr_running.lock().remove(&tid);
+            // Cleanup on listener exit so tunnel status correctly reports
+            // stopped — but only if this worker still owns the slot (a stop +
+            // quick restart must not be wiped by the old worker).
+            remove_tunnel_if_owner(&mgr_running, &tid, token);
         })
     {
         // Spawn failed — clean up manager entry so slot is not left occupied
-        mgr.running.lock().remove(&tunnel_id);
+        remove_tunnel_if_owner(&mgr.running, &tunnel_id, token);
         return Err(AppError::Io(e));
     }
 
@@ -338,6 +364,7 @@ fn spawn_remote_worker(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let bytes_up = Arc::new(AtomicU64::new(0));
     let bytes_down = Arc::new(AtomicU64::new(0));
+    let token = NEXT_TUNNEL_TOKEN.fetch_add(1, Ordering::Relaxed);
 
     let running_tunnel = RunningTunnel {
         stop_flag: stop_flag.clone(),
@@ -346,6 +373,7 @@ fn spawn_remote_worker(
         _session: session.clone(),
         local_port: cfg.local_port,
         bound_remote_port: bound_port,
+        token,
     };
     mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
 
@@ -425,12 +453,13 @@ fn spawn_remote_worker(
                     conns_counter.fetch_sub(1, Ordering::Relaxed);
                 });
             }
-            // Cleanup on listener exit so tunnel status correctly reports stopped
-            mgr_running.lock().remove(&tid);
+            // Cleanup on listener exit so tunnel status correctly reports
+            // stopped — but only if this worker still owns the slot.
+            remove_tunnel_if_owner(&mgr_running, &tid, token);
         })
     {
         // Spawn failed — clean up manager entry so slot is not left occupied
-        mgr.running.lock().remove(&tunnel_id);
+        remove_tunnel_if_owner(&mgr.running, &tunnel_id, token);
         return Err(AppError::Io(e));
     }
 
@@ -456,10 +485,18 @@ pub fn ai_tunnel_start(
 ) -> AppResult<u16> {
     let tunnel_id = format!("ai_auto_{}", host_id);
     if !mgr.try_claim_starting(&tunnel_id) {
-        let guard = mgr.running.lock();
-        if let Some(t) = guard.get(&tunnel_id) {
-            return Ok(t.local_port);
+        // Either already running (hand its port back) or another start is in
+        // flight. Wait for the slot instead of falling through into a second
+        // worker that would overwrite the running one.
+        for _ in 0..200 {
+            if let Some(t) = mgr.running.lock().get(&tunnel_id) {
+                return Ok(t.local_port);
+            }
+            thread::sleep(Duration::from_millis(25));
         }
+        return Err(AppError::Other(
+            "AI tunnel start is already in progress; retry shortly".into(),
+        ));
     }
 
     let res = (|| {
@@ -513,6 +550,40 @@ pub fn ai_tunnel_stop(host_id: String, mgr: State<'_, TunnelManager>) -> bool {
     true
 }
 
+/// Open a `direct-tcpip` channel on the shared **non-blocking** session.
+/// libssh2 reports `EAGAIN` while the open is still in flight — a single-shot
+/// call drops the connection whenever the transport is not instantly ready,
+/// which is exactly what made local/SOCKS forwards flaky. Retry until the
+/// deadline; the whole open (including retries) is serialized against other
+/// connection threads because libssh2 tracks one pending channel-open state
+/// per session and interleaved opens would corrupt it.
+fn open_direct_channel(
+    sess: &Session,
+    host: &str,
+    port: u16,
+    origin: Option<(&str, u16)>,
+    transport_lock: &parking_lot::Mutex<()>,
+    stop: &AtomicBool,
+) -> Result<ssh2::Channel, ssh2::Error> {
+    let _guard = transport_lock.lock();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match sess.channel_direct_tcpip(host, port, origin) {
+            Ok(ch) => return Ok(ch),
+            Err(e) => {
+                if crate::ssh::ssh2_would_block(&e)
+                    && std::time::Instant::now() < deadline
+                    && !stop.load(Ordering::Relaxed)
+                {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
 fn handle_client(
     mut client: TcpStream,
     sess: Session,
@@ -528,10 +599,14 @@ fn handle_client(
         // Simple SOCKS5 handshake & request parser
         match socks5_handshake(&mut client) {
             Ok((dest_host, dest_port)) => {
-                let open_res = {
-                    let _guard = transport_lock.lock();
-                    sess.channel_direct_tcpip(&dest_host, dest_port, Some(("127.0.0.1", cfg.local_port)))
-                };
+                let open_res = open_direct_channel(
+                    &sess,
+                    &dest_host,
+                    dest_port,
+                    Some(("127.0.0.1", cfg.local_port)),
+                    &transport_lock,
+                    &stop,
+                );
                 match open_res {
                     Ok(ch) => {
                         // SOCKS5 success response: version 5, rep 0 (succeeded), rsv 0, atyp 1 (IPv4 0.0.0.0:0)
@@ -550,17 +625,24 @@ fn handle_client(
         }
     } else {
         // Direct local port forward
-        let open_res = {
-            let _guard = transport_lock.lock();
-            sess.channel_direct_tcpip(
-                &cfg.remote_host,
-                cfg.remote_port,
-                Some((&cfg.local_host, cfg.local_port)),
-            )
-        };
-        match open_res {
+        match open_direct_channel(
+            &sess,
+            &cfg.remote_host,
+            cfg.remote_port,
+            Some((&cfg.local_host, cfg.local_port)),
+            &transport_lock,
+            &stop,
+        ) {
             Ok(ch) => ch,
-            Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+            Err(e) => {
+                log::error!(
+                    "direct-tcpip to {}:{} failed: {}",
+                    cfg.remote_host,
+                    cfg.remote_port,
+                    e
+                );
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+            }
         }
     };
 

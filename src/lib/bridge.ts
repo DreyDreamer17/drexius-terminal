@@ -1129,14 +1129,20 @@ export const bridge = {
     if (isTauri) return invoke('pairing_list_devices');
     const stored = localStorage.getItem('nx.paired.devices');
     return stored ? JSON.parse(stored) : [
-      { id: 'dev-1', deviceName: 'MacBook Pro 16"', deviceType: 'laptop', ipAddress: '192.168.1.45', pairedAt: Date.now() - 86400000 * 3, lastSync: Date.now() - 3600000 },
+      { id: 'dev-1', deviceName: 'MacBook Pro 16"', deviceType: 'laptop', ipAddress: '192.168.1.45', pairedAt: Date.now() - 86400000 * 3, lastSync: Date.now() - 3600000, deviceId: 'dev-1', revokedAt: null },
     ];
   },
 
   async pairingRevokeDevice(id: string): Promise<void> {
     if (isTauri) return invoke('pairing_revoke_device', { id });
     const list = await this.pairingListDevices();
-    localStorage.setItem('nx.paired.devices', JSON.stringify(list.filter((d) => d.id !== id)));
+    localStorage.setItem('nx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: Math.floor(Date.now() / 1000) } : d))));
+  },
+
+  async pairingAllowDevice(id: string): Promise<void> {
+    if (isTauri) return invoke('pairing_allow_device', { id });
+    const list = await this.pairingListDevices();
+    localStorage.setItem('nx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: null } : d))));
   },
 
   async pairingGetLocalInfo(): Promise<LocalDeviceInfo> {

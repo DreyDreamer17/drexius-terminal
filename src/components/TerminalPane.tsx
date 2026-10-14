@@ -141,6 +141,8 @@ export const TerminalPane = memo(function TerminalPane({
 
   const [status, setStatus] = useState<PaneStatus>('connecting');
   const [cwd, setCwd] = useState('~');
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
   const [fingerprint, setFingerprint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -787,19 +789,18 @@ export const TerminalPane = memo(function TerminalPane({
     const dScroll = term.onScroll(updateGhostPos);
 
     term.attachCustomKeyEventHandler((e) => {
-      // Prevent xterm from sending ^T (transpose chars) or ^K (kill line) to the shell when workspace shortcuts trigger
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key.toLowerCase() === 't' || e.key.toLowerCase() === 'k') && e.type === 'keydown') {
+      // NOTE: ^T / ^K / ^R belong to the shell (readline transpose & kill-line,
+      // nano/history-search) — never swallow plain Ctrl combos here. App-level
+      // bindings use the Ctrl/Cmd+Shift+* family.
+
+      // Ctrl/Cmd+Shift+R -> Command History Search overlay
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r' && e.type === 'keydown') {
+        setShowCmdSearch(true);
         return false;
       }
 
       // Prevent xterm from sending control sequences on workspace shift shortcuts
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
-        return false;
-      }
-
-      // Ctrl+R -> Command History Reverse Search
-      if (e.ctrlKey && e.key.toLowerCase() === 'r' && e.type === 'keydown') {
-        setShowCmdSearch(true);
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;
       }
 
@@ -874,7 +875,7 @@ export const TerminalPane = memo(function TerminalPane({
               hostId: isLocal ? null : host.id,
               hostLabel: isLocal ? 'Local Terminal' : host.label,
               command: cmd,
-              cwd: cwd || '~',
+              cwd: cwdRef.current || '~',
             }).catch(() => {});
 
             const idx = historyCacheRef.current.indexOf(cmd);
@@ -1119,7 +1120,7 @@ export const TerminalPane = memo(function TerminalPane({
               <Search className="h-3 w-3" />
             </button>
             <button
-              title="Command History & Reverse Search (Ctrl+R)"
+              title="Command History & Reverse Search (Ctrl+Shift+R)"
               onClick={() => setShowCmdSearch(true)}
               className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-emerald-300 transition"
             >
@@ -1438,7 +1439,7 @@ export const TerminalPane = memo(function TerminalPane({
       )}
 
 
-      {/* Ctrl+R Command Search Modal */}
+      {/* Ctrl+Shift+R Command Search Modal */}
       {showCmdSearch && (
         <CommandSearchModal
           initialHostLabel={isLocal ? 'Local Terminal' : host.label}

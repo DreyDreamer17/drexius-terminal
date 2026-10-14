@@ -480,13 +480,20 @@ export default function App() {
         return;
       }
       const target = e.target as HTMLElement | null;
-      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      // xterm's hidden textarea is a terminal surface, not a text input: the
+      // Ctrl+Shift+* workspace shortcuts must keep working while a terminal
+      // has focus (the TerminalPane also blocks those sequences from leaking
+      // to the shell). Plain Ctrl+T/Ctrl+K stay with the shell (^T transpose,
+      // ^K kill-line) when the terminal is focused.
+      const inTerminal = !!(target && target.closest && target.closest('.xterm'));
+      const isInput = target && !inTerminal && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (isInput) return;
 
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
-      if (!e.shiftKey && k === 't') { e.preventDefault(); e.stopPropagation(); openLocalTerminal(); return; }
-      if (k === 'k') { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
+      if (!inTerminal && !e.shiftKey && k === 't') { e.preventDefault(); e.stopPropagation(); openLocalTerminal(); return; }
+      if (!inTerminal && k === 'k') { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
+      if (k === 'k' && e.shiftKey) { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
       if (!e.shiftKey) return;
       if (k === 'i') { e.preventDefault(); e.stopPropagation(); setBroadcast((b) => !b); }
       else if (k === 'd') { e.preventDefault(); e.stopPropagation(); splitActive('vertical'); }

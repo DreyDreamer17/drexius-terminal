@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::State;
@@ -304,6 +305,88 @@ fn is_loopback_socks5(url: &str) -> bool {
     }
 }
 
+/// True for any address that must never be reachable through the relay:
+/// loopback, RFC1918, link-local, CGNAT, broadcast/unspecified/multicast,
+/// benchmarking/NAT blocks, and the IPv6 equivalents (incl. v4-mapped).
+fn ip_is_non_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+            {
+                return true;
+            }
+            let o = v4.octets();
+            o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15
+                || o[0] >= 224
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return ip_is_non_public(IpAddr::V4(v4));
+            }
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return true;
+            }
+            let o = v6.octets();
+            (o[0] & 0xfe) == 0xfc // fc00::/7 unique-local
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80) // fe80::/10 link-local
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0xc0) // fec0::/10 site-local
+        }
+    }
+}
+
+/// Destination policy for relay requests that do NOT carry credentials: they may
+/// only go to public hosts — never localhost, LAN/private ranges, or cloud
+/// metadata endpoints. Named destinations are checked before DNS, resolved
+/// addresses after (so a public name resolving to 127.0.0.1 is refused too).
+fn ensure_public_target(target: &reqwest::Url) -> Result<(), String> {
+    let host = match target.host_str() {
+        Some(h) if !h.is_empty() => h.to_ascii_lowercase(),
+        _ => return Err("Blocked URL: no host".into()),
+    };
+    let ip_literal = host.parse::<IpAddr>();
+
+    if ip_literal.is_err() {
+        // Name-based escapes: `localhost` is special-cased by every resolver,
+        // and these suffixes resolve to infrastructure addresses on their own.
+        if host == "localhost"
+            || host.ends_with(".localhost")
+            || host.ends_with(".local")
+            || host.ends_with(".internal")
+            || host == "metadata"
+            || host == "instance-data"
+        {
+            return Err(format!("Blocked destination '{host}': internal/metadata hosts are not reachable through the AI relay"));
+        }
+    }
+
+    let port = target.port_or_known_default().unwrap_or(443);
+    let addrs: Vec<IpAddr> = match ip_literal {
+        Ok(ip) => vec![ip],
+        Err(_) => (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| format!("Blocked destination '{host}': cannot resolve host ({e})"))?
+            .map(|sa| sa.ip())
+            .collect(),
+    };
+    if addrs.is_empty() {
+        return Err(format!("Blocked destination '{host}': cannot resolve host"));
+    }
+    if addrs.iter().copied().any(ip_is_non_public) {
+        return Err(format!(
+            "Blocked destination '{host}': the AI relay only reaches public addresses"
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
     let provider_id = req.provider_id.clone().unwrap_or_default();
     let mut route = Route {
@@ -332,26 +415,34 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
         !provider_id.is_empty() && req.auth != AiAuth::None && !has_explicit_auth(&req.headers);
     // Any credential-bearing request (pooled key or WebView-supplied header) must target the provider's endpoint.
     let carries_auth = wants_injection || has_explicit_auth(&req.headers);
+    let target = reqwest::Url::parse(&req.url).map_err(|e| format!("Invalid URL: {e}"))?;
 
     if let Some(cfg) = &cfg {
         route.name = cfg.name.clone();
         route.key_strategy = cfg.balance_strategy.clone();
         route.proxy_strategy = cfg.proxy_strategy.clone();
-        if carries_auth {
-            // Destination allowlist: pooled keys are only ever sent to the provider's own
-            // configured endpoint, never to an arbitrary URL supplied by the webview.
+        // Destination policy: the provider's saved endpoint is the allowlist
+        // entry (self-hosted localhost/LAN providers keep working); anything
+        // else must be a public destination.
+        {
             let origin = |u: &reqwest::Url| {
                 (u.scheme().to_string(), u.host_str().map(str::to_ascii_lowercase), u.port_or_known_default())
             };
             let base = reqwest::Url::parse(cfg.base_url.trim())
                 .map_err(|e| format!("Provider '{}' has an invalid base URL: {e}", cfg.name))?;
-            let target = reqwest::Url::parse(&req.url).map_err(|e| format!("Invalid URL: {e}"))?;
             if origin(&base) != origin(&target) {
-                return Err(format!(
-                    "Blocked: API keys for {} can only be sent to its configured endpoint ({}).",
-                    cfg.name,
-                    base.host_str().unwrap_or("?")
-                ));
+                if carries_auth {
+                    // Credentialed requests never leave the configured endpoint.
+                    return Err(format!(
+                        "Blocked: API keys for {} can only be sent to its configured endpoint ({}).",
+                        cfg.name,
+                        base.host_str().unwrap_or("?")
+                    ));
+                }
+                // Key-less probes may follow unsaved baseUrl edits, but only out
+                // to public destinations (no localhost / LAN / metadata via the
+                // relay).
+                ensure_public_target(&target)?;
             }
         }
         if wants_injection {
@@ -371,6 +462,16 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
                 .filter(|p| !p.is_empty())
                 .collect();
         }
+    } else {
+        if carries_auth {
+            return Err("Requests that carry credentials must name a configured provider.".into());
+        }
+        // Anonymous relay: GET only, public destinations only (no localhost /
+        // LAN / metadata probing through the webview).
+        if req.method.to_uppercase() != "GET" {
+            return Err("Anonymous relay requests are GET-only.".into());
+        }
+        ensure_public_target(&target)?;
     }
     route.inject = wants_injection;
 
@@ -382,10 +483,6 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
             route.proxies = vec![trimmed.to_string()];
             route.proxy_strategy = "first".into();
         }
-    }
-
-    if carries_auth && cfg.is_none() {
-        return Err("Requests that carry credentials must name a configured provider.".into());
     }
 
     if route.inject && route.keys.is_empty() {
@@ -470,6 +567,11 @@ fn build_request(
     };
 
     for (k, v) in &req.headers {
+        // `host` and `cookie` are transport-level and request-identity headers:
+        // never let the webview set them (connection hijacking / session reuse).
+        if k.eq_ignore_ascii_case("host") || k.eq_ignore_ascii_case("cookie") {
+            continue;
+        }
         // Drop empty auth headers always; drop non-empty ones when we inject our own.
         if is_auth_header(k) && (v.trim().is_empty() || inject_key.is_some()) {
             continue;

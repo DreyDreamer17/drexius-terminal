@@ -82,6 +82,10 @@ struct HandshakeRequest {
     pub client_proof: String,
     pub client_device_name: String,
     pub client_os: String,
+    /// Stable per-device identity (the client's `sync_device_id`), used for the
+    /// revocation blocklist. Legacy clients omit it (empty).
+    #[serde(default)]
+    pub client_device_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -848,6 +852,34 @@ async fn handle_incoming_pairing(
                     return Ok(());
                 }
 
+                // Revocation blocklist: a device marked revoked is refused even with a
+                // valid PIN until the user allows it again. Checked after the PIN proof
+                // so unauthenticated probes learn nothing from this path.
+                if !req.client_device_id.trim().is_empty() {
+                    let revoked: bool = vault.with(|c| {
+                        Ok(c
+                            .query_row(
+                                "SELECT 1 FROM paired_devices
+                                 WHERE device_id = ?1 AND revoked_at IS NOT NULL
+                                 LIMIT 1",
+                                params![req.client_device_id.trim()],
+                                |_| Ok(()),
+                            )
+                            .optional()?
+                            .is_some())
+                    })?;
+                    if revoked {
+                        let err_resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"This device was revoked on the host. Ask the host owner to allow it again before pairing.\"}";
+                        let _ = stream.write_all(err_resp.as_bytes()).await;
+                        log::warn!(
+                            "Refused pairing from revoked device {} ({})",
+                            req.client_device_name,
+                            peer_addr
+                        );
+                        return Ok(());
+                    }
+                }
+
                 // Dump current vault archive
                 let archive = dump_full_vault(vault, server_name)?;
                 let archive_json = serde_json::to_vec(&archive)
@@ -863,15 +895,32 @@ async fn handle_incoming_pairing(
                     .encrypt(nonce, archive_json.as_ref())
                     .map_err(|e| AppError::Crypto(format!("Pairing encryption failed: {e}")))?;
 
-                // Record peer in paired_devices
+                // Record peer in paired_devices. Peers with a stable device id are
+                // upserted so re-pairing updates one row per device (and the blocklist
+                // check above stays authoritative).
                 let now = chrono::Utc::now().timestamp();
-                let dev_id = uuid::Uuid::new_v4().to_string();
+                let peer_device_id = req.client_device_id.trim().to_string();
                 let _ = vault.with(|c| {
-                    c.execute(
-                        "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)
-                         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        params![dev_id, req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, now],
-                    )?;
+                    if peer_device_id.is_empty() {
+                        let dev_id = uuid::Uuid::new_v4().to_string();
+                        c.execute(
+                            "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync, device_id, revoked_at)
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, '', NULL)",
+                            params![dev_id, req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, now],
+                        )?;
+                    } else {
+                        c.execute(
+                            "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync, device_id, revoked_at)
+                             SELECT lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?5, ?6, NULL
+                             WHERE NOT EXISTS (SELECT 1 FROM paired_devices WHERE device_id = ?6 AND revoked_at IS NULL)",
+                            params![req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, peer_device_id],
+                        )?;
+                        c.execute(
+                            "UPDATE paired_devices SET device_name=?1, device_type=?2, ip_address=?3, public_key=?4, last_sync=?5
+                             WHERE device_id=?6 AND revoked_at IS NULL",
+                            params![req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, peer_device_id],
+                        )?;
+                    }
                     Ok(())
                 });
 
@@ -1000,6 +1049,7 @@ pub async fn pairing_join_client(
         client_proof: hex::encode(proof),
         client_device_name: my_device_name,
         client_os: std::env::consts::OS.to_string(),
+        client_device_id: vault.with(|c| Ok(crate::vault::get_or_create_device_id(c)))?,
     };
 
     let resp = client
@@ -1010,9 +1060,20 @@ pub async fn pairing_join_client(
         .map_err(|e| AppError::Network(format!("Failed to connect to host {target_host}:{port} — {e}")))?;
 
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        return Err(AppError::Other(
-            "Pairing refused. Check the 6-digit code, or copy the pairing link again from the host.".into(),
-        ));
+        // Surface the host's specific refusal (e.g. "this device was revoked") when present.
+        let detail = resp
+            .text()
+            .await
+            .ok()
+            .and_then(|body| {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("error").and_then(|m| m.as_str()).map(String::from))
+            })
+            .filter(|m| !m.trim().is_empty());
+        return Err(AppError::Other(detail.unwrap_or_else(|| {
+            "Pairing refused. Check the 6-digit code, or copy the pairing link again from the host.".into()
+        })));
     }
 
     if !resp.status().is_success() {
@@ -1087,7 +1148,8 @@ pub async fn pairing_join_client(
 pub fn pairing_list_devices(vault: State<'_, Vault>) -> AppResult<Vec<PairedDevice>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT id, device_name, device_type, ip_address, public_key, paired_at, last_sync
+            "SELECT id, device_name, device_type, ip_address, public_key, paired_at, last_sync,
+                    device_id, revoked_at
              FROM paired_devices ORDER BY last_sync DESC",
         )?;
         let items = st
@@ -1100,6 +1162,8 @@ pub fn pairing_list_devices(vault: State<'_, Vault>) -> AppResult<Vec<PairedDevi
                     public_key: r.get(4)?,
                     paired_at: r.get(5)?,
                     last_sync: r.get(6)?,
+                    device_id: r.get(7)?,
+                    revoked_at: r.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1107,10 +1171,37 @@ pub fn pairing_list_devices(vault: State<'_, Vault>) -> AppResult<Vec<PairedDevi
     })
 }
 
+/// Marks a paired device as revoked: future pairing attempts from it are refused
+/// at the handshake even with a valid PIN. The record is kept (soft revoke) so the
+/// blocklist survives restarts and the user can allow the device again.
+///
+/// Note: this cannot un-copy data the device already received during pairing —
+/// rotate host credentials to fully cut its access to your infrastructure.
 #[tauri::command]
 pub fn pairing_revoke_device(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
-        c.execute("DELETE FROM paired_devices WHERE id = ?1", params![id])?;
+        let changed = c.execute(
+            "UPDATE paired_devices SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, chrono::Utc::now().timestamp()],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Other("Device not found or already revoked.".into()));
+        }
+        Ok(())
+    })
+}
+
+/// Clears a revocation so the device may pair again (it still needs a fresh PIN).
+#[tauri::command]
+pub fn pairing_allow_device(id: String, vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        let changed = c.execute(
+            "UPDATE paired_devices SET revoked_at = NULL WHERE id = ?1 AND revoked_at IS NOT NULL",
+            params![id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::Other("Device not found or not revoked.".into()));
+        }
         Ok(())
     })
 }

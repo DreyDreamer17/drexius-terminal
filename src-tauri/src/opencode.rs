@@ -468,67 +468,194 @@ async fn emit_chunked_stream(
     true
 }
 
-const AUTONOMOUS_PERMISSION_JSON: &str = r#"{
+// ── OpenCode permission policy ───────────────────────────────────────────────
+// Deny-by-default, read-only agent. OpenCode evaluates permission rules with
+// LAST-MATCH-WINS wildcard globs, so this JSON's key order is load-bearing:
+//
+//   1. catch-all `"*"` first,
+//   2. explicit allows for read-only commands,
+//   3. hard denials LAST (they beat the allows above them).
+//
+// It is shipped as a raw string (never round-tripped through serde_json, whose
+// default map ordering would scramble the sequence).
+//
+// Two matcher generations in the wild are both covered:
+//   • newer OpenCode parses the shell line and permission-checks each parsed
+//     command separately (its `resource` includes any redirect text);
+//   • older builds glob the whole line — the trailing operator/redirect denials
+//     (`*;*`, `*&&*`, `*|*`, `*>*`, …) are what stop `ls ; rm -rf /` smuggling
+//     there. On new builds those denials only fire on the command that
+//     actually contains the operator.
+//
+// `--auto` is deliberately NOT passed anymore: it auto-approves every `ask`,
+// which would defeat `doom_loop: ask` and any future mis-globbed rule. With
+// this policy every rule is `allow` or `deny`, so autonomy no longer depends
+// on the auto-approve flag.
+//
+// Output redirection (`>`, `2>`, `>>`) is denied wholesale — `>` is the one
+// shell primitive that turns any allowed read command into a file write. (The
+// bash tool returns stderr to the model anyway, so `2>/dev/null` is not needed.)
+//
+// The two `__TOP_FALLBACK__` / `__BASH_FALLBACK__` slots are filled per mode:
+// autonomous runs hard-block anything unlisted; assisted runs ask (and the
+// headless `opencode run` auto-rejects asks with model-visible feedback).
+const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
     "permission": {
+        "*": "__TOP_FALLBACK__",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "question": "allow",
+        "doom_loop": "ask",
         "edit": "deny",
         "webfetch": "deny",
+        "websearch": "deny",
+        "task": "deny",
+        "skill": "deny",
+        "lsp": "deny",
+        "external_directory": {
+            "*": "deny",
+            "/*": "allow",
+            "~/*": "allow",
+            "~/.ssh": "deny",
+            "~/.ssh/*": "deny",
+            "~/.gnupg/*": "deny",
+            "~/.aws/*": "deny",
+            "~/.kube/*": "deny",
+            "~/.docker/*": "deny",
+            "~/.password-store/*": "deny",
+            "~/.netrc": "deny",
+            "~/.git-credentials": "deny",
+            "/*/.ssh/*": "deny",
+            "/*/.gnupg/*": "deny",
+            "/*/.aws/*": "deny",
+            "/*/.kube/*": "deny",
+            "/*/.docker/*": "deny",
+            "/*/.password-store/*": "deny",
+            "/*/.netrc": "deny",
+            "/*/.git-credentials": "deny",
+            "/*/*/nexus.vault*": "deny",
+            "/*/dev.nexusterminal.app/*": "deny",
+            "~/.local/share/dev.nexusterminal.app/*": "deny"
+        },
         "bash": {
-            "*": "allow",
-            "rm *": "deny",
-            "/bin/rm *": "deny",
-            "/usr/bin/rm *": "deny",
-            "sudo *": "deny",
-            "doas *": "deny",
-            "su *": "deny",
-            "pkexec *": "deny",
-            "curl *": "deny",
-            "wget *": "deny",
-            "ssh *": "deny",
-            "scp *": "deny",
-            "sftp *": "deny",
-            "rsync *": "deny",
-            "nc *": "deny",
-            "ncat *": "deny",
-            "netcat *": "deny",
-            "socat *": "deny",
-            "dd *": "deny",
-            "mkfs*": "deny",
-            "chmod *": "deny",
-            "chown *": "deny",
-            "chgrp *": "deny",
-            "kill *": "deny",
-            "killall *": "deny",
-            "pkill *": "deny",
-            "bash *": "deny",
-            "sh *": "deny",
-            "zsh *": "deny",
-            "dash *": "deny",
-            "/bin/*": "deny",
-            "/usr/bin/*": "deny",
-            "env *": "deny",
-            "xargs *": "deny",
-            "find * -delete*": "deny",
-            "find * -exec*": "deny",
-            "python *": "deny",
-            "python3 *": "deny",
-            "perl *": "deny",
-            "ruby *": "deny",
-            "node *": "deny",
-            "php *": "deny",
-            "eval *": "deny",
-            "exec *": "deny"
+            "*": "__BASH_FALLBACK__",
+            "ls *": "allow",
+            "lsblk *": "allow",
+            "lsof *": "allow",
+            "lsusb *": "allow",
+            "lscpu *": "allow",
+            "cat *": "allow",
+            "head *": "allow",
+            "tail *": "allow",
+            "wc *": "allow",
+            "stat *": "allow",
+            "file *": "allow",
+            "du *": "allow",
+            "df *": "allow",
+            "tree *": "allow",
+            "grep *": "allow",
+            "egrep *": "allow",
+            "fgrep *": "allow",
+            "rg *": "allow",
+            "find *": "allow",
+            "pwd": "allow",
+            "which *": "allow",
+            "whereis *": "allow",
+            "command -v *": "allow",
+            "whoami": "allow",
+            "id *": "allow",
+            "date *": "allow",
+            "uname *": "allow",
+            "hostname *": "allow",
+            "uptime *": "allow",
+            "free *": "allow",
+            "ps *": "allow",
+            "top *": "allow",
+            "systemctl status *": "allow",
+            "systemctl is-active *": "allow",
+            "systemctl is-enabled *": "allow",
+            "systemctl is-failed *": "allow",
+            "systemctl list-units *": "allow",
+            "systemctl list-unit-files *": "allow",
+            "systemctl list-timers *": "allow",
+            "systemctl show *": "allow",
+            "systemctl cat *": "allow",
+            "journalctl *": "allow",
+            "crontab -l *": "allow",
+            "docker ps *": "allow",
+            "docker logs *": "allow",
+            "docker inspect *": "allow",
+            "docker images *": "allow",
+            "docker version *": "allow",
+            "docker info *": "allow",
+            "docker top *": "allow",
+            "git status *": "allow",
+            "git log *": "allow",
+            "git diff *": "allow",
+            "git show *": "allow",
+            "git blame *": "allow",
+            "git rev-parse *": "allow",
+            "git describe *": "allow",
+            "git remote -v *": "allow",
+            "git config --get *": "allow",
+            "git config --list *": "allow",
+            "git branch *": "allow",
+            "echo *": "allow",
+            "true": "allow",
+            "false": "allow",
+            "sleep *": "allow",
+            "md5sum *": "allow",
+            "sha1sum *": "allow",
+            "sha256sum *": "allow",
+            "sha512sum *": "allow",
+            "find*-delete*": "deny",
+            "find*-exec*": "deny",
+            "find*-execdir*": "deny",
+            "find*-ok*": "deny",
+            "find*-okdir*": "deny",
+            "find*-fprint*": "deny",
+            "find*-fprintf*": "deny",
+            "find*-fls*": "deny",
+            "journalctl*--vacuum*": "deny",
+            "journalctl*--rotate*": "deny",
+            "journalctl*--flush*": "deny",
+            "git branch -d*": "deny",
+            "git branch -D*": "deny",
+            "git branch --delete*": "deny",
+            "git branch -m*": "deny",
+            "git branch -M*": "deny",
+            "git branch --move*": "deny",
+            "git branch -f*": "deny",
+            "git branch --force*": "deny",
+            "git branch -c*": "deny",
+            "git branch -C*": "deny",
+            "git branch --copy*": "deny",
+            "*--output=*": "deny",
+            "* *.env*": "deny",
+            "*>*": "deny",
+            "*;*": "deny",
+            "*&&*": "deny",
+            "*||*": "deny",
+            "*|*": "deny",
+            "*$(*": "deny",
+            "*`*": "deny",
+            "*<(*": "deny"
         }
     }
 }"#;
 
-fn get_permission_config(autonomous: bool) -> serde_json::Value {
-    if autonomous {
-        serde_json::from_str(AUTONOMOUS_PERMISSION_JSON).unwrap_or_default()
+/// Build the OpenCode permission config as a raw JSON string (never via
+/// serde_json — its map ordering would break the last-match-wins sequence).
+fn get_permission_config(autonomous: bool) -> String {
+    let (top, bash) = if autonomous {
+        ("deny", "deny")
     } else {
-        serde_json::json!({
-            "permission": { "edit": "ask", "webfetch": "ask", "bash": "ask" }
-        })
-    }
+        ("ask", "ask")
+    };
+    PERMISSION_CONFIG_TEMPLATE
+        .replace("__TOP_FALLBACK__", top)
+        .replace("__BASH_FALLBACK__", bash)
 }
 
 struct OpenCodeStreamState {
@@ -658,8 +785,6 @@ async fn opencode_stream_remote(
         proxy_mask: None,
     });
 
-    let permission = get_permission_config(autonomous);
-
     let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
         .map_err(|e| format!("Failed to authenticate SSH for remote OpenCode: {}", e))?;
     let _ = sess.set_timeout(30_000);
@@ -668,8 +793,7 @@ async fn opencode_stream_remote(
         .channel_session()
         .map_err(|e| format!("Failed to open remote exec channel: {}", e))?;
 
-    let perm_json = permission.to_string();
-    let auto_flag = if autonomous { " --auto" } else { "" };
+    let perm_json = get_permission_config(autonomous);
     let dir_flag = if let Some(ref d) = cwd {
         if !d.trim().is_empty() {
             format!(" --dir {}", crate::ssh::shell_quote(d.trim()))
@@ -680,12 +804,13 @@ async fn opencode_stream_remote(
         String::new()
     };
 
+    // No `--auto`: it would auto-approve every `ask` rule and defeat
+    // `doom_loop: ask` — see PERMISSION_CONFIG_TEMPLATE.
     let cmd = format!(
         "export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \
          BIN=$(command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\") || echo \"opencode\"); \
-         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure{} -m {}{}",
+         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure -m {}{}",
         crate::ssh::shell_quote(&perm_json),
-        auto_flag,
         crate::ssh::shell_quote(&model),
         dir_flag,
     );
@@ -774,7 +899,7 @@ async fn opencode_stream_local(
     std::fs::create_dir_all(&workspace)
         .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
 
-    let permission = get_permission_config(autonomous);
+    let perm_json = get_permission_config(autonomous);
 
     let mut cmd = tokio::process::Command::new(&bin_path);
     cmd.arg("run")
@@ -782,12 +907,11 @@ async fn opencode_stream_local(
         .arg("json")
         .arg("--thinking")
         .arg("--pure");
-    if autonomous {
-        cmd.arg("--auto");
-    }
+    // No `--auto`: it would auto-approve every `ask` rule and defeat
+    // `doom_loop: ask` — see PERMISSION_CONFIG_TEMPLATE.
     cmd.arg("-m")
         .arg(&model)
-        .env("OPENCODE_CONFIG_CONTENT", permission.to_string())
+        .env("OPENCODE_CONFIG_CONTENT", &perm_json)
         .arg("--dir")
         .arg(&workspace)
         .current_dir(&workspace);

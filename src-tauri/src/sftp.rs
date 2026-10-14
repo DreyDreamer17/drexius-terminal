@@ -129,6 +129,10 @@ pub async fn sftp_download(
     app: tauri::AppHandle,
 ) -> AppResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
+        // The save path comes from an OS dialog in the UI, but a scripted call
+        // must still not be able to drop remote content into credential stores
+        // (e.g. ~/.ssh/authorized_keys).
+        crate::fs_guard::ensure_local_path_not_sensitive(&local)?;
         let mgr = app.state::<SftpManager>();
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
@@ -206,6 +210,10 @@ pub async fn sftp_upload(
     app: tauri::AppHandle,
 ) -> AppResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Upload source: refuse credential stores even though the UI path came
+        // from an OS dialog — otherwise a scripted call could exfiltrate
+        // ~/.ssh/id_rsa (etc.) to the remote host.
+        crate::fs_guard::ensure_local_path_not_sensitive(&local)?;
         let mgr = app.state::<SftpManager>();
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
@@ -348,6 +356,9 @@ pub fn sftp_write_text(
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
     let temp_remote = format!("{}.nexus-{}.part", path, uuid::Uuid::new_v4());
+    // Keep the original mode (+x scripts, 0600 secrets) across the atomic
+    // replace — a fresh temp file would otherwise reset it to the umask.
+    let orig_perm = c.sftp.stat(Path::new(&path)).ok().and_then(|st| st.perm);
     let write_res: AppResult<()> = (|| {
         let mut file = c.sftp.create(Path::new(&temp_remote))?;
         file.write_all(content.as_bytes())?;
@@ -357,6 +368,21 @@ pub fn sftp_write_text(
     if let Err(e) = write_res {
         let _ = c.sftp.unlink(Path::new(&temp_remote));
         return Err(e);
+    }
+    if let Some(perm) = orig_perm {
+        // Perm-only stat: size/mtime flags stay unset, so the new content is
+        // not truncated or re-stamped. Best-effort — never fail the save.
+        let _ = c.sftp.setstat(
+            Path::new(&temp_remote),
+            ssh2::FileStat {
+                size: None,
+                uid: None,
+                gid: None,
+                perm: Some(perm),
+                atime: None,
+                mtime: None,
+            },
+        );
     }
     let remote_path = Path::new(&path);
     let temp_remote_path = Path::new(&temp_remote);
@@ -419,7 +445,10 @@ pub fn local_fs_home() -> AppResult<String> {
 #[tauri::command]
 pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
     let target = match path.as_deref() {
-        Some(p) if !p.trim().is_empty() => std::path::PathBuf::from(p),
+        Some(p) if !p.trim().is_empty() => {
+            // Policy: approved roots only, credential stores never.
+            crate::fs_guard::ensure_local_path_allowed(p)?
+        }
         _ => dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
     };
 
@@ -475,36 +504,41 @@ pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
 
 #[tauri::command]
 pub fn local_fs_mkdir(path: String) -> AppResult<()> {
-    std::fs::create_dir_all(Path::new(&path))?;
+    let full = crate::fs_guard::ensure_local_path_allowed(&path)?;
+    std::fs::create_dir_all(&full)?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn local_fs_remove(path: String, is_dir: bool) -> AppResult<()> {
-    let p = Path::new(&path);
+    let p = crate::fs_guard::ensure_local_path_allowed(&path)?;
     if is_dir {
-        std::fs::remove_dir_all(p)?;
+        std::fs::remove_dir_all(&p)?;
     } else {
-        std::fs::remove_file(p)?;
+        std::fs::remove_file(&p)?;
     }
     Ok(())
 }
 
 #[tauri::command]
 pub fn local_fs_rename(from: String, to: String) -> AppResult<()> {
-    std::fs::rename(Path::new(&from), Path::new(&to))?;
+    let src = crate::fs_guard::ensure_local_path_allowed(&from)?;
+    let dst = crate::fs_guard::ensure_local_path_allowed(&to)?;
+    std::fs::rename(src, dst)?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn local_fs_read_text(path: String) -> AppResult<String> {
-    let s = std::fs::read_to_string(Path::new(&path))?;
+    let full = crate::fs_guard::ensure_local_path_allowed(&path)?;
+    let s = std::fs::read_to_string(&full)?;
     Ok(s)
 }
 
 #[tauri::command]
 pub fn local_fs_write_text(path: String, content: String) -> AppResult<()> {
-    std::fs::write(Path::new(&path), content)?;
+    let full = crate::fs_guard::ensure_local_path_allowed(&path)?;
+    std::fs::write(&full, content)?;
     Ok(())
 }
 

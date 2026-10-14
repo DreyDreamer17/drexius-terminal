@@ -1,6 +1,7 @@
 //! NexusTerminal Rust core — wires state + IPC commands into the Tauri runtime.
 
 mod error;
+mod fs_guard;
 mod local_pty;
 mod pairing;
 mod serial;
@@ -186,6 +187,7 @@ pub fn run() {
             pairing::pairing_join_client,
             pairing::pairing_list_devices,
             pairing::pairing_revoke_device,
+            pairing::pairing_allow_device,
             pairing::pairing_get_local_info,
             // local filesystem operations for agent
             // opencode integration

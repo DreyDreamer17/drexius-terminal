@@ -234,34 +234,37 @@ fn open_authenticated_inner(
         let target_port = host.port;
         let jump_sess_clone = jump_sess.clone();
 
-        // Run proxy for the direct-tcpip channel
+        // Proxy thread: opens ONE direct-tcpip channel to the target and relays
+        // it to the loopback client on a SINGLE thread with a NON-BLOCKING
+        // session. The previous design ran two relay threads sharing one
+        // blocking session: ssh2 serializes session access through an internal
+        // mutex, so a blocking read held it while the other direction waited to
+        // write — stalling the tunnel.
         std::thread::Builder::new()
             .name(format!("jump-proxy-{}", &host.id[..8.min(host.id.len())]))
             .spawn(move || {
-                if let Ok((mut client_stream, _)) = listener.accept() {
-                    let _ = client_stream.set_nodelay(true);
-                    if let Ok(mut channel) = jump_sess_clone.channel_direct_tcpip(&target_host, target_port, None) {
-                        let mut client_clone = match client_stream.try_clone() {
-                            Ok(c) => c,
-                            Err(_) => return,
-                        };
-                        let mut channel_clone = channel.clone();
-                        std::thread::spawn(move || {
-                            let mut buf = [0u8; 8192];
-                            while let Ok(n) = channel_clone.read(&mut buf) {
-                                if n == 0 || client_clone.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
+                let (client_stream, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(_) => return,
+                };
+                let _ = client_stream.set_nodelay(true);
+                let _ = jump_sess_clone.set_blocking(false);
+                // Non-blocking open: EAGAIN means "still in flight" — retry
+                // until the deadline instead of dropping the connection.
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                let channel = loop {
+                    match jump_sess_clone.channel_direct_tcpip(&target_host, target_port, None) {
+                        Ok(ch) => break ch,
+                        Err(e) => {
+                            if ssh2_would_block(&e) && std::time::Instant::now() < deadline {
+                                std::thread::sleep(Duration::from_millis(5));
+                                continue;
                             }
-                        });
-                        let mut buf = [0u8; 8192];
-                        while let Ok(n) = client_stream.read(&mut buf) {
-                            if n == 0 || channel.write_all(&buf[..n]).is_err() {
-                                break;
-                            }
+                            return;
                         }
                     }
-                }
+                };
+                relay_jump_stream(client_stream, channel);
             })
             .map_err(AppError::Io)?;
 
@@ -310,7 +313,13 @@ fn open_authenticated_inner(
         Some(pinned) => {
             return Err(AppError::HostKeyMismatch { expected: pinned, actual: fingerprint })
         }
-        None => return Err(AppError::UnknownHostKey { fingerprint }),
+        None => {
+            // Remember the offered key so `host_trust_key` can only pin a
+            // fingerprint this installation actually saw (TOFU anchor that the
+            // WebView cannot fake).
+            crate::vault::record_pending_trust(&host.hostname, host.port, &fingerprint);
+            return Err(AppError::UnknownHostKey { fingerprint });
+        }
     }
 
     // ── Authentication ──
@@ -340,6 +349,104 @@ fn open_authenticated_inner(
 
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// True when a libssh2 call failed only because the session is non-blocking
+/// and the operation is still in flight (`LIBSSH2_ERROR_EAGAIN == -37`, the
+/// same mapping ssh2's `From<Error> for io::Error` uses for `WouldBlock`).
+/// Such errors mean "retry", not "failed".
+pub(crate) fn ssh2_would_block(e: &ssh2::Error) -> bool {
+    e.code() == ssh2::ErrorCode::Session(-37)
+}
+
+/// Bidirectional relay between the jump-proxy loopback client and the
+/// direct-tcpip channel. Runs on one thread against a non-blocking session
+/// (`WouldBlock` is normal and just means "try again"). An idle timeout keeps
+/// dead connections from pinning the thread forever.
+fn relay_jump_stream(mut client: std::net::TcpStream, mut channel: ssh2::Channel) {
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+    let _ = client.set_nonblocking(true);
+    let mut up = [0u8; 16 * 1024];
+    let mut down = [0u8; 16 * 1024];
+    let mut last_activity = std::time::Instant::now();
+
+    loop {
+        let mut busy = false;
+
+        // client -> channel
+        match client.read(&mut up) {
+            Ok(0) => break,
+            Ok(n) => {
+                busy = true;
+                let mut w = 0;
+                while w < n {
+                    match channel.write(&up[w..n]) {
+                        Ok(0) => return,
+                        Ok(k) => w += k,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => return,
+                    }
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+
+        // channel -> client
+        match channel.read(&mut down) {
+            Ok(0) => {
+                if channel.eof() {
+                    break;
+                }
+            }
+            Ok(n) => {
+                busy = true;
+                let mut w = 0;
+                while w < n {
+                    match client.write(&down[w..n]) {
+                        Ok(0) => return,
+                        Ok(k) => w += k,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => return,
+                    }
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+
+        if busy {
+            last_activity = std::time::Instant::now();
+        } else {
+            if last_activity.elapsed() > IDLE_TIMEOUT {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    let _ = channel.send_eof();
+}
+
+/// Quote a path for a `cd` command while keeping a leading `~` expandable.
+/// Tilde expansion does not happen inside quotes, so `cd '~'` silently fails;
+/// emit `~` / `~/'rest'` instead, and plain quoting for everything else.
+fn cd_path_quote(p: &str) -> String {
+    if p == "~" {
+        return "~".to_string();
+    }
+    if let Some(rest) = p.strip_prefix("~/") {
+        return format!("~/'{}'", rest.replace('\'', "'\\''"));
+    }
+    shell_quote(p)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,7 +493,7 @@ pub fn ssh_connect(
     let mut init = String::from(OSC7_HOOK);
     if req.resume {
         if let Some(snap) = snaps.get(&host.id).or_else(|| vault.load_snapshot(&host.id).ok().flatten()) {
-            init.push_str(&format!(" cd {} 2>/dev/null; clear\n", shell_quote(&snap.cwd)));
+            init.push_str(&format!(" cd {} 2>/dev/null; clear\n", cd_path_quote(&snap.cwd)));
         }
     }
     let _ = tx.try_send(Cmd::Write(init.into_bytes()));
@@ -643,18 +750,31 @@ impl Osc7Parser {
     }
 }
 
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn parse_file_url(raw: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(raw).ok()?;
     let rest = s.strip_prefix("file://")?;
     let path = &rest[rest.find('/')?..];
-    // minimal percent-decoding
+    // Minimal percent-decoding, done on BYTES only. The previous version sliced
+    // the `&str` at `path[i + 1..i + 3]`, which panics when those byte indices
+    // fall inside a multi-byte UTF-8 character (e.g. `%€` sent in a crafted
+    // OSC-7 sequence by a remote server) — a remote crash on the SSH I/O
+    // thread (release builds abort on panic).
     let mut out = Vec::with_capacity(path.len());
     let bytes = path.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&path[i + 1..i + 3], 16) {
-                out.push(v);
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
                 i += 3;
                 continue;
             }
@@ -674,6 +794,28 @@ mod tests {
         let mut p = Osc7Parser::default();
         assert_eq!(p.feed(b"hello \x1b]7;file://box/var/"), None);
         assert_eq!(p.feed(b"log%20s\x07$ "), Some("/var/log s".into()));
+    }
+
+    #[test]
+    fn parse_file_url_multibyte_percent_no_panic() {
+        // '%'+multi-byte UTF-8 must never panic (byte-index str slicing bug) and
+        // must round-trip the literal text when it is not valid percent-encoding.
+        assert_eq!(
+            parse_file_url("file://box/tmp/%\u{20ac}x".as_bytes()),
+            Some("/tmp/%\u{20ac}x".into())
+        );
+        assert_eq!(
+            parse_file_url("file://box/tmp/%\u{20ac}".as_bytes()),
+            Some("/tmp/%\u{20ac}".into())
+        );
+        // Lone '%' and short tails stay literal.
+        assert_eq!(parse_file_url("file://box/tmp/a%".as_bytes()), Some("/tmp/a%".into()));
+        assert_eq!(parse_file_url("file://box/tmp/a%2".as_bytes()), Some("/tmp/a%2".into()));
+        // Valid percent-decoding still works (2-byte UTF-8 sequence).
+        assert_eq!(
+            parse_file_url("file://box/tmp/%C3%A9".as_bytes()),
+            Some("/tmp/\u{e9}".into())
+        );
     }
 
     #[test]

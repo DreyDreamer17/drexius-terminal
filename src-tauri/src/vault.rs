@@ -111,6 +111,12 @@ pub struct PairedDevice {
     pub public_key: Option<String>,
     pub paired_at: i64,
     pub last_sync: i64,
+    /// Stable peer device identity (`sync_device_id`) reported at pairing.
+    /// Legacy peers that predate the field send an empty string.
+    #[serde(default)]
+    pub device_id: String,
+    /// When set, this peer is revoked: it is refused at future pairings.
+    pub revoked_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -323,7 +329,8 @@ CREATE TABLE IF NOT EXISTS sync_log (
 );
 CREATE TABLE IF NOT EXISTS paired_devices (
     id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL,
-    ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL
+    ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '', revoked_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS command_history (
     id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL,
@@ -501,7 +508,7 @@ impl Vault {
             add_column_if_missing(&tx, "keychain", "vault_id", "TEXT DEFAULT 'personal'")?;
             add_column_if_missing(&tx, "tunnels", "vault_id", "TEXT DEFAULT 'personal'")?;
             add_column_if_missing(&tx, "snippets", "vault_id", "TEXT DEFAULT 'personal'")?;
-            tx.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL)", [])?;
+            tx.execute("CREATE TABLE IF NOT EXISTS paired_devices (id TEXT PRIMARY KEY, device_name TEXT NOT NULL, device_type TEXT NOT NULL, ip_address TEXT, public_key TEXT, paired_at INTEGER NOT NULL, last_sync INTEGER NOT NULL, device_id TEXT NOT NULL DEFAULT '', revoked_at INTEGER)", [])?;
             tx.execute("CREATE TABLE IF NOT EXISTS ai_configs (provider_id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_keys TEXT NOT NULL DEFAULT '[]', selected_model TEXT NOT NULL DEFAULT '', models_cache TEXT NOT NULL DEFAULT '[]', balance_strategy TEXT NOT NULL DEFAULT 'round_robin', enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)", [])?;
             add_column_if_missing(&tx, "ai_configs", "use_proxies", "INTEGER NOT NULL DEFAULT 0")?;
             add_column_if_missing(&tx, "ai_configs", "proxy_urls", "TEXT NOT NULL DEFAULT '[]'")?;
@@ -542,6 +549,16 @@ impl Vault {
             )?;
             let _ = import_hosts_keys_internal(&tx);
             tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
+        // v4: paired_devices gains a stable peer identity and a revocation marker so
+        // `pairing_revoke_device` can actually refuse the peer at future pairings.
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(3);
+        if user_version < 4 {
+            let tx = conn.unchecked_transaction()?;
+            add_column_if_missing(&tx, "paired_devices", "device_id", "TEXT NOT NULL DEFAULT ''")?;
+            add_column_if_missing(&tx, "paired_devices", "revoked_at", "INTEGER")?;
+            tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
@@ -868,7 +885,34 @@ pub async fn vault_recover(
 }
 
 #[tauri::command]
-pub fn vault_reset(vault: State<'_, Vault>) -> AppResult<()> {
+pub async fn vault_reset(app: tauri::AppHandle, vault: State<'_, Vault>) -> AppResult<()> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    // Native confirmation so a rogue frontend (XSS) cannot silently wipe the
+    // vault. Intentionally password-less (documented escape hatch) — a lost
+    // master password must never make the data unrecoverable-stuck. The dialog
+    // runs off the main thread (blocking_show panics there).
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .message(
+                "This erases the encrypted vault, saved hosts, keychain identities, \
+                 snippets and tunnels on this device. It cannot be undone. \
+                 No password is required — that is the documented escape hatch.",
+            )
+            .title("Reset NexusTerminal vault?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Erase everything".into(),
+                "Cancel".into(),
+            ))
+            .blocking_show()
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Failed to show confirmation dialog: {e}")))?;
+
+    if !confirmed {
+        return Err(AppError::Other("Reset cancelled".into()));
+    }
     vault.reset()
 }
 
@@ -1498,12 +1542,22 @@ pub fn keychain_import_local_key(
     vault_id: Option<String>,
     vault: State<'_, Vault>,
 ) -> AppResult<String> {
-    let key_path = PathBuf::from(&path);
+    // Importing a chosen key file is a feature, but a scripted call must not be
+    // able to read arbitrary files off the disk through this command. Roots
+    // restrict where, and the PEM check below restricts *what* can be taken in.
+    let key_path = crate::fs_guard::ensure_local_path_in_roots(&path)?;
     if !key_path.exists() {
         return Err(AppError::Other(format!("Key file does not exist: {}", path)));
     }
     let content = std::fs::read_to_string(&key_path)
         .map_err(|e| AppError::Other(format!("Failed to read key file: {}", e)))?;
+    // Must actually look like a PEM private key before anything else happens.
+    if !content.contains("PRIVATE KEY") {
+        return Err(AppError::Other(format!(
+            "{} does not look like a PEM private key file",
+            path
+        )));
+    }
 
     let filename = key_path
         .file_name()
@@ -2084,12 +2138,61 @@ pub fn known_host_delete(host: String, port: u16, vault: State<'_, Vault>) -> Ap
     })
 }
 
+// ── Host-key trust pinning ────────────────────────────────────────────────────
+// `host_trust_key` may only pin a fingerprint this installation actually saw on
+// a recent connect attempt. The WebView can ask to trust "the key that was just
+// offered", but it can never mint trust for an arbitrary attacker key.
+
+fn pending_trust() -> &'static Mutex<HashMap<(String, u16), (String, std::time::Instant)>> {
+    static PENDING: std::sync::OnceLock<Mutex<HashMap<(String, u16), (String, std::time::Instant)>>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const PENDING_TRUST_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Called from the SSH layer when a server offers an unknown host key.
+pub fn record_pending_trust(host: &str, port: u16, fingerprint: &str) {
+    let mut g = pending_trust().lock();
+    g.retain(|_, (_, t)| t.elapsed() < PENDING_TRUST_TTL);
+    g.insert((host.to_string(), port), (fingerprint.to_string(), std::time::Instant::now()));
+}
+
 #[tauri::command]
 pub fn host_trust_key(host: String, port: u16, fingerprint: String, vault: State<'_, Vault>) -> AppResult<()> {
+    // Only a fingerprint offered by a recent connection can be pinned.
+    let observed: Option<(String, u16)> = {
+        let mut g = pending_trust().lock();
+        g.retain(|_, (_, t)| t.elapsed() < PENDING_TRUST_TTL);
+        let key = (host.clone(), port);
+        if g.get(&key).map(|(f, _)| f == &fingerprint).unwrap_or(false) {
+            g.remove(&key);
+            Some(key)
+        } else {
+            // A jump-host key arrives under the hop's (hostname, port) even
+            // though the UI names the final target — match by fingerprint and
+            // pin under the host that actually offered it.
+            let hit = g
+                .iter()
+                .find(|(_, (f, _))| f == &fingerprint)
+                .map(|((h, p), _)| (h.clone(), *p));
+            if let Some(ref hp) = hit {
+                g.remove(hp);
+            }
+            hit
+        }
+    };
+    let (pin_host, pin_port) = observed.ok_or_else(|| {
+        AppError::Other(
+            "Refused to trust: this fingerprint was not offered by any recent connection. \
+             Reconnect and approve the key shown in the terminal."
+                .into(),
+        )
+    })?;
     vault.with(|c| {
         c.execute(
             "INSERT OR REPLACE INTO known_hosts(host, port, fingerprint, added_at) VALUES(?1, ?2, ?3, ?4)",
-            params![host, port, fingerprint, now()],
+            params![pin_host, pin_port, fingerprint, now()],
         )?;
         Ok(())
     })

@@ -190,7 +190,7 @@ export function CommandSearchModal({
                   Command History Search
                 </h3>
                 <span className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
-                  Ctrl+R
+                  Ctrl+Shift+R
                 </span>
               </div>
               <p className="text-[11px] text-slate-500">

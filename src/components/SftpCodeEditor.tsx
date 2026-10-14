@@ -88,82 +88,101 @@ function detectLanguage(filename: string): { id: string; name: string } {
 }
 
 // ── Lightweight High-Performance Syntax Highlighter ──
+// Single-pass tokenizer. The old version chain-replaced regexes over the
+// already-generated markup, so later passes matched inside earlier spans
+// (e.g. numbers inside class names like `text-emerald-300`) and corrupted the
+// HTML. Emitting the whole document in one scan cannot corrupt itself.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+type HlRule = { re: RegExp; cls: string };
+
+const HL_COMMENT = 'text-slate-500 italic';
+const HL_STRING = 'text-emerald-300';
+const HL_DOCSTRING = 'text-emerald-400/90';
+const HL_NUMBER = 'text-orange-400';
+const HL_KEYWORD = 'text-fuchsia-400 font-semibold';
+const HL_CALL = 'text-cyan-400';
+const HL_KEY = 'text-cyan-400 font-medium';
+const HL_VAR = 'text-amber-300 font-mono';
+const HL_TYPE = 'text-amber-300';
+const HL_DECORATOR = 'text-amber-400';
+
+// Rule regexes must not contain capturing groups (they would shift the group
+// indexes used to find which rule matched). Order matters: at each position
+// the first matching rule wins.
+const HL_RULES: Record<string, HlRule[]> = {
+  python: [
+    { re: /#[^\n]*/, cls: HL_COMMENT },
+    { re: /"""[\s\S]*?"""|'''[\s\S]*?'''/, cls: HL_DOCSTRING },
+    { re: /"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/, cls: HL_STRING },
+    { re: /@\w+/, cls: HL_DECORATOR },
+    { re: /\b\d+(?:\.\d+)?\b/, cls: HL_NUMBER },
+    { re: /\b(?:def|class|import|from|as|return|if|elif|else|for|while|try|except|finally|with|async|await|lambda|yield|pass|raise|break|continue|in|is|not|and|or|None|True|False|self)\b/, cls: HL_KEYWORD },
+    { re: /\b(?:print|len|range|enumerate|zip|map|filter|int|str|float|list|dict|set|tuple|open|type|isinstance)\b(?=\s*\()/, cls: HL_CALL },
+  ],
+  shell: [
+    { re: /#[^\n]*/, cls: HL_COMMENT },
+    { re: /"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/, cls: HL_STRING },
+    { re: /\$\w+|\$\{[^}]+\}/, cls: HL_VAR },
+    { re: /\b\d+\b/, cls: HL_NUMBER },
+    { re: /\b(?:if|then|else|elif|fi|for|in|do|done|case|esac|while|until|function|return|exit|local|export|source|alias)\b/, cls: HL_KEYWORD },
+    { re: /\b(?:echo|cd|ls|mkdir|rm|cp|mv|cat|grep|sed|awk|curl|wget|chmod|chown|sudo|systemctl|ssh)\b/, cls: HL_CALL },
+  ],
+  json: [
+    { re: /"(?:\\.|[^"\\])*"(?=\s*:)/, cls: HL_KEY },
+    { re: /"(?:\\.|[^"\\])*"/, cls: HL_STRING },
+    { re: /-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/, cls: HL_NUMBER },
+    { re: /\b(?:true|false|null)\b/, cls: HL_KEYWORD },
+  ],
+  rust: [
+    { re: /\/\/[^\n]*/, cls: HL_COMMENT },
+    { re: /"(?:\\.|[^"\\\n])*"/, cls: HL_STRING },
+    { re: /\b\d+(?:_\d+)*(?:\.\d+)?\b/, cls: HL_NUMBER },
+    { re: /\b(?:fn|let|mut|struct|enum|impl|trait|pub|use|mod|match|if|else|while|for|loop|return|break|continue|async|await|move|ref|where|type|const|static|true|false|None|Some|Ok|Err)\b/, cls: HL_KEYWORD },
+    { re: /\b(?:u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64|bool|char|str|String|Vec|Option|Result)\b/, cls: HL_TYPE },
+  ],
+};
+
+// JS family shares one rule set (template strings included).
+const jsRules: HlRule[] = [
+  { re: /\/\/[^\n]*|\/\*[\s\S]*?\*\//, cls: HL_COMMENT },
+  { re: /"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`/, cls: HL_STRING },
+  { re: /\b\d+(?:\.\d+)?\b/, cls: HL_NUMBER },
+  { re: /\b(?:function|const|let|var|return|if|else|switch|case|break|continue|try|catch|finally|async|await|class|interface|type|extends|implements|import|export|from|default|new|this|typeof|instanceof|void|null|undefined|true|false)\b/, cls: HL_KEYWORD },
+  { re: /\b[a-zA-Z_$]\w*\b(?=\s*\()/, cls: HL_CALL },
+];
+HL_RULES.javascript = jsRules;
+HL_RULES.typescript = jsRules;
+HL_RULES.react = jsRules;
+
 function highlightCode(code: string, langId: string): string {
-  // Escape HTML entities first
-  let html = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  const rules = HL_RULES[langId];
+  if (!rules || rules.length === 0) return escapeHtml(code);
 
-  if (langId === 'python') {
-    // Comments
-    html = html.replace(/(#.*$)/gm, '<span class="text-slate-500 italic">$1</span>');
-    // Triple strings (docstrings)
-    html = html.replace(/("""[\s\S]*?"""|'''[\s\S]*?''')/g, '<span class="text-emerald-400/90">$1</span>');
-    // Double/single strings
-    html = html.replace(/(&quot;.*?&quot;|&#39;.*?&#39;|"[^"\n]*"|'[^'\n]*')/g, '<span class="text-emerald-300">$1</span>');
-    // Decorators
-    html = html.replace(/(@\w+)/g, '<span class="text-amber-400">$1</span>');
-    // Numbers
-    html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="text-orange-400">$1</span>');
-    // Keywords
-    const pyKw = /\b(def|class|import|from|as|return|if|elif|else|for|while|try|except|finally|with|async|await|lambda|yield|pass|raise|break|continue|in|is|not|and|or|None|True|False|self)\b/g;
-    html = html.replace(pyKw, '<span class="text-fuchsia-400 font-semibold">$1</span>');
-    // Builtin functions
-    const pyBuiltins = /\b(print|len|range|enumerate|zip|map|filter|int|str|float|list|dict|set|tuple|open|type|isinstance)\b(?=\()/g;
-    html = html.replace(pyBuiltins, '<span class="text-cyan-400">$1</span>');
-  } else if (['javascript', 'typescript', 'react'].includes(langId)) {
-    // Comments
-    html = html.replace(/(\/\/.*$)/gm, '<span class="text-slate-500 italic">$1</span>');
-    html = html.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="text-slate-500 italic">$1</span>');
-    // Strings
-    html = html.replace(/(&quot;.*?&quot;|&#39;.*?&#39;|"[^"\n]*"|'[^'\n]*'|`[^`]*`)/g, '<span class="text-emerald-300">$1</span>');
-    // Numbers
-    html = html.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="text-orange-400">$1</span>');
-    // Keywords
-    const jsKw = /\b(function|const|let|var|return|if|else|switch|case|break|continue|try|catch|finally|async|await|class|interface|type|extends|implements|import|export|from|default|new|this|typeof|instanceof|void|null|undefined|true|false)\b/g;
-    html = html.replace(jsKw, '<span class="text-fuchsia-400 font-semibold">$1</span>');
-    // Functions
-    html = html.replace(/\b([a-zA-Z_$]\w*)\s*(?=\()/g, '<span class="text-cyan-400">$1</span>');
-  } else if (langId === 'shell') {
-    // Comments
-    html = html.replace(/(#.*$)/gm, '<span class="text-slate-500 italic">$1</span>');
-    // Strings
-    html = html.replace(/(&quot;.*?&quot;|"[^"\n]*"|'[^'\n]*')/g, '<span class="text-emerald-300">$1</span>');
-    // Variables
-    html = html.replace(/(\$\w+|\$\{[^}]+\})/g, '<span class="text-amber-300 font-mono">$1</span>');
-    // Numbers
-    html = html.replace(/\b(\d+)\b/g, '<span class="text-orange-400">$1</span>');
-    // Keywords
-    const shKw = /\b(if|then|else|elif|fi|for|in|do|done|case|esac|while|until|function|return|exit|local|export|source|alias)\b/g;
-    html = html.replace(shKw, '<span class="text-fuchsia-400 font-semibold">$1</span>');
-    // Common commands
-    const shCmds = /\b(echo|cd|ls|mkdir|rm|cp|mv|cat|grep|sed|awk|curl|wget|chmod|chown|sudo|systemctl|ssh)\b/g;
-    html = html.replace(shCmds, '<span class="text-cyan-400">$1</span>');
-  } else if (langId === 'json') {
-    // Keys
-    html = html.replace(/"([^"]+)":/g, '<span class="text-cyan-400 font-medium">"$1"</span>:');
-    // Strings
-    html = html.replace(/:\s*("([^"]*)")/g, ': <span class="text-emerald-300">$1</span>');
-    // Numbers & Booleans
-    html = html.replace(/:\s*(\b\d+(?:\.\d+)?\b)/g, ': <span class="text-orange-400">$1</span>');
-    html = html.replace(/:\s*\b(true|false|null)\b/g, ': <span class="text-fuchsia-400">$1</span>');
-  } else if (langId === 'rust') {
-    // Comments
-    html = html.replace(/(\/\/.*$)/gm, '<span class="text-slate-500 italic">$1</span>');
-    // Strings
-    html = html.replace(/(&quot;.*?&quot;|"[^"\n]*")/g, '<span class="text-emerald-300">$1</span>');
-    // Numbers
-    html = html.replace(/\b(\d+(?:_\d+)*(?:\.\d+)?)\b/g, '<span class="text-orange-400">$1</span>');
-    // Keywords
-    const rsKw = /\b(fn|let|mut|struct|enum|impl|trait|pub|use|mod|match|if|else|while|for|loop|return|break|continue|async|await|move|ref|where|type|const|static|true|false|None|Some|Ok|Err)\b/g;
-    html = html.replace(rsKw, '<span class="text-fuchsia-400 font-semibold">$1</span>');
-    // Types
-    const rsTypes = /\b(u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64|bool|char|str|String|Vec|Option|Result)\b/g;
-    html = html.replace(rsTypes, '<span class="text-amber-300">$1</span>');
+  const master = new RegExp(rules.map((r) => `(${r.re.source})`).join('|'), 'g');
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = master.exec(code)) !== null) {
+    if (m[0].length === 0) {
+      master.lastIndex += 1;
+      continue;
+    }
+    out += escapeHtml(code.slice(last, m.index));
+    let cls = '';
+    for (let g = 1; g <= rules.length; g++) {
+      if (m[g] !== undefined) {
+        cls = rules[g - 1].cls;
+        break;
+      }
+    }
+    out += `<span class="${cls}">${escapeHtml(m[0])}</span>`;
+    last = m.index + m[0].length;
   }
-
-  return html;
+  out += escapeHtml(code.slice(last));
+  return out;
 }
 
 export function SftpCodeEditor({

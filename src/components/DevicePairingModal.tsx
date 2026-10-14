@@ -248,13 +248,23 @@ export function DevicePairingModal({
   };
 
   const handleRevoke = async (id: string, name: string) => {
-    if (!confirm(`Revoke pairing authorization for "${name}"?`)) return;
+    if (!confirm(`Revoke pairing for "${name}"? It will be blocked from pairing again.\n\nNote: it keeps the data it already received — rotate host credentials to fully cut its access.`)) return;
     try {
       await bridge.pairingRevokeDevice(id);
-      setDevices((prev) => prev.filter((d) => d.id !== id));
+      setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, revokedAt: Math.floor(Date.now() / 1000) } : d)));
       toast(`Revoked ${name}`);
     } catch (err: any) {
       toast(`Revocation failed: ${err?.message || err}`);
+    }
+  };
+
+  const handleAllow = async (id: string, name: string) => {
+    try {
+      await bridge.pairingAllowDevice(id);
+      setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, revokedAt: null } : d)));
+      toast(`${name} can pair again`);
+    } catch (err: any) {
+      toast(`Failed: ${err?.message || err}`);
     }
   };
 
@@ -611,19 +621,36 @@ export function DevicePairingModal({
                           )}
                         </div>
                         <div>
-                          <div className="text-xs font-medium text-slate-200">{d.deviceName}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-medium text-slate-200">{d.deviceName}</span>
+                            {d.revokedAt != null && (
+                              <span className="rounded bg-rose-500/20 px-1 py-0.5 text-[9px] font-semibold text-rose-300">
+                                REVOKED
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[10px] text-slate-500 font-mono">
                             {d.ipAddress || 'LAN Peer'} · Paired {new Date(d.pairedAt * 1000).toLocaleDateString()}
                           </div>
                         </div>
                       </div>
-                      <button
-                        onClick={() => handleRevoke(d.id, d.deviceName)}
-                        title="Revoke device access"
-                        className="rounded p-1 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {d.revokedAt != null ? (
+                        <button
+                          onClick={() => handleAllow(d.id, d.deviceName)}
+                          title="Allow this device to pair again (still requires a fresh PIN)"
+                          className="rounded p-1 text-slate-500 hover:bg-emerald-500/20 hover:text-emerald-300 transition"
+                        >
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleRevoke(d.id, d.deviceName)}
+                          title="Revoke: block this device from pairing again"
+                          className="rounded p-1 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
