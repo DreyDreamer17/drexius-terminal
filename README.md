@@ -9,7 +9,7 @@ NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, se
 
 ## Key Features
 
-- **Terminal Engine**: Full xterm.js 6 support with WebGL and Canvas renderers, bracketed paste mode, OSC-7 cwd tracking, session auto-resume, ghost-text autosuggest, and broadcast input across panes.
+- **Terminal Engine**: Full xterm.js 6 support with WebGL renderer (DOM fallback), bracketed paste mode, OSC-7 cwd tracking, session auto-resume, ghost-text autosuggest, and broadcast input across panes.
 - **Protocols & Shells**:
   - **SSH & Jump Hosts**: Dedicated OS threads per session via libssh2, fail-closed TOFU host-key verification, keep-alive monitoring, and multi-hop jump hosts.
   - **SFTP**: Dedicated blocking connections for high-throughput remote file transfers without stalling the interactive shell.
