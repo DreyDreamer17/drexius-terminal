@@ -50,6 +50,7 @@ export interface PairingJoinResult {
   hostsCount: number;
   keysCount: number;
   snippetsCount: number;
+  syncReady: boolean;
 }
 
 export interface LocalDeviceInfo {

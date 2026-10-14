@@ -239,7 +239,17 @@ export function DevicePairingModal({
       );
       setJoinResult(res);
       await onRefresh();
-      toast(`Successfully linked with ${res.serverDeviceName}!`);
+      if (res.syncReady) {
+        try {
+          await bridge.syncNow();
+          await onRefresh();
+          toast(`Linked and synced with ${res.serverDeviceName}`);
+        } catch (syncError) {
+          toast(`Snapshot received; relay sync needs attention: ${String(syncError)}`);
+        }
+      } else {
+        toast(`Snapshot received from ${res.serverDeviceName}; ongoing sync was not enabled on the source`);
+      }
     } catch (err: any) {
       setJoinError(err?.message || String(err) || 'Failed to connect to host');
     } finally {
@@ -302,7 +312,7 @@ export function DevicePairingModal({
               <h3 className="text-sm font-semibold text-white">Direct Device Pairing</h3>
               <p className="flex items-center gap-1 text-[11px] text-slate-400">
                 <ShieldCheck className="h-3 w-3 text-emerald-400" />
-                X25519 Authenticated Key Exchange · One-time LAN Transfer
+                X25519 Authenticated Key Exchange · LAN Enrollment
               </p>
             </div>
           </div>
@@ -478,7 +488,7 @@ export function DevicePairingModal({
           <form onSubmit={handleJoin} className="p-5 space-y-4">
             <div>
               <p className="text-xs text-slate-400">
-                Use the pairing link from your existing device for a one-time transfer of vaults and profiles. AI API keys and proxy URLs are not transferred; this does not enable ongoing sync.
+                Use the pairing link from your existing device. The snapshot excludes AI API keys and proxy URLs. If the source has relay sync configured, pairing also enrolls this empty vault for ongoing sync.
               </p>
             </div>
 
@@ -500,6 +510,11 @@ export function DevicePairingModal({
                   <div>• {joinResult.snippetsCount} Snippets</div>
                   <div>• {joinResult.keysCount} Keychain Items</div>
                 </div>
+                <p className="mt-2 text-[11px] text-slate-300">
+                  {joinResult.syncReady
+                    ? 'Shared sync key and relay settings installed. This device uses its own local master password.'
+                    : 'One-time snapshot only. Set up a relay on the source and pair a new, empty vault to enroll in ongoing sync.'}
+                </p>
               </div>
             )}
 

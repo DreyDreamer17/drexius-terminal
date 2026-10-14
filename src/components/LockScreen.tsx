@@ -37,12 +37,19 @@ function getPasswordStrength(p: string): { score: number; label: string; color: 
 
 export function LockScreen({
   onUnlocked,
+  onJoinRequested,
   theme,
 }: {
   onUnlocked: () => void;
+  onJoinRequested?: () => void;
   theme?: NexusTheme;
 }) {
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  const [joinExisting, setJoinExisting] = useState(false);
+  const finishUnlock = () => {
+    onUnlocked();
+    if (initialized === false && joinExisting) onJoinRequested?.();
+  };
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#06080d';
@@ -166,7 +173,7 @@ Generated: ${new Date().toISOString()}
         return;
       }
 
-      onUnlocked();
+      finishUnlock();
     } catch (er) {
       setErr(isBridgeError(er) ? er.message : String(er));
     } finally {
@@ -245,7 +252,7 @@ Generated: ${new Date().toISOString()}
         setDownloadedPath(null);
         return;
       }
-      onUnlocked();
+      finishUnlock();
     } catch (er) {
       const msg = isBridgeError(er) ? er.message : String(er);
       // If the entry is gone (NoEntry) or access was denied permanently,
@@ -346,8 +353,31 @@ Generated: ${new Date().toISOString()}
             {initialized === false ? 'Create your vault' : 'Unlock vault'}
           </h2>
           <p className="mt-1 text-center text-xs text-slate-500">
-            {initialized === false ? 'Choose a master password. An Emergency Recovery Key will be generated.' : 'Enter your master password to decrypt your hosts.'}
+            {initialized === false
+              ? joinExisting
+                ? 'Choose a password for this device. After saving your recovery kit, paste a pairing link from your existing device.'
+                : 'Choose a master password. An Emergency Recovery Key will be generated.'
+              : 'Enter your master password to decrypt your hosts.'}
           </p>
+          {isTauri && initialized === false && (
+            <div className="mt-5 space-y-2">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <button type="button" onClick={() => setJoinExisting(false)}
+                  aria-pressed={!joinExisting}
+                  className={cn('rounded-xl border px-3 py-2', !joinExisting ? 'border-cyan-400/60 bg-cyan-400/10 text-cyan-200' : 'border-white/10 text-slate-400')}>
+                  Create new vault
+                </button>
+                <button type="button" onClick={() => setJoinExisting(true)}
+                  aria-pressed={joinExisting}
+                  className={cn('rounded-xl border px-3 py-2', joinExisting ? 'border-cyan-400/60 bg-cyan-400/10 text-cyan-200' : 'border-white/10 text-slate-400')}>
+                  Join existing vault
+                </button>
+              </div>
+              {joinExisting && (
+                <p className="text-[11px] text-amber-300/80">Use a new local password, then pair on the same LAN. Configure an HTTPS relay on the original device first for ongoing sync. Keep a backup of that device: this recovery kit alone cannot restore the shared sync key.</p>
+              )}
+            </div>
+          )}
 
           {/* Biometric unlock shortcut — only on desktop when a stored password exists */}
           {isTauri && initialized === true && hasStored && (
@@ -546,7 +576,7 @@ Generated: ${new Date().toISOString()}
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
           onMouseDown={() => {
             setCreatedRecoveryKey(null);
-            onUnlocked();
+            finishUnlock();
           }}
         >
           <div
@@ -591,7 +621,7 @@ Generated: ${new Date().toISOString()}
                 type="button"
                 onClick={() => {
                   setCreatedRecoveryKey(null);
-                  onUnlocked();
+                  finishUnlock();
                 }}
                 className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
               >
@@ -699,7 +729,7 @@ Generated: ${new Date().toISOString()}
                 type="button"
                 onClick={() => {
                   setCreatedRecoveryKey(null);
-                  onUnlocked();
+                  finishUnlock();
                 }}
                 className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl px-6 py-2.5 text-xs font-semibold text-black transition hover:brightness-110 active:scale-[0.99] shadow-lg"
                 style={{

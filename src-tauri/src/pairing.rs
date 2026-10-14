@@ -62,6 +62,7 @@ pub struct PairingJoinResult {
     pub hosts_count: usize,
     pub keys_count: usize,
     pub snippets_count: usize,
+    pub sync_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +119,18 @@ struct FullVaultArchive {
     pub tunnels: Vec<TunnelConfig>,
     #[serde(default)]
     pub ai_configs: Vec<AiProviderConfig>,
+    /// v2 enrollment, present only if the sender has configured relay sync.
+    /// The entire archive is sealed under the authenticated pairing key.
+    #[serde(default)]
+    pub sync_seed: Option<String>,
+    #[serde(default)]
+    pub sync_relay_url: Option<String>,
+    #[serde(default)]
+    pub sync_relay_token: Option<String>,
+    /// Last successfully applied relay cursor on the source. The snapshot
+    /// already includes every change through this cursor.
+    #[serde(default)]
+    pub sync_cursor: Option<u64>,
 }
 
 struct PairingInner {
@@ -381,8 +394,24 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             })
             .collect();
 
+        let sync_seed = crate::sync::sync_seed_if_configured(c)?;
+        let (sync_relay_url, sync_relay_token) = if sync_seed.is_some() {
+            let url: Option<String> = c.query_row(
+                "SELECT value FROM ai_settings WHERE key='sync_relay_url'", [], |r| r.get(0),
+            ).optional()?;
+            let token: Option<String> = c.query_row(
+                "SELECT value FROM ai_settings WHERE key='sync_device_token'", [], |r| r.get(0),
+            ).optional()?;
+            (url, token)
+        } else { (None, None) };
+
+        let sync_cursor = if sync_seed.is_some() {
+            c.query_row("SELECT value FROM ai_settings WHERE key='sync_cursor_v2'", [], |r| r.get::<_, String>(0))
+                .optional()?.and_then(|v| v.parse::<u64>().ok())
+        } else { None };
+
         Ok(FullVaultArchive {
-            version: 1,
+            version: 2,
             sender_device: sender_name.to_string(),
             vaults,
             hosts,
@@ -390,6 +419,10 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             snippets,
             tunnels,
             ai_configs,
+            sync_seed,
+            sync_relay_url,
+            sync_relay_token,
+            sync_cursor,
         })
     })
 }
@@ -404,6 +437,43 @@ fn restore_full_vault(
     vault.with(|c| {
         let tx = c.unchecked_transaction()?;
         let now = chrono::Utc::now().timestamp();
+
+        // Never merge a foreign sync group with existing data. Enroll only a
+        // fresh vault or a device already carrying exactly this group seed.
+        if let Some(ref incoming) = archive.sync_seed {
+            if hex::decode(incoming).map(|v| v.len() != 32).unwrap_or(true) {
+                return Err(AppError::Crypto("Invalid pairing sync seed".into()));
+            }
+            let url = archive.sync_relay_url.as_deref().ok_or_else(||
+                AppError::Crypto("Pairing sync seed has no relay URL".into()))?;
+            if !crate::sync::relay_url_is_allowed(url) {
+                return Err(AppError::Crypto("Pairing relay URL is not allowed".into()));
+            }
+            let existing: Option<String> = tx.query_row(
+                "SELECT value FROM ai_settings WHERE key='sync_seed_v2'", [], |r| r.get(0),
+            ).optional()?;
+            if let Some(seed) = existing {
+                if seed.as_str() != incoming.as_str() {
+                    return Err(AppError::Crypto("This vault belongs to a different sync group. Join from a new, empty vault instead.".into()));
+                }
+            } else {
+                let existing_data: i64 = tx.query_row(
+                    "SELECT (SELECT count(*) FROM hosts) + (SELECT count(*) FROM keychain) +
+                            (SELECT count(*) FROM snippets) + (SELECT count(*) FROM tunnels)",
+                    [], |r| r.get(0),
+                )?;
+                if existing_data != 0 {
+                    return Err(AppError::Other("Sync enrollment requires an empty vault; existing data would conflict. This device was not changed.".into()));
+                }
+            }
+        } else {
+            let enrolled: Option<String> = tx.query_row(
+                "SELECT value FROM ai_settings WHERE key='sync_seed_v2'", [], |r| r.get(0),
+            ).optional()?;
+            if enrolled.is_some() {
+                return Err(AppError::Other("Cannot merge a one-time snapshot into an enrolled sync vault. This device was not changed.".into()));
+            }
+        }
 
         // 1. Vaults
         for v in &archive.vaults {
@@ -563,6 +633,34 @@ fn restore_full_vault(
             params![dev_id, peer_name, "desktop", peer_ip, peer_pk, now, now],
         )?;
 
+        if let Some(ref seed) = archive.sync_seed {
+            tx.execute(
+                "INSERT INTO ai_settings(key,value) VALUES('sync_seed_v2',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=?1", [seed.as_str()],
+            )?;
+            if let Some(ref url) = archive.sync_relay_url {
+                tx.execute(
+                    "INSERT INTO ai_settings(key,value) VALUES('sync_relay_url',?1)
+                     ON CONFLICT(key) DO UPDATE SET value=?1", [url.as_str()],
+                )?;
+            }
+            if let Some(ref token) = archive.sync_relay_token {
+                tx.execute(
+                    "INSERT INTO ai_settings(key,value) VALUES('sync_device_token',?1)
+                     ON CONFLICT(key) DO UPDATE SET value=?1", [token.as_str()],
+                )?;
+            }
+            if let Some(source_cursor) = archive.sync_cursor {
+                let current: Option<String> = tx.query_row(
+                    "SELECT value FROM ai_settings WHERE key='sync_cursor_v2'", [], |r| r.get(0),
+                ).optional()?;
+                let next = source_cursor.max(current.and_then(|v| v.parse::<u64>().ok()).unwrap_or(0));
+                tx.execute(
+                    "INSERT INTO ai_settings(key,value) VALUES('sync_cursor_v2',?1)
+                     ON CONFLICT(key) DO UPDATE SET value=?1", [next.to_string()],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(())
     })
@@ -1124,6 +1222,7 @@ pub async fn pairing_join_client(
     let hosts_count = archive.hosts.len();
     let keys_count = archive.keychain.len();
     let snippets_count = archive.snippets.len();
+    let sync_ready = archive.sync_seed.is_some();
 
     // 6. Write archive to local database
     restore_full_vault(
@@ -1141,6 +1240,7 @@ pub async fn pairing_join_client(
         hosts_count,
         keys_count,
         snippets_count,
+        sync_ready,
     })
 }
 

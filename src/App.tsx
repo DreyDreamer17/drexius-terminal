@@ -210,6 +210,38 @@ export default function App() {
   }, []);
   useEffect(() => { if (unlocked) refresh(); }, [unlocked, refresh]);
 
+  // Relay sync runs in the background only for a configured, unlocked vault.
+  // No silent success toast: errors remain available in Sync Status for retry.
+  useEffect(() => {
+    if (!unlocked || !isTauri) return;
+    let active = true;
+    let running = false;
+    const tick = async () => {
+      if (!active || running || document.hidden || !navigator.onLine) return;
+      running = true;
+      try {
+        const st = await bridge.syncStatus();
+        if (st.enabled) {
+          await bridge.syncNow();
+          if (active) await refresh();
+        }
+      } catch (e) {
+        console.warn('Background relay sync failed (retrying later)', e);
+      } finally { running = false; }
+    };
+    const first = setTimeout(tick, 5000);
+    const interval = setInterval(tick, 60_000);
+    window.addEventListener('focus', tick);
+    window.addEventListener('online', tick);
+    return () => {
+      active = false;
+      clearTimeout(first);
+      clearInterval(interval);
+      window.removeEventListener('focus', tick);
+      window.removeEventListener('online', tick);
+    };
+  }, [unlocked, refresh]);
+
   // ── Tabs / panes ──
   const openHost = useCallback((h: Host) => {
     const pane: Pane = { id: uid(), hostId: h.id, resume: true };
@@ -574,7 +606,8 @@ export default function App() {
     <>
     {!unlocked && (
       <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
-        <LockScreen onUnlocked={() => setUnlocked(true)} theme={theme} />
+        <LockScreen onUnlocked={() => setUnlocked(true)}
+          onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
       </div>
     )}
     <div
@@ -1473,18 +1506,14 @@ function SyncModal({
       if (isTauri) {
         const tokenArg = token ? token : (status?.hasToken ? undefined : '');
         await bridge.syncConfigure(url || null, tokenArg);
-        const updated = await bridge.syncStatus();
-        if (updated.relayUrl !== (url || null) || updated.enabled !== !!url) {
-          throw new Error(updated.lastError || 'Relay settings were not applied');
-        }
-        setStatus(updated);
+        setStatus(await bridge.syncStatus());
       }
       try {
         localStorage.removeItem('nx.sync.token');
         if (url) localStorage.setItem('nx.sync.relay', url);
         else localStorage.removeItem('nx.sync.relay');
       } catch {}
-      toast(url ? 'Relay settings saved (cross-device sync is not supported yet)' : 'Relay sync disabled');
+      toast(url ? 'Relay settings saved — pair a new vault to share its sync key' : 'Relay sync disabled');
       onClose();
     } catch (e) {
       toast(`Could not save relay settings: ${String(e)}`);
@@ -1499,7 +1528,7 @@ function SyncModal({
       }
       const out = await bridge.syncNow();
       setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken });
-      toast('Relay operation finished (cross-device restore is not supported yet)');
+      toast('Encrypted sync completed');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
@@ -1509,8 +1538,8 @@ function SyncModal({
     }
   };
   const steps = [
-    ['K_root', 'Argon2id(master password, salt)'],
-    ['K_sync', 'HKDF-SHA256(K_root, "nexus/sync/v1")'],
+    ['Seed', 'Random group key · shared by encrypted pairing'],
+    ['K_sync', 'HKDF-SHA256(seed, "nexus/sync/v2")'],
     ['Seal', 'XChaCha20-Poly1305 · 256-byte padded CBOR'],
     ['Blind', 'blob id = HMAC(K_index, table:id)'],
     ['Merge', 'Hybrid logical clocks · last-writer-wins'],
@@ -1542,8 +1571,8 @@ function SyncModal({
             <Cloud className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-white">Encrypted relay sync (experimental)</h3>
-            <p className="text-[11px] text-slate-500">Cross-device restore is not supported yet</p>
+            <h3 className="text-sm font-semibold text-white">Encrypted relay sync</h3>
+            <p className="text-[11px] text-slate-500">Self-hosted relay · join other devices by encrypted pairing</p>
           </div>
         </div>
 
@@ -1557,7 +1586,7 @@ function SyncModal({
         >
           <div>
             <div className="text-xs font-semibold" style={{ color: accentColor }}>No relay? Link directly over LAN</div>
-            <div className="text-[10.5px] text-slate-400">Transfer a one-time vault snapshot by QR & PIN (AI keys and proxy URLs excluded).</div>
+            <div className="text-[10.5px] text-slate-400">Pair on the same LAN; transfers a snapshot and, if configured, relay settings and the shared sync key (AI keys excluded).</div>
           </div>
           <button
             type="button"
@@ -1591,7 +1620,7 @@ function SyncModal({
           <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
           <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">
-            Device token (optional bearer auth)
+            Relay bearer token (required for bundled relay)
             {status?.hasToken && !token && (
               <span className="ml-2 font-normal text-emerald-400 lowercase">
                 (saved in encrypted vault)
@@ -1605,8 +1634,8 @@ function SyncModal({
             placeholder={status?.hasToken ? '•••••••• (leave blank to keep existing)' : '••••••••'}
             className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none"
           />
-          <p className="mt-2 text-[11px] text-slate-500">The relay stores padded ciphertext with blinded IDs, but can see traffic metadata. Only hosts, keychain (including private keys), snippets, tunnels and vault metadata are covered; host-specific secrets, AI configs and known-host trust are not.</p>
-          <p className="mt-2 text-[11px] text-amber-300/90">Not a cross-device backup: each new vault derives a different sync key, even with the same password. Pairing transfers a snapshot, not that key. Do not rely on relay sync to restore another device.</p>
+          <p className="mt-2 text-[11px] text-slate-500">The relay stores padded ciphertext with blinded IDs but sees traffic metadata. Hosts (including inline secrets), keychain, snippets, tunnels and vault metadata sync; AI credentials and known-host trust stay local.</p>
+          <p className="mt-2 text-[11px] text-amber-300/90">Set up a self-hosted HTTPS relay and a strong bearer token first. To join, select “Join existing vault” on a new device and pair it on the same LAN; pairing shares the group key. A matching password alone is not enough. Keep separate backups; revocation does not erase already-shared keys.</p>
 
           {status && (
             <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">

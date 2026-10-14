@@ -1122,6 +1122,7 @@ export const bridge = {
       hostsCount: 4,
       keysCount: 2,
       snippetsCount: 6,
+      syncReady: false,
     };
   },
 

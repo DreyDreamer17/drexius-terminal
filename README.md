@@ -3,7 +3,7 @@
 > **Local-first, secure, open-source terminal workspace and Termius alternative.**  
 > Built with **Tauri 2 (Rust)**, **React 19**, **Tailwind CSS 4**, and **xterm.js 6**.
 
-NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, serial connections, a local SQLCipher vault, encrypted team bundles, and a multi-provider AI assistant. LAN pairing transfers a one-time vault snapshot; cloud sync is experimental and does not yet work across independently initialized devices (see [limitations](#sync-and-pairing-limitations)).
+NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, serial connections, a local SQLCipher vault, encrypted team bundles, and a multi-provider AI assistant. New devices can join an existing vault via encrypted LAN pairing; ongoing sync uses a [self-hosted relay](relay/README.md) (see [limitations](#sync-and-pairing-limitations)).
 
 ---
 
@@ -20,7 +20,7 @@ NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, se
   - **SQLCipher AES-256 Store**: PBKDF2 bypassed in favor of high-memory **Argon2id** key derivation.
   - **OS Keychain Integration**: Optional master password storage via macOS Keychain, Windows Credential Manager, or Linux Secret Service (`keyring`).
   - **Sensitive Data Hygiene**: Secret filtering across command history, session snapshots, and clipboard ingestion.
-  - **LAN Pairing & Experimental Relay Sync**: X25519/HKDF/XChaCha20-Poly1305 encrypted one-time LAN transfer; the relay sync implementation has encrypted blobs, HLC merge and tombstones, but lacks cross-device key transfer.
+  - **LAN Enrollment & Self-hosted Relay Sync**: X25519/HKDF/XChaCha20-Poly1305 encrypted pairing transfers a snapshot and shared sync seed when a relay is configured; v2 relay sync uses encrypted blobs, HLC merge and tombstones.
   - **Multi-Vault & Team Bundles**: Partition personal and team workspaces; export encrypted `.nxvault` bundles without leaking AI settings.
 - **AI Workspace & OpenCode**:
   - **Multi-Provider AI Relay**: Support for Ollama, OpenAI-compatible APIs (OpenAI, DeepSeek, Groq, OpenRouter), Anthropic, and Gemini.
@@ -41,9 +41,9 @@ For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.m
 
 ### Sync and pairing limitations
 
-- LAN pairing sends a **one-time snapshot**, not a continuing sync connection. It transfers host/keychain credentials, snippets, tunnels and AI provider configuration **without API keys or proxy URLs**. A revoked device keeps data it already received.
-- The relay sync derives its encryption and blinded-ID keys from the local vault root key. Separately initialized devices have different salts and root keys, even with the same master password; no shared-key transfer is implemented yet. **Do not rely on relay sync to populate or back up another device.** The current synced tables are hosts, keychain (including private keys), snippets, tunnels and vault metadata; host-specific secrets, AI configs and known-host trust records are not in that set. The relay stores ciphertext but can see traffic metadata.
-- Team bundles exclude AI configurations; they are separate from LAN pairing and relay sync.
+- LAN pairing sends a **one-time snapshot**. If the source has configured a relay, the encrypted transfer also enrolls a new, empty vault into its sync group (stable shared seed, relay URL and token). The new device has its **own local master password**. Pairing includes host/keychain credentials, snippets, tunnels and AI provider configuration **without API keys or proxy URLs**. A revoked device keeps data it already received.
+- Ongoing relay sync requires a [self-hosted relay](relay/README.md); no Nexus-hosted service is provided. Independently created vaults—even with identical passwords—cannot read each other's encrypted blobs: use **Join existing vault** during setup. Synced tables are hosts **including inline host secrets**, keychain (including private keys), snippets, tunnels and vault metadata. AI configs and known-host trust are local only. The relay sees ciphertext plus traffic metadata; it cannot prevent a device that already has the group seed from reading previously synced data.
+- This is an initial implementation, **not a substitute for backups**: conflict resolution is record-level last-writer-wins; compromised-device revocation does not rotate the group seed; recovery from loss of all enrolled devices is not yet supported. Team bundles exclude AI configurations and are separate from pairing and relay sync.
 
 ---
 

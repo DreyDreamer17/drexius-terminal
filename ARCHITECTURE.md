@@ -42,7 +42,7 @@ nexusterminal/
         ├── snapshot.rs                 # cwd / last-command snapshots → vault, resume on reconnect
         ├── ai_client.rs                # AI HTTP relay: key/proxy pools, auth injection, failover, cancel
         ├── pairing.rs                  # Direct device-to-device pairing over the LAN
-        ├── sync.rs                     # Experimental encrypted relay sync (no cross-device key transfer yet)
+        ├── sync.rs                     # v2 shared-seed encrypted relay sync + HLC merges
         ├── ssh_config.rs               # SSH config preview/import
         ├── fs_guard.rs                 # Filesystem access guardrails
         ├── serial.rs                   # Hardware serial port connections (UART) via serialport
@@ -126,17 +126,20 @@ every 10 s. On reconnect with `resume: true`, the session replays `cd <cwd>`.
   and the pairing responses send no CORS headers. The archive is a **one-time transfer**, not
   continuous synchronization. It includes hosts (and their secrets), keychain, tunnels, snippets
   and AI provider configuration, but `dump_full_vault` clears AI API keys and proxy URLs before
-  encryption. Revoking a peer prevents future pairing, not use of data it already received.
-* **Relay sync (`sync.rs`, experimental):** `K_sync`/`K_index` are derived via HKDF from the local
-  vault root key; HMAC-blinded IDs and 256-byte-bucket padded CBOR blobs are sealed with
-  XChaCha20-Poly1305 and merged using HLC last-writer-wins/tombstones. The relay can observe
-  access patterns, timing and blob sizes (at bucket granularity), not plaintext. **Cross-device
-  sync is not functional for separately initialized vaults:** each uses its own random KDF salt
-  and therefore different root/sync keys, even with the same password. LAN pairing transfers a
-  snapshot, not the shared sync key. There is no cross-device key-transfer flow yet. Current
-  synced tables: `hosts`, `keychain` (**including passwords/private keys**), `snippets`, `tunnels`,
-  `vaults`; `secrets` (host-specific credentials), `ai_configs` and `known_hosts` are omitted.
-  Do not rely on this feature for cross-device backup until the key-transfer design is implemented.
+  encryption. If relay sync was configured on the source, pairing also carries a stable random
+  group seed and relay settings inside the authenticated encrypted archive; the receiving vault
+  must be empty or already hold the same seed. Revoking a peer prevents future pairing, not use
+  of data it already received.
+* **Relay sync (`sync.rs`, v2):** `K_sync`/`K_index` are derived via HKDF from the **shared random
+  group seed stored in each device's SQLCipher vault**, not from its password-derived local root
+  key. Pairing transfers the seed; both devices can choose separate local master passwords.
+  v2 HMAC-blinded IDs and 256-byte-bucket padded CBOR blobs are sealed with XChaCha20-Poly1305
+  and merged using HLC last-writer-wins/tombstones. Legacy v1 blobs are ignored (not migrated).
+  The relay sees access patterns, timing and bucketed blob sizes, not plaintext. Synced tables:
+  `hosts` (with inline host-specific `secrets`), `keychain` (including passwords/private keys),
+  `snippets`, `tunnels`, `vaults`. `ai_configs` and `known_hosts` stay local. This is not a
+  substitute for backups: edits to the same record may conflict and revoking a paired device
+  does **not** rotate its existing group seed. See [relay/README.md](relay/README.md).
 
 ## 5. AI assistant
 
@@ -194,4 +197,4 @@ ai_client::ai_stream_proxy
 * The npm package name is still `react-vite-tailwind` (a project scaffold label), not the desktop product name. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
 * On Windows, local PTYs launch `%COMSPEC%` when set (normally `cmd.exe`), falling back to `powershell.exe` only if that variable is absent. Do not assume PowerShell is the default.
 * The AI relay verifies configured provider origins before attaching pooled credentials. Requests without a matching provider carry no pooled keys. The WebView CSP is broader (see §1).
-* Secret redaction is pattern-based and can miss unusual formats. Relay sync is not a working cross-device backup (see §4).
+* Secret redaction is pattern-based and can miss unusual formats. Self-hosted relay sync is not a replacement for independent backups (see §4).
