@@ -239,7 +239,12 @@ Generated: ${new Date().toISOString()}
   const biometricUnlock = async () => {
     setBioBusy(true); setErr(null);
     try {
-      await bridge.osKeychainUnlock();
+      const generatedCode = await bridge.osKeychainUnlock();
+      if (generatedCode) {
+        setCreatedRecoveryKey(generatedCode);
+        setDownloadedPath(null);
+        return;
+      }
       onUnlocked();
     } catch (er) {
       const msg = isBridgeError(er) ? er.message : String(er);

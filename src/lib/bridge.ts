@@ -320,7 +320,7 @@ export const bridge = {
     try { return localStorage.getItem('nx.os_keychain') === '1'; } catch { return false; }
   },
 
-  async osKeychainUnlock(): Promise<void> {
+  async osKeychainUnlock(): Promise<string | null> {
     if (!isTauri) throw new Error('OS keychain is only available in the desktop app');
     return invoke('os_keychain_unlock');
   },

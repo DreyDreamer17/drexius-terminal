@@ -367,6 +367,49 @@ struct RecoveryEnvelope {
     ciphertext: String,
 }
 
+/// Rekey intent journal. Written (atomically) *before* `PRAGMA rekey` runs and
+/// deleted only after the new salt + recovery envelope are safely on disk. If
+/// the process dies mid-rekey, the next unlock/recover finds this file and can
+/// either roll back (the DB still opens with the old key) or finish the rekey
+/// (the DB already opens with the new key) — never both credentials broken.
+#[derive(Serialize, Deserialize)]
+struct RekeyJournal {
+    version: u32,
+    /// hex-encoded 16-byte salt for the NEW master key.
+    new_salt: String,
+    /// new_key (32 bytes) sealed with the OLD db key:
+    /// base64(nonce24 || ciphertext48).
+    new_key_sealed: String,
+}
+
+/// Write a file as atomically as the OS allows: same-directory temp file,
+/// fsync, then rename over the target. A crash can leave a stray `.tmp-*`
+/// file but never a half-written salt/envelope/journal.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> AppResult<()> {
+    use std::io::Write;
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let fname = path
+        .file_name()
+        .ok_or_else(|| AppError::Other("Invalid target file name".into()))?;
+    let mut tmp_name = fname.to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp_path = dir.join(tmp_name);
+    let result = (|| -> AppResult<()> {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
+
 fn normalize_recovery_code(code: &str) -> String {
     let clean = code.trim().replace('-', "").replace(' ', "").to_uppercase();
     if let Some(stripped) = clean.strip_prefix("NX") {
@@ -408,6 +451,18 @@ impl Vault {
         self.path.with_extension("recovery")
     }
 
+    /// Transient rekey-intent journal (see `RekeyJournal`).
+    fn rekey_journal_path(&self) -> PathBuf {
+        self.path.with_extension("rekey")
+    }
+
+    /// Pre-rekey database snapshot taken before `PRAGMA rekey`, kept until the
+    /// rekey is finalized. Restores the pre-rekey state if the DB itself is
+    /// damaged mid-rekey.
+    fn pre_rekey_backup_path(&self) -> PathBuf {
+        self.path.with_extension("pre-rekey")
+    }
+
     pub fn derive_key(password: &str, salt: &[u8]) -> AppResult<Zeroizing<[u8; 32]>> {
         let params = Params::new(64 * 1024, 3, 1, Some(32)).map_err(|e| AppError::Crypto(e.to_string()))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -440,8 +495,42 @@ impl Vault {
         };
         let json = serde_json::to_string_pretty(&env)
             .map_err(|e| AppError::Other(e.to_string()))?;
-        std::fs::write(self.recovery_path(), json)?;
+        write_atomic(&self.recovery_path(), json.as_bytes())?;
         Ok(())
+    }
+
+    /// Seal the new db key under the old db key for the rekey journal.
+    fn seal_new_key(old_key: &[u8; 32], new_key: &[u8; 32]) -> AppResult<String> {
+        let cipher = XChaCha20Poly1305::new(old_key.into());
+        let mut nonce_bytes = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
+        let ct = cipher
+            .encrypt(nonce, new_key.as_slice())
+            .map_err(|e| AppError::Crypto(format!("Failed to seal rekey journal: {e}")))?;
+        let mut blob = nonce_bytes.to_vec();
+        blob.extend_from_slice(&ct);
+        Ok(B64.encode(blob))
+    }
+
+    fn unseal_new_key(old_key: &[u8; 32], sealed: &str) -> AppResult<Zeroizing<[u8; 32]>> {
+        let blob = B64
+            .decode(sealed)
+            .map_err(|_| AppError::Crypto("Invalid rekey journal payload".into()))?;
+        if blob.len() != 24 + 32 + 16 {
+            return Err(AppError::Crypto("Invalid rekey journal payload length".into()));
+        }
+        let nonce = XNonce::from_slice(&blob[..24]);
+        let cipher = XChaCha20Poly1305::new(old_key.into());
+        let pt = cipher
+            .decrypt(nonce, &blob[24..])
+            .map_err(|_| AppError::Crypto("Rekey journal did not match the vault key".into()))?;
+        if pt.len() != 32 {
+            return Err(AppError::Crypto("Corrupted key in rekey journal".into()));
+        }
+        let mut key = Zeroizing::new([0u8; 32]);
+        key.copy_from_slice(&pt);
+        Ok(key)
     }
 
     pub fn decrypt_recovery_envelope(&self, code: &str) -> AppResult<Zeroizing<[u8; 32]>> {
@@ -566,47 +655,159 @@ impl Vault {
     }
 
     pub fn unlock(&self, master_password: &str) -> AppResult<Option<String>> {
-        let is_new = !self.path.exists();
         let salt = match std::fs::read(self.salt_path()) {
             Ok(s) if s.len() == 16 => s,
             Ok(s) => return Err(AppError::Crypto(format!("vault salt file is corrupt ({} bytes, expected 16)", s.len()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if self.path.exists() {
                     return Err(AppError::Crypto(
-                        "Vault database exists but its salt file (nexus.vault.salt) is missing. \
+                        "Vault database exists but its salt file (nexus.salt) is missing. \
                          Refusing to generate a new salt to prevent permanent data loss. \
-                         Please restore nexus.vault.salt or delete the vault database to reset.".into()
+                         Please restore nexus.salt or delete the vault database to reset.".into()
                     ));
                 }
                 let mut s = vec![0u8; 16];
                 rand::thread_rng().fill_bytes(&mut s);
-                std::fs::write(self.salt_path(), &s)?;
+                write_atomic(&self.salt_path(), &s)?;
                 s
             }
             Err(e) => return Err(AppError::Io(e)),
         };
         let key = Self::derive_key(master_password, &salt)?;
-        self.unlock_with_key(key.clone())?;
 
-        // If the recovery envelope doesn't exist yet, create it and return the emergency key
-        if !self.recovery_path().exists() {
-            let (code, normalized) = generate_recovery_code();
-            self.save_recovery_envelope(&key, &normalized)?;
-            if is_new {
-                return Ok(Some(code));
+        // A crash mid-rekey leaves an intent journal behind. Resolve it before
+        // anything else: either the rekey never committed (roll it back) or it
+        // did (finish it and hand the user a fresh recovery key).
+        let journal = self.read_rekey_journal();
+        match self.unlock_with_key(key.clone()) {
+            Ok(()) => {
+                if let Some(j) = &journal {
+                    let journal_salt = hex::decode(&j.new_salt).unwrap_or_default();
+                    if journal_salt.as_slice() == salt.as_slice() {
+                        // DB + salt already on the new key; the envelope may
+                        // predate the crash. Regenerate it and show the code.
+                        let (code, normalized) = generate_recovery_code();
+                        self.save_recovery_envelope(&key, &normalized)?;
+                        self.clear_rekey_artifacts();
+                        let _ = os_keychain_delete();
+                        return Ok(Some(code));
+                    }
+                    // Rekey never committed: old key still opens the DB.
+                    self.clear_rekey_artifacts();
+                }
+                // No recovery envelope yet (new vault, or a vault upgraded
+                // from a version without recovery keys): create one and give
+                // the user the code — it is the only copy they will get.
+                if !self.recovery_path().exists() {
+                    let (code, normalized) = generate_recovery_code();
+                    self.save_recovery_envelope(&key, &normalized)?;
+                    return Ok(Some(code));
+                }
+                // No pending rekey: a leftover snapshot is stale.
+                let _ = std::fs::remove_file(self.pre_rekey_backup_path());
+                Ok(None)
             }
+            Err(AppError::BadMasterPassword) if journal.is_some() => {
+                // The password does not match the salt on file, but a rekey
+                // journal exists: the crash likely hit after `PRAGMA rekey`
+                // but before the new salt was written. Try the journal's salt.
+                let j = journal.expect("checked is_some");
+                let new_salt: [u8; 16] = hex::decode(&j.new_salt)
+                    .ok()
+                    .and_then(|v| v.try_into().ok())
+                    .ok_or(AppError::BadMasterPassword)?;
+                let key2 = Self::derive_key(master_password, &new_salt)?;
+                self.unlock_with_key(key2.clone())?;
+                // Post-rekey state confirmed: finish the rekey.
+                write_atomic(&self.salt_path(), &new_salt)?;
+                let (code, normalized) = generate_recovery_code();
+                self.save_recovery_envelope(&key2, &normalized)?;
+                self.clear_rekey_artifacts();
+                if let Some(ref mut u) = *self.inner.lock() {
+                    u.root_key = key2;
+                }
+                let _ = os_keychain_delete();
+                Ok(Some(code))
+            }
+            Err(e) => Err(e),
         }
-        Ok(None)
+    }
+
+    fn read_rekey_journal(&self) -> Option<RekeyJournal> {
+        let bytes = std::fs::read(self.rekey_journal_path()).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Remove the rekey journal and the pre-rekey snapshot. Called only once
+    /// the vault is known to be in a consistent state again.
+    fn clear_rekey_artifacts(&self) {
+        let _ = std::fs::remove_file(self.rekey_journal_path());
+        let _ = std::fs::remove_file(self.pre_rekey_backup_path());
     }
 
     pub fn recover_and_rekey(&self, recovery_code: &str, new_password: &str) -> AppResult<String> {
         let db_key = self.decrypt_recovery_envelope(recovery_code)?;
-        self.unlock_with_key(db_key)?;
+        let journal = self.read_rekey_journal();
+
+        match self.unlock_with_key(db_key.clone()) {
+            Ok(()) => {
+                // Old key still opens the DB. If a journal exists the previous
+                // rekey never committed — roll it back before starting anew.
+                if journal.is_some() {
+                    self.clear_rekey_artifacts();
+                }
+            }
+            Err(AppError::BadMasterPassword) if journal.is_some() => {
+                // A crashed rekey already committed (`PRAGMA rekey` ran): the
+                // old recovery code still unseals the new key from the journal.
+                let j = journal.expect("checked is_some");
+                let new_key = Self::unseal_new_key(&db_key, &j.new_key_sealed)?;
+                self.unlock_with_key(new_key.clone())?;
+                let new_salt: [u8; 16] = hex::decode(&j.new_salt)
+                    .ok()
+                    .and_then(|v| v.try_into().ok())
+                    .ok_or(AppError::Crypto("Corrupt rekey journal salt".into()))?;
+                write_atomic(&self.salt_path(), &new_salt)?;
+                let (fresh_code, normalized) = generate_recovery_code();
+                self.save_recovery_envelope(&new_key, &normalized)?;
+                self.clear_rekey_artifacts();
+                if let Some(ref mut u) = *self.inner.lock() {
+                    u.root_key = new_key;
+                }
+                let _ = os_keychain_delete();
+                return Ok(fresh_code);
+            }
+            Err(e) => return Err(e),
+        }
 
         let mut new_salt = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut new_salt);
         let new_key = Self::derive_key(new_password, &new_salt)?;
 
+        // Snapshot the (still old-keyed) database before the point of no
+        // return. A byte copy stays encrypted; the WAL is folded in first so
+        // the copy is consistent.
+        {
+            let g = self.inner.lock();
+            let u = g.as_ref().ok_or(AppError::VaultLocked)?;
+            u.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        }
+        let backup_path = self.pre_rekey_backup_path();
+        let _ = std::fs::remove_file(&backup_path);
+        std::fs::copy(self.path.clone(), &backup_path)?;
+
+        // Journal the intent (new salt + new key sealed under the old key)
+        // BEFORE rekeying, so any crash from here on is recoverable.
+        let journal = RekeyJournal {
+            version: 1,
+            new_salt: hex::encode(new_salt),
+            new_key_sealed: Self::seal_new_key(&db_key, &new_key)?,
+        };
+        let journal_json = serde_json::to_string(&journal)
+            .map_err(|e| AppError::Other(e.to_string()))?;
+        write_atomic(&self.rekey_journal_path(), journal_json.as_bytes())?;
+
+        // Point of no return.
         let hex_new_key = Zeroizing::new(hex::encode(new_key.as_ref()));
         {
             let g = self.inner.lock();
@@ -614,10 +815,13 @@ impl Vault {
             u.conn.execute_batch(&format!("PRAGMA rekey = \"x'{}'\";", hex_new_key.as_str()))?;
         }
 
-        std::fs::write(self.salt_path(), &new_salt)?;
-
+        // Finalize: new salt, then a fresh recovery envelope, then retire the
+        // journal + snapshot. If we crash between these steps, the next
+        // unlock/recover finds the journal and finishes the job.
+        write_atomic(&self.salt_path(), &new_salt)?;
         let (new_code, normalized) = generate_recovery_code();
         self.save_recovery_envelope(&new_key, &normalized)?;
+        self.clear_rekey_artifacts();
 
         if let Some(ref mut u) = *self.inner.lock() {
             u.root_key = new_key;
@@ -641,6 +845,8 @@ impl Vault {
         let _ = std::fs::remove_file(self.path.with_extension("vault-shm"));
         let _ = std::fs::remove_file(self.salt_path());
         let _ = std::fs::remove_file(self.recovery_path());
+        let _ = std::fs::remove_file(self.rekey_journal_path());
+        let _ = std::fs::remove_file(self.pre_rekey_backup_path());
         let _ = os_keychain_delete();
         Ok(())
     }
@@ -958,7 +1164,7 @@ pub fn vault_lock(vault: State<'_, Vault>) {
 // itself trigger a biometric prompt on some platforms.
 
 #[tauri::command]
-pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<()> {
+pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<Option<String>> {
     tauri::async_runtime::spawn_blocking(move || {
         // Read the master password from the OS keychain and unlock the vault.
         // On macOS this triggers a Touch ID / Apple Watch prompt via the
@@ -989,8 +1195,7 @@ pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<()> {
             }
         };
         let vault = app.state::<Vault>();
-        vault.unlock(&pw)?;
-        Ok(())
+        vault.unlock(&pw)
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
