@@ -62,6 +62,8 @@ import { registry } from '../lib/sessions';
 import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
+import { useMobile } from '../hooks/useMobile';
+import { MobileSheet } from './MobileSheet';
 
 interface Msg {
   id?: string;
@@ -220,6 +222,7 @@ export function AIPanel({
   newConnectionNonce?: number;
   visible?: boolean;
 }) {
+  const mobile = useMobile();
   const [configs, setConfigs] = useState<AiProviderConfig[]>(() => loadCachedConfigs());
   const [activeProviderId, setActiveProviderId] = useState<string>(() => {
     return localStorage.getItem('nx.ai.active_provider') || 'gemini';
@@ -655,6 +658,11 @@ export function AIPanel({
       setHostOpencodeStatus(status);
       if (!status.isRemote) {
         setOpencodeInstalled(status.installed);
+        setOnline(status.installed);
+      } else if (status.installed) {
+        setOnline(true);
+      } else if (!opencodeInstalled) {
+        setOnline(false);
       }
     } catch {
       setHostOpencodeStatus(null);
@@ -760,7 +768,7 @@ export function AIPanel({
   // Close dropdowns on click outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+      if (!mobile && modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
         setShowModelDropdown(false);
       }
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) {
@@ -775,7 +783,7 @@ export function AIPanel({
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, []);
+  }, [mobile]);
 
   // Probe provider health and model availability
   const probe = async (cfgToProbe?: AiProviderConfig) => {
@@ -787,7 +795,19 @@ export function AIPanel({
       if (rawCfg.providerId === 'opencode') {
         const status = await bridge.detectOpencode();
         setOpencodeInstalled(status.installed);
-        if (!status.installed) {
+
+        // Also check if remote host has OpenCode installed
+        const p = activePaneId ? registry.get(activePaneId) : undefined;
+        let remoteAvailable = false;
+        if (p?.hostId && p.hostId !== '__local__' && !p.hostId.startsWith('local') && !p.hostId.startsWith('serial_')) {
+          try {
+            const hStatus = await bridge.detectOpencodeSession(p.sessionId, p.hostId);
+            setHostOpencodeStatus(hStatus);
+            remoteAvailable = hStatus.isRemote && hStatus.installed;
+          } catch {}
+        }
+
+        if (!status.installed && !remoteAvailable) {
           setOnline(false);
           return;
         }
@@ -1142,8 +1162,9 @@ export function AIPanel({
       return;
     }
 
-    // If offline and OpenCode
-    if (online === false && activeConfig.providerId === 'opencode') {
+    // If offline and OpenCode (and not available via remote host)
+    const canRunRemote = hostOpencodeStatus?.isRemote && hostOpencodeStatus.installed;
+    if (online === false && !canRunRemote && activeConfig.providerId === 'opencode') {
       await new Promise((r) => setTimeout(r, 250));
       const offlineMsgs: Msg[] = [
         ...history,
@@ -1336,7 +1357,7 @@ export function AIPanel({
             {showHistory && (
               <div
                 style={{ background: theme?.xterm?.background ?? '#0d1117' }}
-                className="absolute right-0 top-full mt-1.5 z-50 w-80 rounded-xl border border-white/15 p-2.5 shadow-2xl backdrop-blur-md text-left flex flex-col gap-2"
+                className="absolute right-0 top-full mt-1.5 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-white/15 p-2.5 shadow-2xl backdrop-blur-md text-left flex flex-col gap-2"
               >
                 <div className="flex items-center justify-between border-b border-white/10 pb-2 px-1">
                   <div className="flex items-center gap-1.5">
@@ -2128,7 +2149,9 @@ export function AIPanel({
               <div className="mt-3 flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300">
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
                 <span>
-                  {opencodeInstalled
+                  {hostOpencodeStatus?.isRemote && hostOpencodeStatus.installed
+                    ? `Remote OpenCode Active on ${hostOpencodeStatus.hostLabel}`
+                    : opencodeInstalled
                     ? 'Free OpenCode Runtime Active (No API keys needed)'
                     : 'OpenCode CLI not detected — install to run free models'}
                 </span>
@@ -2271,8 +2294,8 @@ export function AIPanel({
             className="w-full resize-none bg-transparent px-2 py-2 text-[13px] text-slate-200 placeholder:text-slate-500 focus:outline-none overflow-hidden min-h-[44px] max-h-[200px]"
           />
           
-          <div className="mt-2 flex items-center justify-between gap-1.5 px-1">
-            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-y-1.5 gap-x-1 px-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
               {activeConfig.providerId === 'opencode' && (
                 <>
                   <button
@@ -2282,7 +2305,7 @@ export function AIPanel({
                       ? `Autonomous: OpenCode may run commands without asking on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
                       : 'Read-only: OpenCode cannot edit files or run shell commands'}
                     className={cn(
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition cursor-pointer',
                       opencodeAutonomous ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:bg-white/5'
                     )}
                   >
@@ -2292,11 +2315,11 @@ export function AIPanel({
                   {hostOpencodeStatus?.isRemote ? (
                     hostOpencodeStatus.installed ? (
                       <span
-                        className="flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 shrink-0"
+                        className="flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 shrink-0 min-w-0"
                         title={`Running natively on remote host: ${hostOpencodeStatus.hostLabel}`}
                       >
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
-                        <span className="truncate max-w-[100px]">{hostOpencodeStatus.hostLabel}</span>
+                        <span className="truncate max-w-[70px] sm:max-w-[110px]">{hostOpencodeStatus.hostLabel}</span>
                       </span>
                     ) : (
                       <span
@@ -2304,7 +2327,7 @@ export function AIPanel({
                         title={`OpenCode not on ${hostOpencodeStatus.hostLabel} (falls back to local)`}
                       >
                         <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
-                        <span>Local (Fallback)</span>
+                        <span>Fallback</span>
                       </span>
                     )
                   ) : (
@@ -2317,12 +2340,12 @@ export function AIPanel({
                   )}
                 </>
               )}
-                            {/* Attach Context Button (+) */}
+              {/* Attach Context Button (+) */}
               <div className="relative shrink-0" ref={attachMenuRef}>
                 <button
                   type="button"
                   onClick={() => setShowAttachMenu(!showAttachMenu)}
-                  className={cn("p-1.5 text-slate-400 hover:text-white rounded hover:bg-white/5 transition shrink-0", showAttachMenu && "text-white bg-white/10")}
+                  className={cn("p-1.5 text-slate-400 hover:text-white rounded hover:bg-white/5 transition shrink-0 cursor-pointer", showAttachMenu && "text-white bg-white/10")}
                   title="Attach Context to Prompt"
                 >
                   <Plus className="h-4 w-4" />
@@ -2331,7 +2354,7 @@ export function AIPanel({
                 {showAttachMenu && (
                   <div
                     style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
-                    className="absolute bottom-full left-0 mb-2 z-50 w-64 rounded-xl border border-white/15 p-2 shadow-2xl backdrop-blur-md text-xs"
+                    className="absolute bottom-full left-0 mb-2 z-50 w-64 max-w-[calc(100vw-2.5rem)] sm:max-w-[280px] rounded-xl border border-white/15 p-2 shadow-2xl backdrop-blur-md text-xs"
                   >
                     <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 py-1 border-b border-white/10 mb-1">
                       Attach Context
@@ -2360,7 +2383,7 @@ export function AIPanel({
                           setShowAttachMenu(false);
                           toast('Attached last command');
                         }}
-                        className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition"
+                        className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition cursor-pointer"
                       >
                         <BookOpen className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
                         <span className="truncate">Last command: `${pane.lastCommand}`</span>
@@ -2373,7 +2396,7 @@ export function AIPanel({
                           setShowAttachMenu(false);
                           toast('Attached working directory');
                         }}
-                        className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition"
+                        className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition cursor-pointer"
                       >
                         <Wand2 className="h-3.5 w-3.5 text-amber-400 shrink-0" />
                         <span className="truncate">CWD: `${pane.cwd}`</span>
@@ -2384,7 +2407,7 @@ export function AIPanel({
                         setShowAttachMenu(false);
                         ask('Analyze the errors in the recent terminal output. What is the root cause and how do I fix it?', { includeTerminal: true });
                       }}
-                      className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition"
+                      className="flex items-center gap-2 w-full px-2 py-1.5 rounded text-left text-slate-200 hover:bg-white/5 hover:text-white transition cursor-pointer"
                     >
                       <Bug className="h-3.5 w-3.5 text-rose-400 shrink-0" />
                       <span>Troubleshoot Terminal Errors</span>
@@ -2395,7 +2418,7 @@ export function AIPanel({
               
 
               {/* Working Model Picker Popover (Bottom Anchored) */}
-              <div className="relative min-w-0 flex-1 max-w-fit shrink" ref={modelDropdownRef}>
+              <div className="min-w-0 flex-1 max-w-fit shrink" ref={modelDropdownRef}>
                 <button
                   type="button"
                   onClick={(e) => {
@@ -2403,22 +2426,22 @@ export function AIPanel({
                     setShowModelDropdown((prev) => !prev);
                   }}
                   className={cn(
-                    "flex items-center gap-1 rounded-full bg-white/5 hover:bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-300 transition cursor-pointer max-w-full min-w-0",
+                    "flex items-center gap-1 rounded-full bg-white/5 hover:bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-300 transition cursor-pointer max-w-full min-w-0 shrink",
                     showModelDropdown && "bg-white/10 ring-1 ring-white/20"
                   )}
                   title="Click to switch Provider or Model"
                 >
                   <Sparkles className="h-3 w-3 text-cyan-400 shrink-0" />
-                  <span className="truncate block min-w-0 max-w-[110px] sm:max-w-[160px] md:max-w-[240px]">
-                    {activeConfig.selectedModel || activeConfig.name}
+                  <span className="truncate block min-w-0 max-w-[85px] sm:max-w-[160px] md:max-w-[240px]">
+                    {(activeConfig.selectedModel || activeConfig.name).replace(/^opencode\//, '')}
                   </span>
                   <ChevronDown className={cn("h-3 w-3 text-slate-500 transition-transform shrink-0", showModelDropdown && "rotate-180")} />
                 </button>
 
-                {showModelDropdown && (
+                {!mobile && showModelDropdown && (
                   <div
                     style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
-                    className="absolute bottom-full left-0 sm:left-1/2 sm:-translate-x-1/2 mb-2 z-[60] w-[290px] max-w-[calc(100vw-2.5rem)] rounded-xl border border-white/15 p-2.5 shadow-2xl backdrop-blur-md"
+                    className="absolute bottom-full right-1 mb-2 z-[60] w-[310px] max-w-[calc(100%-0.5rem)] rounded-xl border border-white/15 p-2.5 shadow-2xl backdrop-blur-md"
                   >
                     {/* Provider selector header */}
                     <div className="mb-2 flex items-center justify-between border-b border-white/10 pb-2">
@@ -2438,7 +2461,7 @@ export function AIPanel({
                         {showProviderMenu && (
                           <div
                             style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
-                            className="absolute left-0 top-full mt-1.5 z-[70] w-48 rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-md space-y-0.5"
+                            className="absolute left-0 top-full mt-1.5 z-[70] w-48 max-w-[calc(100%-0.5rem)] rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-md space-y-0.5"
                           >
                             <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/10 mb-1">
                               Select Provider
@@ -2582,13 +2605,13 @@ export function AIPanel({
               </div>
             </div>
             
-            <div className="flex items-center gap-1 shrink-0 ml-1.5">
+            <div className="flex items-center gap-1 shrink-0 ml-auto">
               {/* Working Microphone Voice-to-Text */}
               <button
                 type="button"
                 onClick={toggleListening}
                 className={cn(
-                  "p-1.5 rounded transition shrink-0",
+                  "p-1.5 rounded transition shrink-0 cursor-pointer",
                   listening
                     ? "bg-rose-500/20 text-rose-400 animate-pulse ring-1 ring-rose-500/40"
                     : "text-slate-400 hover:text-white hover:bg-white/5"
@@ -2602,7 +2625,7 @@ export function AIPanel({
                 <button
                   onClick={() => abortRef.current?.abort()}
                   title="Stop generation"
-                  className="grid h-7 w-7 place-items-center rounded-full bg-slate-200 text-black hover:bg-white transition shrink-0"
+                  className="grid h-7 w-7 place-items-center rounded-full bg-slate-200 text-black hover:bg-white transition shrink-0 cursor-pointer"
                 >
                   <Square className="h-3 w-3" />
                 </button>
@@ -2611,7 +2634,7 @@ export function AIPanel({
                   onClick={() => ask(input)}
                   disabled={!input.trim()}
                   title="Send prompt"
-                  className="grid h-7 w-7 place-items-center rounded-full bg-white text-black transition hover:bg-slate-200 disabled:opacity-20 shrink-0"
+                  className="grid h-7 w-7 place-items-center rounded-full bg-white text-black transition hover:bg-slate-200 disabled:opacity-20 shrink-0 cursor-pointer"
                 >
                   <ArrowUp className="h-4 w-4" />
                 </button>
@@ -2621,6 +2644,156 @@ export function AIPanel({
         </div>
       </div>
       </div>
+
+      {/* Mobile Model Selection Bottom Sheet */}
+      {mobile && showModelDropdown && (
+        <MobileSheet
+          title="Select Model"
+          kicker={activeConfig.name}
+          subtitle={`Current: ${activeConfig.selectedModel || activeConfig.name}`}
+          icon={Sparkles}
+          theme={theme}
+          onClose={() => setShowModelDropdown(false)}
+        >
+          <div className="space-y-3 pb-2 text-left">
+            {/* Provider Selector horizontal pill scroll */}
+            <div>
+              <div className="flex items-center justify-between mb-1.5 px-0.5">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Provider
+                </span>
+                <button
+                  type="button"
+                  onClick={() => probe(activeConfig)}
+                  disabled={probing}
+                  className="flex items-center gap-1 text-xs text-cyan-400 active:text-cyan-300 disabled:opacity-50 py-1 px-2 rounded-lg bg-white/5 cursor-pointer"
+                  title="Fetch live models from provider endpoint"
+                >
+                  <RefreshCw className={cn('h-3 w-3', probing && 'animate-spin')} />
+                  {probing ? 'Probing…' : 'Fetch live'}
+                </button>
+              </div>
+              <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                {KNOWN_PROVIDERS.map((p) => {
+                  const isSelected = p.id === activeProviderId;
+                  const isOpencode = p.id === 'opencode';
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => switchProvider(p.id)}
+                      className={cn(
+                        "flex items-center gap-1.5 shrink-0 rounded-xl px-3 py-2 text-xs font-medium transition cursor-pointer active:scale-95",
+                        isSelected
+                          ? "bg-cyan-500/25 border border-cyan-500/50 text-cyan-200 shadow-sm"
+                          : "bg-white/[0.04] border border-white/10 text-slate-300 hover:bg-white/10"
+                      )}
+                    >
+                      <span>{p.name.replace(/ \(.*\)/, '')}</span>
+                      {isOpencode && opencodeInstalled && (
+                        <span className="rounded bg-emerald-500/20 px-1 py-0.2 text-[9px] font-semibold text-emerald-300 border border-emerald-500/30">
+                          Free
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Search Filter */}
+            <input
+              type="text"
+              placeholder="Search models…"
+              value={modelSearch}
+              onChange={(e) => setModelSearch(e.target.value)}
+              className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+            />
+
+            {/* Models List */}
+            <div className="max-h-[35vh] space-y-1 overflow-y-auto pr-1">
+              {filteredModels.map((m) => {
+                const isSelected = m === activeConfig.selectedModel;
+                const isOpencode = activeConfig.providerId === 'opencode';
+                const isFree = isOpencode && (
+                  m.startsWith('opencode/') ||
+                  m.endsWith('-free') ||
+                  m.includes(':free') ||
+                  m.includes('/free') ||
+                  m === 'opencode/big-pickle'
+                );
+                const providerPrefix = m.includes('/') ? m.split('/')[0] : null;
+
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => {
+                      handleSelectModel(m);
+                      setShowModelDropdown(false);
+                    }}
+                    className={cn(
+                      'flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left font-mono text-xs transition cursor-pointer active:scale-[0.99]',
+                      isSelected
+                        ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-200'
+                        : 'bg-white/[0.02] border border-white/5 text-slate-300 active:bg-white/10'
+                    )}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className="truncate">{m}</span>
+                      {isFree && (
+                        <span className="shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400 border border-emerald-500/30">
+                          FREE
+                        </span>
+                      )}
+                      {!isFree && isOpencode && providerPrefix && (
+                        <span className="shrink-0 rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 border border-white/10">
+                          {providerPrefix}
+                        </span>
+                      )}
+                    </div>
+                    {isSelected && <Check className="h-4 w-4 shrink-0 text-cyan-400 ml-2" />}
+                  </button>
+                );
+              })}
+              {filteredModels.length === 0 && (
+                <div className="py-6 text-center text-xs text-slate-500">
+                  No matching models found
+                </div>
+              )}
+            </div>
+
+            {/* Custom Model Input */}
+            <div className="pt-2 border-t border-white/10">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Enter custom model ID…"
+                  value={customModelText}
+                  onChange={(e) => setCustomModelText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleAddCustomModel();
+                      setShowModelDropdown(false);
+                    }
+                  }}
+                  className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleAddCustomModel();
+                    setShowModelDropdown(false);
+                  }}
+                  className="rounded-xl bg-cyan-500/20 border border-cyan-500/30 px-3 py-2 text-xs font-semibold text-cyan-300 active:bg-cyan-500/30 transition cursor-pointer"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          </div>
+        </MobileSheet>
+      )}
 
     </div>
   );
