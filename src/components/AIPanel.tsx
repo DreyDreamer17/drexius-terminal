@@ -2461,7 +2461,7 @@ export function AIPanel({
                         {showProviderMenu && (
                           <div
                             style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
-                            className="absolute left-0 top-full mt-1.5 z-[70] w-48 max-w-[calc(100%-0.5rem)] rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-md space-y-0.5"
+                            className="absolute left-0 top-full mt-1.5 z-[70] w-56 max-h-64 overflow-y-auto rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-md space-y-0.5"
                           >
                             <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/10 mb-1">
                               Select Provider
