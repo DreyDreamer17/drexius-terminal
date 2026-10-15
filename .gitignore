@@ -6,3 +6,5 @@ src-tauri/target/
 *.log
 opencode/
 PATCHES/
+.idea/
+.gradle/

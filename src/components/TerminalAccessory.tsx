@@ -23,24 +23,51 @@ export function TerminalAccessory({
   const touched = useRef(0);
   const toolbar = useRef<HTMLDivElement>(null);
   const actions = useRef<Record<string, () => void>>({});
+  // Pending-tap tracking for tap-vs-scroll disambiguation. Firing on
+  // touchstart meant every horizontal scroll began by typing the key under
+  // the finger (and preventDefault fought the scroll itself). Instead we
+  // record the touchdown passively and only fire on a near-stationary,
+  // short touchend; real swipes glide without typing anything.
+  const tap = useRef<{ key: string; x: number; y: number; t: number } | null>(null);
+  const TAP_SLOP_PX = 12;
+  const TAP_MAX_MS = 500;
 
   const accentColor = theme?.accent || '#22d3ee';
   const bgColor = theme?.xterm.background || '#0e131d';
 
   useEffect(() => {
     const node = toolbar.current;
-    const touch = (event: TouchEvent) => {
+    const onTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
       const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-key]');
-      if (!button) return;
-      touched.current = Date.now();
-      const key = button.dataset.key;
-      if (key && actions.current[key]) {
-        event.preventDefault();
-        actions.current[key]();
+      tap.current = button?.dataset.key
+        ? { key: button.dataset.key, x: touch.clientX, y: touch.clientY, t: Date.now() }
+        : null;
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      const pending = tap.current;
+      tap.current = null;
+      if (!pending) return;
+      const touch = event.changedTouches[0];
+      const moved = Math.hypot(touch.clientX - pending.x, touch.clientY - pending.y);
+      if (moved <= TAP_SLOP_PX && Date.now() - pending.t <= TAP_MAX_MS && actions.current[pending.key]) {
+        // Stamp so the synthesized mousedown (~300ms later) is ignored by the guard below.
+        touched.current = Date.now();
+        actions.current[pending.key]();
       }
     };
-    node?.addEventListener('touchstart', touch, { passive: false });
-    return () => node?.removeEventListener('touchstart', touch);
+    const onTouchCancel = () => {
+      tap.current = null;
+    };
+    // Passive: never block the scroll gesture itself.
+    node?.addEventListener('touchstart', onTouchStart, { passive: true });
+    node?.addEventListener('touchend', onTouchEnd, { passive: true });
+    node?.addEventListener('touchcancel', onTouchCancel);
+    return () => {
+      node?.removeEventListener('touchstart', onTouchStart);
+      node?.removeEventListener('touchend', onTouchEnd);
+      node?.removeEventListener('touchcancel', onTouchCancel);
+    };
   }, []);
 
   const button = (

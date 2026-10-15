@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { useMobile } from '../hooks/useMobile';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
 function getPasswordStrength(p: string): { score: number; label: string; color: string } {
@@ -47,6 +48,7 @@ export function LockScreen({
 }) {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [joinExisting, setJoinExisting] = useState(false);
+  const mobile = useMobile();
   const finishUnlock = () => {
     onUnlocked();
     if (initialized === false && joinExisting) onJoinRequested?.();
@@ -90,12 +92,12 @@ export function LockScreen({
       // On desktop, show the biometric button only if the user has previously
       // opted in (tracked in localStorage). We never probe the OS keychain
       // here — that would trigger a Touch ID/Windows Hello prompt on mount.
-      if (isTauri) {
+      if (isTauri && !mobile) {
         setHasStored(bridge.osKeychainEnabled());
         setRemember(bridge.osKeychainEnabled());
       }
     })();
-  }, []);
+  }, [mobile]);
 
   const downloadEmergencyKit = async (key: string) => {
     setDownloading(true);
@@ -150,7 +152,7 @@ Generated: ${new Date().toISOString()}
       //   - New vault creation → store if the user ticked the box
       //   - Existing vault  → store if ticked, delete if unticked (so the
       //     checkbox faithfully reflects what's in the OS keychain)
-      if (isTauri) {
+      if (isTauri && !mobile) {
         if (remember) {
           try {
             const stored = await bridge.osKeychainStore(password);
@@ -279,7 +281,7 @@ Generated: ${new Date().toISOString()}
 
   return (
     <div
-      className="nx-lock-screen relative grid min-h-screen place-items-center overflow-hidden px-4 text-slate-200"
+      className="nx-lock-screen relative flex min-h-screen flex-col justify-center overflow-y-auto px-4 py-6 md:grid md:place-items-center text-slate-200"
       style={{ backgroundColor: bgColor }}
     >
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
@@ -292,7 +294,7 @@ Generated: ${new Date().toISOString()}
         style={{ backgroundColor: `${accentColor}15` }}
       />
 
-      <div className="relative grid w-full max-w-5xl items-center gap-12 md:grid-cols-2">
+      <div className="relative w-full max-w-md mx-auto md:max-w-5xl md:grid md:grid-cols-2 md:gap-12 md:items-center">
         <div className="hidden md:block">
           <img
             src="/nexus-logo.png"
@@ -330,7 +332,7 @@ Generated: ${new Date().toISOString()}
 
         <form
           onSubmit={submit}
-          className="nx-rise relative overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] p-8 shadow-2xl backdrop-blur-xl"
+          className="nx-rise relative w-full overflow-hidden max-md:border-0 max-md:bg-transparent max-md:shadow-none max-md:p-0 md:rounded-3xl md:border md:border-white/10 md:bg-white/[0.03] md:p-8 md:shadow-2xl md:backdrop-blur-xl"
         >
           {/* Top ambient radial glow */}
           <div
@@ -338,44 +340,69 @@ Generated: ${new Date().toISOString()}
             style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
           />
 
-          <img src="/nexus-logo.png" alt="" className="mx-auto h-14 w-14 rounded-xl md:hidden" />
-          <div
-            className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border transition shadow-lg max-md:hidden"
-            style={{
-              backgroundColor: `${accentColor}18`,
-              borderColor: `${accentColor}35`,
-              color: accentColor,
-              boxShadow: `0 0 25px ${accentColor}30`,
-            }}
-          >
-            <Lock className="h-5 w-5" />
+          {/* Logo & Header */}
+          <div className="flex flex-col items-center text-center">
+            <div
+              className="relative grid h-16 w-16 place-items-center rounded-2xl border transition shadow-xl md:h-12 md:w-12"
+              style={{
+                backgroundColor: `${accentColor}18`,
+                borderColor: `${accentColor}35`,
+                color: accentColor,
+                boxShadow: `0 0 30px ${accentColor}30`,
+              }}
+            >
+              <img src="/nexus-logo.png" alt="Nexus" className="h-10 w-10 rounded-xl md:hidden" />
+              <Lock className="hidden md:block h-5 w-5" />
+            </div>
+            <h1 className="mt-4 text-2xl font-bold tracking-tight text-white md:hidden">
+              Nexus<span style={{ color: accentColor }}>Terminal</span>
+            </h1>
+            <h2 className="mt-1.5 text-base font-semibold text-slate-200 md:mt-3 md:text-2xl md:font-bold md:text-white">
+              {initialized === false ? 'Create your master vault' : 'Unlock vault'}
+            </h2>
+            <p className="mt-1 text-center text-xs text-slate-400 max-w-xs">
+              {initialized === false
+                ? joinExisting
+                  ? 'Choose a password for this device. Then pair over your local network.'
+                  : 'Choose a master password. An Emergency Recovery Key will be generated.'
+                : 'Enter your master password to decrypt your hosts.'}
+            </p>
           </div>
-          <h2 className="mt-4 text-center text-xl font-semibold text-white">
-            {initialized === false ? 'Create your vault' : 'Unlock vault'}
-          </h2>
-          <p className="mt-1 text-center text-xs text-slate-500">
-            {initialized === false
-              ? joinExisting
-                ? 'Choose a password for this device. After saving your recovery kit, paste a pairing link from your existing device.'
-                : 'Choose a master password. An Emergency Recovery Key will be generated.'
-              : 'Enter your master password to decrypt your hosts.'}
-          </p>
+
           {isTauri && initialized === false && (
             <div className="mt-5 space-y-2">
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <button type="button" onClick={() => setJoinExisting(false)}
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-black/40 border border-white/10 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setJoinExisting(false)}
                   aria-pressed={!joinExisting}
-                  className={cn('rounded-xl border px-3 py-2', !joinExisting ? 'border-cyan-400/60 bg-cyan-400/10 text-cyan-200' : 'border-white/10 text-slate-400')}>
+                  className={cn(
+                    'nx-tab-btn rounded-lg py-2 px-3 font-medium transition text-center min-h-[36px] flex items-center justify-center',
+                    !joinExisting
+                      ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm'
+                      : 'text-slate-400 hover:text-white border border-transparent'
+                  )}
+                >
                   Create new vault
                 </button>
-                <button type="button" onClick={() => setJoinExisting(true)}
+                <button
+                  type="button"
+                  onClick={() => setJoinExisting(true)}
                   aria-pressed={joinExisting}
-                  className={cn('rounded-xl border px-3 py-2', joinExisting ? 'border-cyan-400/60 bg-cyan-400/10 text-cyan-200' : 'border-white/10 text-slate-400')}>
+                  className={cn(
+                    'nx-tab-btn rounded-lg py-2 px-3 font-medium transition text-center min-h-[36px] flex items-center justify-center',
+                    joinExisting
+                      ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-sm'
+                      : 'text-slate-400 hover:text-white border border-transparent'
+                  )}
+                >
                   Join existing vault
                 </button>
               </div>
               {joinExisting && (
-                <p className="text-[11px] text-amber-300/80">Use a new local password, then pair on the same LAN. Configure an HTTPS relay on the original device first for ongoing sync. Keep a backup of that device: this recovery kit alone cannot restore the shared sync key.</p>
+                <p className="text-[11px] text-amber-300/80 leading-relaxed px-1">
+                  Use a new local password, then pair on the same LAN. Configure an HTTPS relay on the original device first for ongoing sync. Keep a backup of that device: this recovery kit alone cannot restore the shared sync key.
+                </p>
               )}
             </div>
           )}
@@ -436,7 +463,8 @@ Generated: ${new Date().toISOString()}
               <button
                 type="button"
                 onClick={() => setShow((s: boolean) => !s)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                aria-label={show ? 'Hide password' : 'Show password'}
+                className="nx-icon-btn absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition p-1.5 rounded-lg min-h-0 min-w-0 flex items-center justify-center"
               >
                 {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
@@ -488,14 +516,14 @@ Generated: ${new Date().toISOString()}
             )}
 
             {/* Remember in OS keychain opt-in (desktop only) */}
-            {isTauri && (
+            {isTauri && !mobile && (
               <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-white/10">
                 <button
                   type="button"
                   role="checkbox"
                   aria-checked={remember}
                   onClick={() => setRemember((r: boolean) => !r)}
-                  className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition"
+                  className="nx-icon-btn mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition min-h-0 min-w-0"
                   style={
                     remember
                       ? {
@@ -527,7 +555,7 @@ Generated: ${new Date().toISOString()}
             {err && <p className="text-xs text-rose-400">{err}</p>}
             <button
               disabled={busy || initialized === null}
-              className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50"
+              className="nx-lock-submit flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[48px]"
               style={{
                 backgroundColor: accentColor,
                 color: '#000000',
@@ -562,9 +590,11 @@ Generated: ${new Date().toISOString()}
             )}
           </div>
 
-          <div className="mt-6 rounded-xl border border-white/5 bg-black/20 p-3 text-[11px] leading-relaxed text-slate-500">
+          <div className="mt-5 rounded-xl border border-white/5 bg-black/20 p-2.5 text-[11px] leading-relaxed text-slate-500 text-center">
             {isTauri
-              ? <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
+              ? mobile
+                ? <>Native Android · SQLCipher AES-256 vault · libssh2 SSH</>
+                : <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
                 {initialized && <button type="button" onClick={async () => { if (await confirmDialog({ title: 'Erase the sandbox vault?', message: 'All hosts, snippets and keys stored in this browser preview will be deleted.', confirmLabel: 'Erase vault', danger: true })) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
           </div>
@@ -582,7 +612,7 @@ Generated: ${new Date().toISOString()}
         >
           <div
             onMouseDown={(e) => e.stopPropagation()}
-            className="relative flex flex-col w-full max-w-lg rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            className="relative flex flex-col w-full max-w-lg max-h-[calc(100dvh-2rem)] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
             style={{ backgroundColor: bgColor }}
           >
             {/* Top ambient radial glow */}
@@ -757,7 +787,7 @@ Generated: ${new Date().toISOString()}
         >
           <div
             onMouseDown={(e) => e.stopPropagation()}
-            className="relative flex flex-col w-full max-w-lg rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            className="relative flex flex-col w-full max-w-lg max-h-[calc(100dvh-2rem)] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
             style={{ backgroundColor: bgColor }}
           >
             {/* Top ambient radial glow */}

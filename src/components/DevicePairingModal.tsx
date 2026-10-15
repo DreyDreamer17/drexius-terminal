@@ -83,8 +83,12 @@ export function DevicePairingModal({
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
 
-  const hostInfoRef = useRef<PairingHostInfo | null>(null);
-  hostInfoRef.current = hostInfo;
+  // PIN owned by the currently-live Share effect, if any. Only the owner may
+  // stop the backend listener. A stale start (StrictMode remount, rapid tab
+  // switch) must never stop: backend `install` reuses the live session (same
+  // PIN) for concurrent starts, so a stale `stop` would kill the session the
+  // current effect is displaying while the banner keeps showing its QR.
+  const pairingOwnerPin = useRef<string | null>(null);
 
   // ── Start Host pairing listener when in 'share' tab ──
   // NOTE: listener lifecycle depends only on `tab` so changing theme/accent
@@ -95,6 +99,7 @@ export function DevicePairingModal({
   const pairingSeq = useRef(0);
   useEffect(() => {
     let disposed = false;
+    let ownedPin: string | null = null;
 
     if (tab === 'share') {
       const seq = ++pairingSeq.current;
@@ -103,10 +108,9 @@ export function DevicePairingModal({
       setHostingError(null);
       bridge.pairingStartHost()
         .then((info) => {
-          if (disposed || pairingSeq.current !== seq) {
-            void bridge.pairingStopHost(info.pin).catch(() => {});
-            return;
-          }
+          if (disposed || pairingSeq.current !== seq) return;
+          ownedPin = info.pin;
+          pairingOwnerPin.current = info.pin;
           setHostInfo(info);
         })
         .catch((err) => {
@@ -114,13 +118,11 @@ export function DevicePairingModal({
         });
       return () => {
         disposed = true;
-        // Only stop if no newer Share session superseded this one; otherwise
-        // the stop would land after the new start and kill the live listener.
-        if (pairingSeq.current === seq) {
-          const pin = hostInfoRef.current?.pin;
-          if (pin) {
-            void bridge.pairingStopHost(pin).catch(() => {});
-          }
+        // Only the owning effect stops, using its own PIN — never a shared
+        // ref that may already point at a newer session's PIN.
+        if (pairingSeq.current === seq && ownedPin) {
+          pairingOwnerPin.current = null;
+          void bridge.pairingStopHost(ownedPin).catch(() => {});
         }
       };
     }

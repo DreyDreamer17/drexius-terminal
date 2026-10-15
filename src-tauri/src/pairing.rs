@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_PAIRING_ATTEMPTS: u32 = 5;
-const PAIRING_TIMEOUT_SECS: u64 = 300;
+const PAIRING_TIMEOUT_SECS: u64 = 600;
 const MAX_PAIRING_CONNECTIONS: usize = 8;
 const PAIRING_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PAIRING_BODY_SIZE: usize = 64 * 1024;
@@ -761,6 +761,7 @@ pub async fn pairing_start_host(
                 }
                 _ = &mut timeout => {
                     log::info!("Pairing listener timed out after {} seconds", PAIRING_TIMEOUT_SECS);
+                    let _ = app_clone.emit("pairing-expired", ());
                     break;
                 }
                 res = listener.accept() => {

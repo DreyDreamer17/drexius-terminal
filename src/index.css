@@ -210,10 +210,12 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
     align-items: center;
     gap: 0;
     flex-shrink: 0;
-    height: 38px;
-    padding: 0 6px;
+    min-height: 38px;
+    height: auto;
+    padding: 0 6px calc(10px + env(safe-area-inset-bottom, 0px));
     overflow-x: auto;
     overflow-y: hidden;
+    overscroll-behavior-x: contain;
     -webkit-overflow-scrolling: touch;
     white-space: nowrap;
   }
@@ -245,7 +247,7 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   .nx-terminal-tool { min-width: 36px; padding: 0 8px; color: var(--nx-tool, #94a3b8); }
   .nx-terminal-tool:active { background: color-mix(in srgb, var(--nx-tool, #94a3b8) 16%, transparent); color: var(--nx-tool, #e2e8f0); }
   .nx-terminal-divider { width: 1px; height: 16px; margin: 0 6px 0 4px; flex-shrink: 0; background: rgb(255 255 255 / .1); }
-  [data-keyboard="true"] .nx-terminal-accessory { height: 36px; }
+  [data-keyboard="true"] .nx-terminal-accessory { min-height: 36px; height: auto; }
   /* Pinch-to-zoom size readout: a small centred pill while the fingers are down, fades on release. */
   .nx-zoom-hud {
     position: absolute; left: 50%; top: 18px; z-index: 30; display: flex; align-items: baseline; gap: 6px;
@@ -295,9 +297,10 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   .nx-mobile-panel button, .nx-sftp button, .nx-mobile-ai button { min-width: 44px; }
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea:not(.xterm-helper-textarea) { font-size: 16px; }
   input, textarea { scroll-margin-block: 24px; }
-  .nx-lock-screen { min-height: var(--nx-viewport-height, 100dvh); padding: calc(24px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px)); }
-  .nx-lock-screen button, .nx-lock-screen input:not([type="checkbox"]) { min-height: 48px; }
-  .nx-lock-screen form { padding: 24px; }
+  .nx-lock-screen { min-height: var(--nx-viewport-height, 100dvh); padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .nx-lock-screen button:not([role="checkbox"]):not(.nx-icon-btn):not(.nx-tab-btn),
+  .nx-lock-screen input:not([type="checkbox"]) { min-height: 48px; }
+  .nx-lock-screen form { padding: 0; }
   .nx-sftp [draggable] { min-height: 60px; }
   .nx-sftp [draggable] .text-xs { font-size: 13px; }
   .nx-sftp .h-10, .nx-sftp .h-11, .nx-sftp .h-12 { height: auto; min-height: 48px; }

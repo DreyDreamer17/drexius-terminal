@@ -18,6 +18,7 @@ mod ssh_config;
 use std::time::Duration;
 use tauri::Manager;
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
 
