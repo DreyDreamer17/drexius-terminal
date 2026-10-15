@@ -39,7 +39,19 @@ export function useTerminalTouch(element: RefObject<HTMLDivElement | null>, term
     const scroll = (pixels: number) => {
       remainder += pixels / Math.max(1, rowHeight());
       const lines = Math.trunc(remainder);
-      if (lines) { term.scrollLines(lines); remainder -= lines; }
+      if (!lines) return;
+      if (term.buffer.active.type === 'alternate') {
+        const isApp = term.modes.applicationCursorKeysMode;
+        const key = lines > 0 ? (isApp ? '\x1bOB' : '\x1b[B') : (isApp ? '\x1bOA' : '\x1b[A');
+        const count = Math.min(Math.abs(lines), 4);
+        for (let i = 0; i < count; i++) {
+          term.input(key, true);
+        }
+        remainder -= lines;
+      } else {
+        term.scrollLines(lines);
+        remainder -= lines;
+      }
     };
     const selectWord = (x: number, y: number) => {
       const rect = el.querySelector('.xterm-screen')?.getBoundingClientRect();
@@ -94,7 +106,7 @@ export function useTerminalTouch(element: RefObject<HTMLDivElement | null>, term
       }
       if (settling) { if (e.touches.length === 0) settling = false; e.preventDefault(); e.stopImmediatePropagation(); return; }
       if (held || moved) { e.preventDefault(); e.stopImmediatePropagation(); }
-      if (!moved || held || performance.now() - lastTime > 100) return;
+      if (!moved || held || performance.now() - lastTime > 100 || term.buffer.active.type === 'alternate') return;
       let previous = performance.now();
       const coast = (now: number) => {
         const dt = Math.min(32, now - previous); previous = now;

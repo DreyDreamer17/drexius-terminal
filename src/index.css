@@ -32,6 +32,8 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 
 .xterm { height: 100%; }
 .xterm .xterm-viewport { background-color: transparent !important; }
+/* Suppress floating IME composition view overlay on mobile virtual keyboards */
+.xterm .composition-view { display: none !important; }
 /* Native viewport scrollbar is fully hidden. */
 .xterm .xterm-viewport { scrollbar-width: none !important; -ms-overflow-style: none; scrollbar-color: transparent transparent; }
 .xterm .xterm-viewport::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }

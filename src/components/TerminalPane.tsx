@@ -705,6 +705,10 @@ export const TerminalPane = memo(function TerminalPane({
   const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
   const modifiersRef = useRef(modifiers);
   const swallowRef = useRef<{ char: string; until: number } | null>(null);
+  const handledInputRef = useRef(false);
+  const lastEnterRef = useRef(0);
+  const lastBackspaceRef = useRef(0);
+  const lastInsertedRef = useRef<{ text: string; time: number }>({ text: '', time: 0 });
 
   /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
   const sendAccessoryKey = useCallback((data: string) => {
@@ -714,14 +718,19 @@ export const TerminalPane = memo(function TerminalPane({
       modifiersRef.current = { ctrl: false, alt: false };
       setModifiers(modifiersRef.current);
       swallowRef.current = { char: 'c', until: Date.now() + 1200 };
-      if (term?.textarea) term.textarea.value = '';
+      if (term?.textarea) {
+        term.textarea.value = mobile ? ' ' : '';
+        if (mobile) {
+          try { term.textarea.setSelectionRange(1, 1); } catch {}
+        }
+      }
     } else if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
       modifiersRef.current = { ctrl: false, alt: false };
       setModifiers(modifiersRef.current);
     }
     term?.input(data, true);
     term?.focus();
-  }, []);
+  }, [mobile]);
 
   // Latest callbacks for the registry entry (created once in the mount effect) — the phone's
   // keypad and history drawers live in App and reach the pane through these.
@@ -795,10 +804,13 @@ export const TerminalPane = memo(function TerminalPane({
   }, []);
   const hideKeyboard = useCallback(() => {
     const term = termRef.current;
-    if (term?.textarea) term.textarea.inputMode = 'none';
+    if (term?.textarea) {
+      term.textarea.inputMode = 'none';
+      if (mobile) term.textarea.value = '';
+    }
     term?.blur();
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-  }, []);
+  }, [mobile]);
   const toggleModifier = (key: keyof TerminalModifiers) => {
     const next = { ...modifiersRef.current, [key]: !modifiersRef.current[key] };
     modifiersRef.current = next; setModifiers(next);
@@ -861,47 +873,206 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     const helperTextarea = term.textarea;
+
+    const resetHelperValue = () => {
+      if (!mobile || !helperTextarea) return;
+      helperTextarea.value = ' ';
+      try {
+        helperTextarea.setSelectionRange(1, 1);
+      } catch {
+        /* ignore */
+      }
+    };
+
     const handleBeforeInput = (e: InputEvent) => {
-      if (!modifiersRef.current.ctrl && !modifiersRef.current.alt) return;
-      const char = e.data;
-      if (char && char.length === 1) {
+      if (!mobile) {
+        if (!modifiersRef.current.ctrl && !modifiersRef.current.alt) return;
+        const char = e.data;
+        if (char && char.length === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          const activeMod = { ...modifiersRef.current };
+          modifiersRef.current = { ctrl: false, alt: false };
+          setModifiers(modifiersRef.current);
+          const lower = char.toLowerCase();
+          swallowRef.current = { char: lower, until: Date.now() + 1200 };
+          if (helperTextarea) {
+            helperTextarea.value = '';
+          }
+          const modified = modifiedTerminalInput(char, activeMod);
+          term.input(modified, true);
+        }
+        return;
+      }
+
+      // Mobile soft keyboard handling:
+      const inputType = e.inputType;
+      const data = e.data;
+
+      // Handle Ctrl/Alt one-shot latch from the mobile accessory bar
+      if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
+        if (data && data.length === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          const activeMod = { ...modifiersRef.current };
+          modifiersRef.current = { ctrl: false, alt: false };
+          setModifiers(modifiersRef.current);
+          const modified = modifiedTerminalInput(data, activeMod);
+          term.input(modified, true);
+          resetHelperValue();
+          handledInputRef.current = true;
+          return;
+        }
+      }
+
+      if (
+        inputType === 'insertText' ||
+        inputType === 'insertCompositionText' ||
+        inputType === 'insertReplacementText' ||
+        inputType === 'insertFromPaste'
+      ) {
         e.preventDefault();
         e.stopPropagation();
-        const activeMod = { ...modifiersRef.current };
-        modifiersRef.current = { ctrl: false, alt: false };
-        setModifiers(modifiersRef.current);
-        const lower = char.toLowerCase();
-        swallowRef.current = { char: lower, until: Date.now() + 1200 };
-        if (helperTextarea) {
-          helperTextarea.value = '';
+        if (data) {
+          if (data === lastInsertedRef.current.text && Date.now() - lastInsertedRef.current.time < 60) {
+            resetHelperValue();
+            handledInputRef.current = true;
+            return;
+          }
+          lastInsertedRef.current = { text: data, time: Date.now() };
+          term.input(data, true);
         }
-        const modified = modifiedTerminalInput(char, activeMod);
-        term.input(modified, true);
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
       }
+
+      if (inputType === 'deleteContentBackward') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (Date.now() - lastBackspaceRef.current > 120) {
+          lastBackspaceRef.current = Date.now();
+          term.input('\x7f', true);
+        }
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
+      }
+
+      if (inputType === 'deleteContentForward') {
+        e.preventDefault();
+        e.stopPropagation();
+        term.input('\x1b[3~', true);
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
+      }
+
+      if (inputType === 'deleteWordBackward') {
+        e.preventDefault();
+        e.stopPropagation();
+        term.input('\x17', true); // ^W in readline
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
+      }
+
+      if (inputType === 'insertLineBreak' || inputType === 'insertParagraph') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (Date.now() - lastEnterRef.current > 200) {
+          lastEnterRef.current = Date.now();
+          term.input('\r', true);
+        }
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
+      }
+    };
+
+    const handleCompositionStart = (e: CompositionEvent) => {
+      if (!mobile) return;
+      e.stopImmediatePropagation();
+    };
+
+    const handleCompositionUpdate = (e: CompositionEvent) => {
+      if (!mobile) return;
+      e.stopImmediatePropagation();
     };
 
     const handleCompositionEnd = (e: CompositionEvent) => {
-      const sw = swallowRef.current;
-      if (sw && Date.now() < sw.until) {
-        const text = (e.data || helperTextarea?.value || '').toLowerCase();
-        if (text === sw.char || text.includes(sw.char)) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (helperTextarea) helperTextarea.value = '';
+      if (!mobile) {
+        const sw = swallowRef.current;
+        if (sw && Date.now() < sw.until) {
+          const text = (e.data || helperTextarea?.value || '').toLowerCase();
+          if (text === sw.char || text.includes(sw.char)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (helperTextarea) helperTextarea.value = '';
+            return;
+          }
         }
+        return;
       }
+
+      e.stopImmediatePropagation();
+      resetHelperValue();
     };
 
     const handleInput = (e: Event) => {
-      const sw = swallowRef.current;
-      if (sw && Date.now() < sw.until) {
-        const val = (helperTextarea?.value || '').toLowerCase();
-        if (val === sw.char || val.includes(sw.char)) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          if (helperTextarea) helperTextarea.value = '';
+      if (!mobile) {
+        const sw = swallowRef.current;
+        if (sw && Date.now() < sw.until) {
+          const val = (helperTextarea?.value || '').toLowerCase();
+          if (val === sw.char || val.includes(sw.char)) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (helperTextarea) helperTextarea.value = '';
+            return;
+          }
         }
+        return;
       }
+
+      e.stopPropagation();
+
+      if (handledInputRef.current) {
+        handledInputRef.current = false;
+        if (helperTextarea && helperTextarea.value !== ' ') {
+          resetHelperValue();
+        }
+        return;
+      }
+
+      // Fallback if beforeinput didn't handle the keystroke
+      if (helperTextarea) {
+        const val = helperTextarea.value;
+        if (val === '') {
+          if (Date.now() - lastBackspaceRef.current > 120) {
+            lastBackspaceRef.current = Date.now();
+            term.input('\x7f', true);
+          }
+        } else if (val !== ' ') {
+          let text = val;
+          if (text.startsWith(' ')) text = text.slice(1);
+          else if (text.endsWith(' ')) text = text.slice(0, -1);
+          if (text) {
+            if (!(text === lastInsertedRef.current.text && Date.now() - lastInsertedRef.current.time < 60)) {
+              lastInsertedRef.current = { text, time: Date.now() };
+              term.input(text, true);
+            }
+          }
+        }
+        resetHelperValue();
+      }
+    };
+
+    const handleFocus = () => {
+      if (mobile) resetHelperValue();
+    };
+
+    const handleBlur = () => {
+      if (mobile && helperTextarea) helperTextarea.value = '';
     };
 
     const handleHelperPaste = (e: ClipboardEvent) => {
@@ -916,10 +1087,18 @@ export const TerminalPane = memo(function TerminalPane({
       helperTextarea.setAttribute('autocomplete', 'off');
       helperTextarea.setAttribute('autocorrect', 'off');
       helperTextarea.setAttribute('spellcheck', 'false');
-      helperTextarea.addEventListener('beforeinput', handleBeforeInput as EventListener);
+      if (mobile) {
+        helperTextarea.setAttribute('enterkeyhint', 'send');
+        resetHelperValue();
+      }
+      helperTextarea.addEventListener('beforeinput', handleBeforeInput as EventListener, true);
+      helperTextarea.addEventListener('compositionstart', handleCompositionStart as EventListener, true);
+      helperTextarea.addEventListener('compositionupdate', handleCompositionUpdate as EventListener, true);
       helperTextarea.addEventListener('compositionend', handleCompositionEnd as EventListener, true);
       helperTextarea.addEventListener('input', handleInput as EventListener, true);
       helperTextarea.addEventListener('paste', handleHelperPaste as EventListener);
+      helperTextarea.addEventListener('focus', handleFocus);
+      helperTextarea.addEventListener('blur', handleBlur);
     }
 
     termRef.current = term;
@@ -998,6 +1177,19 @@ export const TerminalPane = memo(function TerminalPane({
     const dScroll = term.onScroll(updateGhostPos);
 
     term.attachCustomKeyEventHandler((e) => {
+      if (mobile) {
+        if (e.keyCode === 13 || e.key === 'Enter') {
+          lastEnterRef.current = Date.now();
+        } else if (e.keyCode === 8 || e.key === 'Backspace') {
+          lastBackspaceRef.current = Date.now();
+        } else if (e.keyCode === 229) {
+          // On mobile Android, keyCode 229 triggers xterm's broken CompositionHelper._handleAnyTextareaChanges()
+          // which diffs the textarea value and causes exponential text duplication/echo lag.
+          // Returning false silences xterm's internal diffing; we handle mobile typing cleanly in handleBeforeInput/handleInput.
+          return false;
+        }
+      }
+
       // Terminal Find is handled by the scoped window keydown listener below;
       // do not also send ^F to the remote shell.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'f') {
@@ -1232,10 +1424,14 @@ export const TerminalPane = memo(function TerminalPane({
     return () => {
       genRef.current += 1;
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
-      helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener);
+      helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener, true);
+      helperTextarea?.removeEventListener('compositionstart', handleCompositionStart as EventListener, true);
+      helperTextarea?.removeEventListener('compositionupdate', handleCompositionUpdate as EventListener, true);
       helperTextarea?.removeEventListener('compositionend', handleCompositionEnd as EventListener, true);
       helperTextarea?.removeEventListener('input', handleInput as EventListener, true);
       helperTextarea?.removeEventListener('paste', handleHelperPaste as EventListener);
+      helperTextarea?.removeEventListener('focus', handleFocus);
+      helperTextarea?.removeEventListener('blur', handleBlur);
       ro.disconnect();
       dCursor.dispose();
       dRender.dispose();
@@ -1609,7 +1805,7 @@ export const TerminalPane = memo(function TerminalPane({
         </div>
       )}
 
-      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'px-3 py-1.5')}
+      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'max-md:px-1 max-md:py-1 px-3 py-1.5')}
         // A half-open drawer takes the bottom of the pane; the rows refit to what is left so the prompt stays in view.
         // Mirrors the drawer's settled min-height (min(320px, 70%)) so the terminal never runs under it.
         style={mobile && active && drawerInset > 0 ? { flex: `0 0 ${(1 - drawerInset) * 100}%`, maxHeight: 'max(calc(100% - 320px), 30%)' } : undefined}>
