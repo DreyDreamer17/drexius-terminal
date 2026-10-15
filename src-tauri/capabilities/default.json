@@ -10,6 +10,7 @@
     "fs:allow-read-file",
     "fs:allow-write-file",
     "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text"
+    "clipboard-manager:allow-write-text",
+    "biometric:default"
   ]
 }

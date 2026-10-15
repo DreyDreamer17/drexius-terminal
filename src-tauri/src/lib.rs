@@ -27,6 +27,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_biometric::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -79,6 +80,9 @@ pub fn run() {
             vault::os_keychain_unlock,
             vault::os_keychain_store,
             vault::os_keychain_delete,
+            vault::os_keychain_status,
+            vault::check_storage_permission,
+            vault::request_storage_permission,
             // ai configs & multi-provider settings
             vault::ai_configs_list,
             vault::ai_config_save,

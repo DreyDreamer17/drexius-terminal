@@ -362,6 +362,15 @@ export const bridge = {
     try { return localStorage.getItem('nx.os_keychain') === '1'; } catch { return false; }
   },
 
+  async osKeychainStatus(): Promise<boolean> {
+    if (!isTauri) return false;
+    try {
+      return await invoke<boolean>('os_keychain_status');
+    } catch {
+      return false;
+    }
+  },
+
   async osKeychainUnlock(): Promise<string | null> {
     if (!isTauri) throw new Error('Device quick unlock is only available in the installed app');
     return invoke('os_keychain_unlock');
@@ -371,10 +380,10 @@ export const bridge = {
     if (!isTauri) return false;
     try {
       await invoke('os_keychain_store', { masterPassword });
-      localStorage.setItem('nx.os_keychain', '1');
+      try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
       return true;
     } catch (e) {
-      localStorage.removeItem('nx.os_keychain');
+      console.warn('osKeychainStore failed:', e);
       throw e;
     }
   },
@@ -382,7 +391,25 @@ export const bridge = {
   async osKeychainDelete(): Promise<void> {
     if (!isTauri) return;
     try { await invoke('os_keychain_delete'); } catch { /* non-fatal */ }
-    localStorage.removeItem('nx.os_keychain');
+    try { localStorage.removeItem('nx.os_keychain'); } catch {}
+  },
+
+  async checkStoragePermission(): Promise<boolean> {
+    if (!isTauri) return true;
+    try {
+      return await invoke<boolean>('check_storage_permission');
+    } catch {
+      return true;
+    }
+  },
+
+  async requestStoragePermission(): Promise<boolean> {
+    if (!isTauri) return true;
+    try {
+      return await invoke<boolean>('request_storage_permission');
+    } catch {
+      return false;
+    }
   },
 
   // ── Hosts ──

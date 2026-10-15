@@ -1274,27 +1274,38 @@ pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<Option<Strin
     tauri::async_runtime::spawn_blocking(move || {
         let vault = app.state::<Vault>();
 
-        // 1. Try OS keyring first (Desktop: macOS Keychain, Windows Credential Manager, Linux Secret Service)
-        let pw = match keychain_entry().and_then(|entry| {
-            entry.get_password().map_err(|e| match e {
-                keyring::Error::NoEntry => AppError::Other("No master password stored in OS keychain".into()),
-                keyring::Error::NoStorageAccess(msg) => AppError::Other(format!("OS keychain unavailable: {msg}")),
-                keyring::Error::PlatformFailure(msg) => AppError::Other(format!("Biometric prompt failed: {msg}")),
-                other => AppError::Other(format!("OS keychain denied access: {other}")),
-            })
-        }) {
-            Ok(p) => Zeroizing::new(p),
-            Err(keyring_err) => {
-                // Keyring is unavailable or failed (e.g. Android or headless desktop).
-                // Check if a secure device lock credential exists in the app's isolated sandbox.
-                match vault.load_device_lock() {
-                    Ok(p) => p,
-                    Err(_) => return Err(keyring_err),
-                }
-            }
-        };
+        #[cfg(target_os = "android")]
+        {
+            let pw = vault.load_device_lock().map_err(|e| {
+                AppError::Other(format!("No master password stored for quick unlock: {e}"))
+            })?;
+            return vault.unlock(&pw);
+        }
 
-        vault.unlock(&pw)
+        #[cfg(not(target_os = "android"))]
+        {
+            // 1. Try OS keyring first (Desktop: macOS Keychain, Windows Credential Manager, Linux Secret Service)
+            let pw = match keychain_entry().and_then(|entry| {
+                entry.get_password().map_err(|e| match e {
+                    keyring::Error::NoEntry => AppError::Other("No master password stored in OS keychain".into()),
+                    keyring::Error::NoStorageAccess(msg) => AppError::Other(format!("OS keychain unavailable: {msg}")),
+                    keyring::Error::PlatformFailure(msg) => AppError::Other(format!("Biometric prompt failed: {msg}")),
+                    other => AppError::Other(format!("OS keychain denied access: {other}")),
+                })
+            }) {
+                Ok(p) => Zeroizing::new(p),
+                Err(keyring_err) => {
+                    // Keyring is unavailable or failed (e.g. headless desktop).
+                    // Check if a secure device lock credential exists in the app's isolated sandbox.
+                    match vault.load_device_lock() {
+                        Ok(p) => p,
+                        Err(_) => return Err(keyring_err),
+                    }
+                }
+            };
+
+            vault.unlock(&pw)
+        }
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
@@ -1310,27 +1321,95 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
     }
     let pw = Zeroizing::new(master_password);
 
-    // 1. Try OS keyring first
-    let keyring_result = keychain_entry().and_then(|entry| {
-        entry
-            .set_password(&pw)
-            .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
-    });
-
-    // 2. If OS keyring fails (or on Android), fallback to device-bound secure file
-    if keyring_result.is_err() {
+    #[cfg(target_os = "android")]
+    {
         vault.save_device_lock(&pw)?;
+        return Ok(());
     }
-    Ok(())
+
+    #[cfg(not(target_os = "android"))]
+    {
+        // 1. Try OS keyring first
+        let keyring_result = keychain_entry().and_then(|entry| {
+            entry
+                .set_password(&pw)
+                .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
+        });
+
+        // 2. If OS keyring fails, fallback to device-bound secure file
+        if keyring_result.is_err() {
+            vault.save_device_lock(&pw)?;
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn os_keychain_status(vault: State<'_, Vault>) -> bool {
+    if vault.device_lock_path().exists() {
+        return true;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        keychain_entry().and_then(|e| e.get_password().map_err(|e| AppError::Other(e.to_string()))).is_ok()
+    }
+    #[cfg(target_os = "android")]
+    {
+        false
+    }
 }
 
 #[tauri::command]
 pub fn os_keychain_delete(vault: State<'_, Vault>) -> AppResult<()> {
+    #[cfg(not(target_os = "android"))]
     if let Ok(entry) = keychain_entry() {
         let _ = entry.delete_credential();
     }
     let _ = vault.delete_device_lock();
     Ok(())
+}
+
+#[tauri::command]
+pub fn check_storage_permission() -> AppResult<bool> {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        if !ctx.vm().is_null() && !ctx.context().is_null() {
+            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity = unsafe { jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject) };
+                if let Ok(val) = env.call_method(&activity, "isStorageGranted", "()Z", &[]) {
+                    if let Ok(b) = val.z() {
+                        return Ok(b);
+                    }
+                }
+            }
+            }
+        }
+        return Ok(false);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(true)
+    }
+}
+
+#[tauri::command]
+pub fn request_storage_permission() -> AppResult<bool> {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        if !ctx.vm().is_null() && !ctx.context().is_null() {
+            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let activity = unsafe { jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject) };
+                let _ = env.call_method(&activity, "requestStoragePermissions", "()V", &[]);
+                return Ok(true);
+            }
+            }
+        }
+    }
+    Ok(true)
 }
 
 // ── Hosts ──

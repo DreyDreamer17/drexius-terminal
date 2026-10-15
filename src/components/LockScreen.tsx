@@ -143,12 +143,14 @@ export function LockScreen({
     (async () => {
       const s = await bridge.vaultStatus();
       setInitialized(s.initialized);
-      // On desktop, show the biometric button only if the user has previously
-      // opted in (tracked in localStorage). We never probe the OS keychain
-      // here — that would trigger a Touch ID/Windows Hello prompt on mount.
-      if (isTauri && !mobile) {
-        setHasStored(bridge.osKeychainEnabled());
-        setRemember(bridge.osKeychainEnabled());
+      if (isTauri) {
+        const hasDeviceCred = await bridge.osKeychainStatus();
+        const enabled = bridge.osKeychainEnabled() || hasDeviceCred;
+        setHasStored(enabled);
+        setRemember(enabled);
+        if (hasDeviceCred && !bridge.osKeychainEnabled()) {
+          try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+        }
       }
     })();
   }, [mobile]);
@@ -186,6 +188,14 @@ Generated: ${new Date().toISOString()}
 
   const downloadEmergencyKit = async (key: string) => {
     setDownloading(true);
+    if (isTauri && mobile) {
+      try {
+        const hasPerm = await bridge.checkStoragePermission();
+        if (!hasPerm) {
+          await bridge.requestStoragePermission();
+        }
+      } catch (_) {}
+    }
     const text = `=====================================================
 NEXUSTERMINAL EMERGENCY RECOVERY KIT
 =====================================================
@@ -347,6 +357,27 @@ Generated: ${new Date().toISOString()}
   const biometricUnlock = async () => {
     setBioBusy(true); setErr(null);
     try {
+      if (isTauri && mobile) {
+        try {
+          const { authenticate } = await import('@tauri-apps/plugin-biometric');
+          await authenticate('Unlock NexusTerminal Vault', {
+            allowDeviceCredential: true,
+            title: 'NexusTerminal Vault',
+            subtitle: 'Confirm fingerprint, face or device screen lock',
+            cancelTitle: 'Use Master Password',
+          });
+        } catch (bioErr: any) {
+          const msg = bioErr?.message || String(bioErr);
+          // If user clicked cancel or opted for password fallback, switch cleanly to manual password entry
+          if (/cancel|dismiss|fallback|negative/i.test(msg)) {
+            setShowManualPassword(true);
+            setErr(null);
+            return;
+          }
+          console.warn('Biometric prompt warning:', bioErr);
+        }
+      }
+
       const generatedCode = await bridge.osKeychainUnlock();
       if (generatedCode) {
         setCreatedRecoveryKey(generatedCode);
@@ -356,14 +387,9 @@ Generated: ${new Date().toISOString()}
       finishUnlock();
     } catch (er) {
       const msg = isBridgeError(er) ? er.message : String(er);
-      // If the entry is gone (NoEntry) or access was denied permanently,
-      // clear the local opt-in flag and reveal manual password entry.
       setErr(msg);
       if (/no master password stored|not found|no entry/i.test(msg)) {
-        setHasStored(false);
-        setRemember(false);
         setShowManualPassword(true);
-        localStorage.removeItem('nx.os_keychain');
       }
     } finally {
       setBioBusy(false);

@@ -20,6 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-biometric = "2"
 
 # ── SSH / SFTP (libssh2 with vendored OpenSSL → reproducible builds) ──
 ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
@@ -60,6 +61,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "socks"] }
 portable-pty = "0.9.0"
 tauri-plugin-clipboard-manager = "2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [profile.release]
 codegen-units = 1

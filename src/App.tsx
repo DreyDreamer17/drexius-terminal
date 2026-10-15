@@ -41,6 +41,7 @@ import {
   Copy,
   Download,
   Share2,
+  FolderLock,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -132,12 +133,17 @@ export default function App() {
   const [quickUnlockPw, setQuickUnlockPw] = useState('');
   const [quickUnlockBusy, setQuickUnlockBusy] = useState(false);
   const [quickUnlockErr, setQuickUnlockErr] = useState<string | null>(null);
+  const [storageGranted, setStorageGranted] = useState<boolean | null>(null);
+  const [requestingPerm, setRequestingPerm] = useState(false);
 
   useEffect(() => {
     if (settingsPicker === 'recovery_key') {
       bridge.vaultGetRecoveryKey().then(setRecoveryKey).catch(() => {});
+    } else if (settingsPicker === 'storage_perms') {
+      bridge.checkStoragePermission().then(setStorageGranted).catch(() => {});
     }
   }, [settingsPicker]);
+
   const [sessionSheet, setSessionSheet] = useState(false);
 
   const [unlocked, setUnlocked] = useState(false);
@@ -147,6 +153,17 @@ export default function App() {
   useEffect(() => { if (unlocked) setWorkspaceReady(true); }, [unlocked]);
   // A confirm left open across an auto-lock must not fire once the vault is locked.
   useEffect(() => { if (!unlocked) cancelPendingConfirm(); }, [unlocked]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    bridge.osKeychainStatus().then((hasStored) => {
+      const enabled = hasStored || bridge.osKeychainEnabled();
+      setDeviceLockEnabled(enabled);
+      if (hasStored && !bridge.osKeychainEnabled()) {
+        try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+      }
+    }).catch(() => {});
+  }, [unlocked, mobilePage, settingsPicker]);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(readAutoLockMinutes);
   const [showAutoLockMenu, setShowAutoLockMenu] = useState(false);
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -1450,7 +1467,10 @@ export default function App() {
           </button>
           <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('storage_perms')}>
             <span className="flex items-center gap-3"><Folder size={18} /> Storage & Permissions</span>
-            <span className="nx-settings-value">Ready<ChevronRight size={16} /></span>
+            <span className="nx-settings-value">
+              {storageGranted === true ? 'Granted' : storageGranted === false ? 'Action Needed' : 'Check'}
+              <ChevronRight size={16} />
+            </span>
           </button>
         </div>
         <h2 className="nx-section-label">Appearance</h2>
@@ -1557,6 +1577,23 @@ export default function App() {
                     setQuickUnlockBusy(true);
                     setQuickUnlockErr(null);
                     try {
+                      if (mobile) {
+                        try {
+                          const { authenticate } = await import('@tauri-apps/plugin-biometric');
+                          await authenticate('Verify Biometric / Screen Lock to Enable', {
+                            allowDeviceCredential: true,
+                            title: 'NexusTerminal Vault',
+                            subtitle: 'Confirm fingerprint, face or device screen lock to enable quick unlock',
+                          });
+                        } catch (bioErr: any) {
+                          const msg = bioErr?.message || String(bioErr);
+                          if (/cancel|dismiss|fail|negative/i.test(msg)) {
+                            setQuickUnlockErr('Biometric confirmation was cancelled.');
+                            return;
+                          }
+                          console.warn('Biometric opt-in prompt note:', bioErr);
+                        }
+                      }
                       const success = await bridge.osKeychainStore(quickUnlockPw);
                       if (success) {
                         setDeviceLockEnabled(true);
@@ -1662,35 +1699,71 @@ export default function App() {
       {mobile && settingsPicker === 'storage_perms' && (
         <MobileSheet title="Storage & Permissions" kicker="System" subtitle="File access for SFTP, Downloads & terminal sessions" icon={Folder} theme={theme} onClose={() => setSettingsPicker(null)}>
           <div className="space-y-4 p-2 text-xs">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
-              <div className="flex items-center gap-2 font-medium text-white">
-                <Folder size={18} style={{ color: theme.accent }} />
-                <span>Local Files & SFTP Roots</span>
+            {/* Status & 1-Click Action */}
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-medium text-white">
+                  <ShieldCheck size={18} style={{ color: theme.accent }} />
+                  <span>Storage Permission Status</span>
+                </div>
+                <span
+                  className={cn(
+                    'rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide border',
+                    storageGranted === true
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : storageGranted === false
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                      : 'border-white/10 bg-white/5 text-slate-400'
+                  )}
+                >
+                  {storageGranted === true ? 'Granted' : storageGranted === false ? 'Action Needed' : 'Checking…'}
+                </span>
               </div>
-              <p className="text-slate-400 leading-relaxed">
-                NexusTerminal uses your public Downloads and Documents folders for file transfers, scripts, and recovery key backups:
+              <p className="text-slate-400 leading-relaxed text-[11.5px]">
+                {storageGranted === true
+                  ? 'NexusTerminal has storage access. You can browse internal storage, save recovery keys to Downloads, and transfer files via Local SFTP.'
+                  : 'Storage permission is required to browse shared storage, save your Emergency Recovery Key to Downloads, and transfer files in SFTP.'}
               </p>
-              <div className="font-mono text-[11px] text-cyan-300 bg-black/40 rounded-lg p-2 border border-white/5 space-y-1">
-                <div>• /storage/emulated/0/Download</div>
-                <div>• /storage/emulated/0/Documents</div>
-                <div>• /storage/emulated/0</div>
-              </div>
+
+              {storageGranted !== true && (
+                <button
+                  type="button"
+                  disabled={requestingPerm}
+                  onClick={async () => {
+                    setRequestingPerm(true);
+                    try {
+                      await bridge.requestStoragePermission();
+                      setTimeout(async () => {
+                        const ok = await bridge.checkStoragePermission();
+                        setStorageGranted(ok);
+                        setRequestingPerm(false);
+                      }, 1200);
+                    } catch (_) {
+                      setRequestingPerm(false);
+                    }
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-xs font-semibold text-black hover:brightness-110 active:scale-[0.99] disabled:opacity-50 transition shadow-lg cursor-pointer"
+                  style={{ backgroundColor: theme.accent }}
+                >
+                  <FolderLock size={16} />
+                  <span>{requestingPerm ? 'Opening System Dialog…' : 'Grant Storage Permission'}</span>
+                </button>
+              )}
             </div>
 
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
               <div className="flex items-center gap-2 font-medium text-white">
-                <ShieldCheck size={18} style={{ color: theme.accent }} />
-                <span>Android Permissions Guide</span>
+                <Folder size={18} style={{ color: theme.accent }} />
+                <span>Accessible Storage Directories</span>
               </div>
-              <p className="text-slate-400 leading-relaxed">
-                Modern Android versions (API 29+) restrict general file access. If you need to browse all directories or transfer files from internal folders via Local SFTP:
+              <p className="text-slate-400 leading-relaxed text-[11.5px]">
+                NexusTerminal uses these shared storage paths for file operations:
               </p>
-              <ol className="list-decimal pl-4 space-y-1 text-slate-300 text-[11.5px]">
-                <li>Open your Android phone <strong>Settings</strong></li>
-                <li>Go to <strong>Apps</strong> → <strong>NexusTerminal</strong></li>
-                <li>Tap <strong>Permissions</strong> → <strong>Files and media</strong></li>
-                <li>Select <strong>Allow management of all files</strong></li>
-              </ol>
+              <div className="font-mono text-[11px] text-cyan-300 bg-black/40 rounded-lg p-2.5 border border-white/5 space-y-1">
+                <div>• /storage/emulated/0/Download</div>
+                <div>• /storage/emulated/0/Documents</div>
+                <div>• /storage/emulated/0</div>
+              </div>
             </div>
           </div>
         </MobileSheet>
