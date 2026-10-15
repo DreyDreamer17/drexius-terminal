@@ -172,6 +172,7 @@ export const TerminalPane = memo(function TerminalPane({
   const historyLowerRef = useRef<string[]>([]);
   const [showCmdSearch, setShowCmdSearch] = useState(false);
   const [showClipboard, setShowClipboard] = useState(false);
+  const pasteLockRef = useRef(false);
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
@@ -902,6 +903,13 @@ export const TerminalPane = memo(function TerminalPane({
       }
     };
 
+    const handleHelperPaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text/plain');
+      if (text) {
+        bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
+      }
+    };
+
     if (helperTextarea) {
       helperTextarea.setAttribute('autocapitalize', 'none');
       helperTextarea.setAttribute('autocomplete', 'off');
@@ -910,6 +918,7 @@ export const TerminalPane = memo(function TerminalPane({
       helperTextarea.addEventListener('beforeinput', handleBeforeInput as EventListener);
       helperTextarea.addEventListener('compositionend', handleCompositionEnd as EventListener, true);
       helperTextarea.addEventListener('input', handleInput as EventListener, true);
+      helperTextarea.addEventListener('paste', handleHelperPaste as EventListener);
     }
 
     termRef.current = term;
@@ -1009,29 +1018,43 @@ export const TerminalPane = memo(function TerminalPane({
 
       // Ctrl+Shift+C (Linux/Win) or Cmd+C (macOS) -> Copy selection to clipboard
       if (e.type === 'keydown' && (((e.ctrlKey && e.shiftKey) || (e.metaKey && !e.shiftKey)) && e.key.toLowerCase() === 'c')) {
+        e.preventDefault();
+        e.stopPropagation();
         if (term.hasSelection()) {
           const sel = term.getSelection();
           if (sel) {
             bridge.writeClipboard(sel).catch(() => {});
             bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
           }
-          return false;
         }
+        return false;
       }
 
       // Ctrl+Shift+V (Linux/Win) or Cmd+V (macOS) -> Paste directly from system clipboard into terminal
       if (e.type === 'keydown' && (((e.ctrlKey && e.shiftKey) || (e.metaKey && !e.shiftKey)) && e.key.toLowerCase() === 'v')) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat || pasteLockRef.current) return false;
+        pasteLockRef.current = true;
         bridge.readClipboard().then((txt) => {
           if (txt) {
             term.paste(txt);
             bridge.addClipboardHistory(txt, 'System Clipboard').catch(() => {});
           }
-        }).catch((err) => console.warn('Terminal paste failed:', err));
+        }).catch((err) => {
+          console.warn('Terminal paste failed:', err);
+        }).finally(() => {
+          setTimeout(() => {
+            pasteLockRef.current = false;
+          }, 150);
+        });
         return false;
       }
 
       // Ctrl+Shift+H / Cmd+Shift+H or Ctrl+Alt+V / Cmd+Option+V -> Clipboard History modal
       if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key.toLowerCase() === 'h') || (e.altKey && e.key.toLowerCase() === 'v'))) {
+        e.preventDefault();
+        e.stopPropagation();
         setShowClipboard(true);
         return false;
       }
@@ -1165,17 +1188,8 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     };
-    const handleNativePaste = (e: ClipboardEvent) => {
-      const text = e.clipboardData?.getData('text/plain');
-      if (text) {
-        e.preventDefault();
-        term.paste(text);
-        bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
-      }
-    };
     const elContainer = elRef.current;
     elContainer?.addEventListener('mouseup', handleMouseUpCopy);
-    elContainer?.addEventListener('paste', handleNativePaste as EventListener);
 
     registry.set({
       paneId: pane.id,
@@ -1216,10 +1230,10 @@ export const TerminalPane = memo(function TerminalPane({
     return () => {
       genRef.current += 1;
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
-      elContainer?.removeEventListener('paste', handleNativePaste as EventListener);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener);
       helperTextarea?.removeEventListener('compositionend', handleCompositionEnd as EventListener, true);
       helperTextarea?.removeEventListener('input', handleInput as EventListener, true);
+      helperTextarea?.removeEventListener('paste', handleHelperPaste as EventListener);
       ro.disconnect();
       dCursor.dispose();
       dRender.dispose();
