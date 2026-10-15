@@ -19,7 +19,8 @@ import type {
   DetectedLocalKey,
   EncryptedTeamVaultBundle,
   FileEntry,
-  GeneratedKeyPair,
+  GeneratedKeySaved,
+  KeygenRequest,
   Host,
   HostSecret,
   KeychainInput,
@@ -879,21 +880,41 @@ export const bridge = {
     return '';
   },
 
-  async generateSshKey(algorithm: string, bits?: number, comment?: string, passphrase?: string): Promise<GeneratedKeyPair> {
-    if (isTauri) {
-      return invoke<GeneratedKeyPair>('keychain_generate_key', {
-        algorithm,
-        bits: bits ?? null,
-        comment: comment ?? null,
-        passphrase: passphrase ?? null,
-      });
-    }
-    const id = uid().slice(0, 8);
+  /**
+   * Generate a key pair and save it to the vault. The private key is created
+   * and stored inside Rust and never returned, so this replaces the older
+   * `generateSshKey` + `saveKeychain` pair (which round-tripped the secret
+   * through the WebView for no reason — the UI only ever shows the public key).
+   */
+  async generateAndSaveSshKey(req: KeygenRequest): Promise<GeneratedKeySaved> {
+    if (isTauri) return invoke<GeneratedKeySaved>('keychain_generate_and_save', { req });
+    const s = need();
+    const tag = uid().slice(0, 8);
+    const algorithm = req.algorithm.toUpperCase();
+    const label = req.label.trim() || `Generated ${algorithm} Key`;
+    const item: KeychainItem = {
+      id: uid(),
+      label,
+      username: req.username || null,
+      authMethod: 'key',
+      hasSecret: true,
+      updatedAt: Date.now(),
+      vaultId: req.vaultId ?? 'personal',
+    };
+    s.keychain.push(item);
+    // Demo vault only: there is no native keychain to store this in, so the
+    // placeholder goes where `saveKeychain` would have put it.
+    s.keychainSecrets[item.id] = {
+      password: null,
+      privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n(demo generated ${req.algorithm} private key)\n-----END OPENSSH PRIVATE KEY-----`,
+      passphrase: req.passphrase || null,
+    };
+    await persistDemo();
     return {
-      algorithm: algorithm.toUpperCase(),
-      privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n(demo generated ${algorithm} private key)\n-----END OPENSSH PRIVATE KEY-----`,
-      publicKey: `ssh-${algorithm.toLowerCase()} AAAAC3NzaC1lZDI1NTE5AAAAI${id} demo@nexus`,
-      fingerprint: `SHA256:${id.repeat(4)}`,
+      item,
+      publicKey: `ssh-${req.algorithm} AAAAC3NzaC1lZDI1NTE5AAAAI${tag} ${req.comment || 'demo@nexus'}`,
+      fingerprint: `SHA256:${tag.repeat(4)}`,
+      algorithm,
     };
   },
 

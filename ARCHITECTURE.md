@@ -84,7 +84,9 @@ nexusterminal/
   Linux, sandboxed builds) commands return an error and the UI falls back to password
   entry.
 * **The WebView can handle secrets.** Host credentials are entered in React forms before IPC
-  saves them; `keychain_generate_key` returns a private key to JS for `KeychainPanel` to save;
+  saves them; `keychain_generate_and_save` generates a key pair and stores the
+  private key without returning it — `GeneratedKeyPair` is intentionally not
+  `Serialize`, so no command can hand generated key material to the WebView;
   master passwords and recovery codes also pass through the lock UI. Vault *storage* and SSH
   authentication live in Rust, but the WebView must be treated as trusted application code.
 * **AI keys/proxy credentials (desktop):** `ai_configs_list` masks stored credentials and the

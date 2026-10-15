@@ -1677,26 +1677,38 @@ pub fn keychain_list(vault: State<'_, Vault>) -> AppResult<Vec<KeychainItem>> {
     })
 }
 
-#[tauri::command]
-pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult<String> {
-    let mut id = input.id;
+/// Insert or update one keychain identity and log the mutation for sync. Shared
+/// by `keychain_save` and the generate-and-save path so both keep the same
+/// `COALESCE` semantics: an omitted secret leaves the stored one alone.
+fn upsert_keychain_identity(c: &Connection, input: &KeychainInput) -> rusqlite::Result<String> {
+    let mut id = input.id.clone();
     if id.is_empty() {
         id = uuid::Uuid::new_v4().to_string();
     }
-    vault.with(|c| {
-        c.execute(
-            "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
-                 password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase), vault_id=?8, updated_at=?9",
-            params![
-                id, input.label, input.username, input.auth_method.as_str(),
-                input.password, input.private_key, input.passphrase, input.vault_id.unwrap_or_else(|| "personal".into()), now()
-            ],
-        )?;
-        let _ = log_sync_mutation(c, "keychain", &id);
-        Ok(id)
-    })
+    c.execute(
+        "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+             password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase), vault_id=?8, updated_at=?9",
+        params![
+            id,
+            input.label.clone(),
+            input.username.clone(),
+            input.auth_method.as_str(),
+            input.password.clone(),
+            input.private_key.clone(),
+            input.passphrase.clone(),
+            input.vault_id.clone().unwrap_or_else(|| "personal".into()),
+            now()
+        ],
+    )?;
+    let _ = log_sync_mutation(c, "keychain", &id);
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult<String> {
+    vault.with(|c| Ok(upsert_keychain_identity(c, &input)?))
 }
 
 #[tauri::command]
@@ -2014,8 +2026,13 @@ pub fn keychain_import_local_key(
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Output of `ssh-keygen`, consumed inside Rust only.
+///
+/// Deliberately **not** `Serialize`: a generated private key cannot be returned
+/// by a command, so it never reaches the WebView. `ZeroizeOnDrop` wipes this
+/// in-memory copy once it has been written into the (SQLCipher-backed) vault;
+/// the vault itself is the only place the key material persists.
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct GeneratedKeyPair {
     pub algorithm: String,
     pub private_key: String,
@@ -2117,15 +2134,109 @@ fn keychain_generate_key_sync(
     })
 }
 
+/// What the UI sends to create a key. There is intentionally no `privateKey`
+/// field: generation and storage happen in one Rust call.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeygenRequest {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    pub algorithm: String,
+    #[serde(default)]
+    pub bits: Option<u32>,
+    #[serde(default)]
+    pub comment: Option<String>,
+    /// Encrypts the new private key at rest; stored only on the keychain row.
+    #[serde(default)]
+    pub passphrase: Option<String>,
+    #[serde(default)]
+    pub vault_id: Option<String>,
+}
+
+/// Everything the UI may learn about a freshly generated key — metadata only.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedKeySaved {
+    pub item: KeychainItem,
+    pub public_key: String,
+    pub fingerprint: String,
+    pub algorithm: String,
+}
+
+/// Generate an SSH key pair and save it to the vault in a single call.
+///
+/// The old flow returned the private key to JavaScript, which posted it straight
+/// back to `keychain_save` — putting raw key material in the WebView, its
+/// devtools and any XSS foothold in the shell, only so it could be sent back to
+/// Rust. `KeychainPanel` never displays the private key (only the public half),
+/// so nothing is lost by keeping the secret on this side of the boundary.
 #[tauri::command]
-pub async fn keychain_generate_key(
-    algorithm: String,
-    bits: Option<u32>,
-    comment: Option<String>,
-    passphrase: Option<String>,
-) -> AppResult<GeneratedKeyPair> {
+pub async fn keychain_generate_and_save(
+    req: KeygenRequest,
+    app: tauri::AppHandle,
+) -> AppResult<GeneratedKeySaved> {
     tauri::async_runtime::spawn_blocking(move || {
-        keychain_generate_key_sync(algorithm, bits, comment, passphrase)
+        let pair = keychain_generate_key_sync(
+            req.algorithm.clone(),
+            req.bits,
+            req.comment,
+            req.passphrase.clone(),
+        )?;
+        let algorithm = pair.algorithm.clone();
+
+        let label = {
+            let requested = req.label.trim();
+            if requested.is_empty() {
+                format!("Generated {algorithm} Key")
+            } else {
+                requested.to_string()
+            }
+        };
+        let username = req.username.unwrap_or_default();
+        let vault_id = req.vault_id.unwrap_or_else(|| "personal".into());
+        let passphrase = req.passphrase.filter(|p| !p.is_empty());
+
+        let item = app.state::<Vault>().with(|c| -> AppResult<KeychainItem> {
+            let id = upsert_keychain_identity(
+                c,
+                &KeychainInput {
+                    id: String::new(),
+                    label: label.clone(),
+                    username: if username.is_empty() {
+                        None
+                    } else {
+                        Some(username.clone())
+                    },
+                    auth_method: AuthMethod::Key,
+                    password: None,
+                    private_key: Some(pair.private_key.clone()),
+                    passphrase: passphrase.clone(),
+                    vault_id: Some(vault_id.clone()),
+                },
+            )?;
+            Ok(KeychainItem {
+                id,
+                label,
+                username: if username.is_empty() {
+                    None
+                } else {
+                    Some(username)
+                },
+                auth_method: AuthMethod::Key,
+                has_secret: true,
+                updated_at: now(),
+                vault_id: Some(vault_id),
+            })
+        })?;
+
+        Ok(GeneratedKeySaved {
+            item,
+            public_key: pair.public_key.clone(),
+            fingerprint: pair.fingerprint.clone(),
+            algorithm,
+        })
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
@@ -3309,6 +3420,33 @@ mod tests {
         assert_eq!(normalize_recovery_code("nx-1234-abcd-5678-ef01"), "1234ABCD5678EF01");
         assert_eq!(normalize_recovery_code("  nx 1234 abcd "), "1234ABCD");
         assert_eq!(normalize_recovery_code("1234ABCD5678EF01"), "1234ABCD5678EF01");
+    }
+
+    /// Guards the invariant behind `keychain_generate_and_save`: whatever the
+    /// WebView learns about a generated key must never include the secret half.
+    /// If a private key or passphrase field is ever added to this response, this
+    /// test fails instead of the boundary silently widening again.
+    #[test]
+    fn generated_key_response_carries_no_private_key() {
+        let saved = GeneratedKeySaved {
+            item: KeychainItem {
+                id: "key-1".into(),
+                label: "Generated ED25519 Key".into(),
+                username: None,
+                auth_method: AuthMethod::Key,
+                has_secret: true,
+                updated_at: 0,
+                vault_id: Some("personal".into()),
+            },
+            public_key: "ssh-ed25519 AAAAC3Nza public-only".into(),
+            fingerprint: "SHA256:test".into(),
+            algorithm: "ED25519".into(),
+        };
+        let json = serde_json::to_string(&saved).expect("serialize response");
+        assert!(json.contains("publicKey"), "public half must still reach the UI");
+        assert!(!json.contains("privateKey"), "private key must not be serializable out");
+        assert!(!json.contains("PRIVATE KEY"), "no PEM material in the response");
+        assert!(!json.contains("passphrase"), "passphrase stays in Rust too");
     }
 
     #[test]

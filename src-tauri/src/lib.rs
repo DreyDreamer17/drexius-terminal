@@ -110,7 +110,7 @@ pub fn run() {
             vault::keychain_import_from_hosts,
             vault::keychain_detect_local_keys,
             vault::keychain_import_local_key,
-            vault::keychain_generate_key,
+            vault::keychain_generate_and_save,
             // connection logs
             vault::logs_list,
             vault::log_toggle_saved,

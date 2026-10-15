@@ -19,7 +19,7 @@ import {
   Copy,
 } from 'lucide-react';
 import { bridge } from '../lib/bridge';
-import type { AuthMethod, DetectedLocalKey, GeneratedKeyPair, KeychainInput, KeychainItem } from '../lib/types';
+import type { AuthMethod, DetectedLocalKey, GeneratedKeySaved, KeychainInput, KeychainItem } from '../lib/types';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
 
@@ -51,31 +51,26 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
   const [genPassphrase, setGenPassphrase] = useState('');
   const [genComment, setGenComment] = useState('');
   const [generating, setGenerating] = useState(false);
-  const [generatedResult, setGeneratedResult] = useState<GeneratedKeyPair | null>(null);
+  const [generatedResult, setGeneratedResult] = useState<GeneratedKeySaved | null>(null);
   const [copiedPub, setCopiedPub] = useState(false);
 
   const handleGenerateKey = async () => {
     setGenerating(true);
     try {
-      const res = await bridge.generateSshKey(
-        genAlgo,
-        genAlgo === 'rsa' ? 4096 : undefined,
-        genComment || `${genAlgo}@nexus`,
-        genPassphrase || undefined
-      );
-      setGeneratedResult(res);
-      const label = genLabel.trim() || `Generated ${res.algorithm} Key`;
-      await onSave({
-        id: '',
-        label,
+      // Generation and storage happen in one Rust call: the private key never
+      // enters this process, so there is nothing here to save back or scrub.
+      const res = await bridge.generateAndSaveSshKey({
+        label: genLabel,
         username: '',
-        authMethod: 'key',
-        privateKey: res.privateKey,
+        algorithm: genAlgo,
+        bits: genAlgo === 'rsa' ? 4096 : undefined,
+        comment: genComment || `${genAlgo}@nexus`,
         passphrase: genPassphrase || null,
         vaultId: targetVault,
       });
+      setGeneratedResult(res);
       if (onRefresh) await onRefresh();
-      toast(`Generated and saved "${label}" to Keychain!`);
+      toast(`Generated and saved "${res.item.label}" to Keychain!`);
     } catch (e) {
       toast(`Key generation failed: ${String(e)}`);
     } finally {

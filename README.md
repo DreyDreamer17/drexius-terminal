@@ -31,7 +31,7 @@ NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, se
 
 ## Security Architecture
 
-The desktop app stores vault data in SQLCipher and handles SSH connections and AI HTTP requests in Rust. **The WebView is not a secret-free boundary**: master passwords and recovery codes are entered/displayed there; host credentials and imported keys can be entered in forms, and `keychain_generate_key` returns the generated private key to JavaScript before the UI saves it to the vault. Avoid untrusted frontend code.
+The desktop app stores vault data in SQLCipher and handles SSH connections and AI HTTP requests in Rust. **The WebView is not a secret-free boundary**: master passwords and recovery codes are entered/displayed there; host credentials and imported keys can be entered in forms. Generated key material is the exception: `keychain_generate_and_save` creates the key pair and writes the private key into the vault in one Rust call, so a freshly generated private key never crosses IPC.
 
 1. **Host verification**: Unknown host keys require explicit approval; changed keys are rejected.
 2. **AI proxy relay (desktop)**: Configured API keys and proxy credentials are stored in SQLCipher and injected by Rust. Browser demo mode uses JavaScript-held demo credentials.

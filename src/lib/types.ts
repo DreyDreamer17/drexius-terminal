@@ -97,11 +97,26 @@ export interface ParsedSshHost {
   group?: string | null;
 }
 
-export interface GeneratedKeyPair {
-  algorithm: string;
-  privateKey: string;
+/** Input for generating a key pair. There is deliberately no private-key
+ *  field: `keychain_generate_and_save` generates *and* stores the key in Rust,
+ *  so raw key material never crosses the IPC boundary. */
+export interface KeygenRequest {
+  label: string;
+  username?: string | null;
+  algorithm: 'ed25519' | 'rsa' | 'ecdsa';
+  bits?: number | null;
+  comment?: string | null;
+  passphrase?: string | null;
+  vaultId?: string | null;
+}
+
+/** What a generated key looks like from the UI side: metadata and the public
+ *  half only. Use `readSecret` when the private key is genuinely needed. */
+export interface GeneratedKeySaved {
+  item: KeychainItem;
   publicKey: string;
   fingerprint: string;
+  algorithm: string;
 }
 
 export interface HostSecret {
