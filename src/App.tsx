@@ -37,6 +37,10 @@ import {
   LayoutGrid,
   ChevronRight,
   Type,
+  Fingerprint,
+  Copy,
+  Download,
+  Share2,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -119,8 +123,21 @@ export default function App() {
   const mobile = useMobile();
   useMobileViewport();
   const [mobilePage, setMobilePage] = useState<MobilePage>('terminals');
-  // Phone settings pickers (auto-lock, theme) open as themed sheets instead of native selects.
-  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | null>(null);
+  // Phone settings pickers (auto-lock, theme, quick unlock, recovery key, storage permissions)
+  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'quickunlock' | 'recovery_key' | 'storage_perms' | null>(null);
+  const [deviceLockEnabled, setDeviceLockEnabled] = useState(() => bridge.osKeychainEnabled());
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
+  const [downloadedRecoveryPath, setDownloadedRecoveryPath] = useState<string | null>(null);
+  const [quickUnlockPw, setQuickUnlockPw] = useState('');
+  const [quickUnlockBusy, setQuickUnlockBusy] = useState(false);
+  const [quickUnlockErr, setQuickUnlockErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (settingsPicker === 'recovery_key') {
+      bridge.vaultGetRecoveryKey().then(setRecoveryKey).catch(() => {});
+    }
+  }, [settingsPicker]);
   const [sessionSheet, setSessionSheet] = useState(false);
 
   const [unlocked, setUnlocked] = useState(false);
@@ -1421,6 +1438,20 @@ export default function App() {
             <span className="flex items-center gap-3"><Timer size={18} /> Auto-lock</span>
             <span className="nx-settings-value">{autoLockMinutes ? `${autoLockMinutes} min` : 'Off'}<ChevronRight size={16} /></span>
           </button>
+          {isTauri && (
+            <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('quickunlock')}>
+              <span className="flex items-center gap-3"><Fingerprint size={18} /> Device Quick Unlock</span>
+              <span className="nx-settings-value">{deviceLockEnabled ? 'Enabled' : 'Off'}<ChevronRight size={16} /></span>
+            </button>
+          )}
+          <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('recovery_key')}>
+            <span className="flex items-center gap-3"><KeyRound size={18} /> Emergency Recovery Kit</span>
+            <span className="nx-settings-value">View<ChevronRight size={16} /></span>
+          </button>
+          <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('storage_perms')}>
+            <span className="flex items-center gap-3"><Folder size={18} /> Storage & Permissions</span>
+            <span className="nx-settings-value">Ready<ChevronRight size={16} /></span>
+          </button>
         </div>
         <h2 className="nx-section-label">Appearance</h2>
         <div className="nx-settings-group">
@@ -1471,6 +1502,199 @@ export default function App() {
           })}
         </div>
       </MobileSheet>}
+      {mobile && settingsPicker === 'quickunlock' && (
+        <MobileSheet title="Device Quick Unlock" kicker="Security" subtitle="Unlock your vault with biometrics or screen lock" icon={Fingerprint} theme={theme} onClose={() => { setSettingsPicker(null); setQuickUnlockErr(null); setQuickUnlockPw(''); }}>
+          <div className="space-y-4 p-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-xs space-y-2">
+              <div className="flex items-center gap-2 font-medium text-white">
+                <Fingerprint size={18} style={{ color: theme.accent }} />
+                <span>Biometrics & Screen Lock</span>
+              </div>
+              <p className="text-slate-400 leading-relaxed">
+                Status: <strong className={deviceLockEnabled ? 'text-emerald-400' : 'text-slate-300'}>{deviceLockEnabled ? 'Enabled' : 'Disabled'}</strong>
+              </p>
+              <p className="text-slate-400 leading-relaxed">
+                When enabled, you can quickly unlock your master vault on this device using your fingerprint, face recognition, or lock pattern/PIN without typing your master password every time.
+              </p>
+            </div>
+
+            {deviceLockEnabled ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await bridge.osKeychainDelete();
+                    setDeviceLockEnabled(false);
+                    setSettingsPicker(null);
+                  } catch (e) {
+                    console.error('Failed to disable quick unlock', e);
+                  }
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/15 py-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/25 transition cursor-pointer"
+              >
+                Disable Device Quick Unlock
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">
+                  Enter your master password to enable Quick Unlock on this device:
+                </p>
+                <input
+                  type="password"
+                  placeholder="Master password"
+                  value={quickUnlockPw}
+                  onChange={(e) => setQuickUnlockPw(e.target.value)}
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none"
+                  style={{ outlineColor: theme.accent }}
+                />
+                {quickUnlockErr && (
+                  <p className="text-xs text-rose-400">{quickUnlockErr}</p>
+                )}
+                <button
+                  type="button"
+                  disabled={quickUnlockBusy || quickUnlockPw.length < 4}
+                  onClick={async () => {
+                    setQuickUnlockBusy(true);
+                    setQuickUnlockErr(null);
+                    try {
+                      const success = await bridge.osKeychainStore(quickUnlockPw);
+                      if (success) {
+                        setDeviceLockEnabled(true);
+                        setSettingsPicker(null);
+                        setQuickUnlockPw('');
+                      } else {
+                        setQuickUnlockErr('Failed to enable quick unlock.');
+                      }
+                    } catch (e: any) {
+                      setQuickUnlockErr(e?.message || String(e));
+                    } finally {
+                      setQuickUnlockBusy(false);
+                    }
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-xs font-semibold text-black hover:brightness-110 active:scale-[0.99] disabled:opacity-50 transition cursor-pointer"
+                  style={{ backgroundColor: theme.accent }}
+                >
+                  {quickUnlockBusy ? 'Saving…' : 'Enable Device Quick Unlock'}
+                </button>
+              </div>
+            )}
+          </div>
+        </MobileSheet>
+      )}
+      {mobile && settingsPicker === 'recovery_key' && (
+        <MobileSheet title="Emergency Recovery Kit" kicker="Vault Security" subtitle="Zero-knowledge recovery key for your vault" icon={KeyRound} theme={theme} onClose={() => { setSettingsPicker(null); setDownloadedRecoveryPath(null); }}>
+          <div className="space-y-4 p-2">
+            <p className="text-xs text-slate-400 leading-relaxed">
+              If you ever forget your master password, this 128-bit key is the <strong className="text-slate-200">ONLY way to recover your encrypted vault</strong>. Store it in a safe place.
+            </p>
+            <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 text-center font-mono text-xs sm:text-sm font-bold tracking-wider select-all break-all" style={{ color: theme.accent }}>
+              {recoveryKey || 'Loading recovery key…'}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={!recoveryKey}
+                onClick={async () => {
+                  if (!recoveryKey) return;
+                  try {
+                    await bridge.writeClipboard(recoveryKey);
+                    setCopiedRecovery(true);
+                    setTimeout(() => setCopiedRecovery(false), 2000);
+                  } catch (_) {}
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+              >
+                {copiedRecovery ? <Check size={14} style={{ color: theme.accent }} /> : <Copy size={14} />}
+                {copiedRecovery ? 'Copied' : 'Copy Key'}
+              </button>
+
+              {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                <button
+                  type="button"
+                  disabled={!recoveryKey}
+                  onClick={async () => {
+                    if (!recoveryKey) return;
+                    try {
+                      await navigator.share({
+                        title: 'NexusTerminal Recovery Kit',
+                        text: `NEXUSTERMINAL EMERGENCY RECOVERY KEY:\n${recoveryKey}\n\nKeep this secret and offline.`,
+                      });
+                    } catch (e: any) {
+                      if (e?.name !== 'AbortError') console.warn(e);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+                >
+                  <Share2 size={14} />
+                  <span>Share / Save</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={!recoveryKey}
+                onClick={async () => {
+                  if (!recoveryKey) return;
+                  try {
+                    const text = `=====================================================\nNEXUSTERMINAL EMERGENCY RECOVERY KIT\n=====================================================\n\nEmergency Recovery Key:\n${recoveryKey}\n\nGenerated: ${new Date().toISOString()}\n=====================================================`;
+                    const path = await bridge.vaultSaveEmergencyKit(text);
+                    setDownloadedRecoveryPath(path);
+                  } catch (e) {
+                    console.error('Download failed', e);
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+              >
+                {downloadedRecoveryPath ? <Check size={14} className="text-emerald-400" /> : <Download size={14} />}
+                {downloadedRecoveryPath ? 'Saved' : 'Download .txt'}
+              </button>
+            </div>
+
+            {downloadedRecoveryPath && (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">
+                <p className="font-semibold text-white">Saved to Downloads:</p>
+                <p className="mt-1 font-mono text-[10.5px] select-all break-all text-slate-300">{downloadedRecoveryPath}</p>
+              </div>
+            )}
+          </div>
+        </MobileSheet>
+      )}
+      {mobile && settingsPicker === 'storage_perms' && (
+        <MobileSheet title="Storage & Permissions" kicker="System" subtitle="File access for SFTP, Downloads & terminal sessions" icon={Folder} theme={theme} onClose={() => setSettingsPicker(null)}>
+          <div className="space-y-4 p-2 text-xs">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
+              <div className="flex items-center gap-2 font-medium text-white">
+                <Folder size={18} style={{ color: theme.accent }} />
+                <span>Local Files & SFTP Roots</span>
+              </div>
+              <p className="text-slate-400 leading-relaxed">
+                NexusTerminal uses your public Downloads and Documents folders for file transfers, scripts, and recovery key backups:
+              </p>
+              <div className="font-mono text-[11px] text-cyan-300 bg-black/40 rounded-lg p-2 border border-white/5 space-y-1">
+                <div>• /storage/emulated/0/Download</div>
+                <div>• /storage/emulated/0/Documents</div>
+                <div>• /storage/emulated/0</div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 space-y-2">
+              <div className="flex items-center gap-2 font-medium text-white">
+                <ShieldCheck size={18} style={{ color: theme.accent }} />
+                <span>Android Permissions Guide</span>
+              </div>
+              <p className="text-slate-400 leading-relaxed">
+                Modern Android versions (API 29+) restrict general file access. If you need to browse all directories or transfer files from internal folders via Local SFTP:
+              </p>
+              <ol className="list-decimal pl-4 space-y-1 text-slate-300 text-[11.5px]">
+                <li>Open your Android phone <strong>Settings</strong></li>
+                <li>Go to <strong>Apps</strong> → <strong>NexusTerminal</strong></li>
+                <li>Tap <strong>Permissions</strong> → <strong>Files and media</strong></li>
+                <li>Select <strong>Allow management of all files</strong></li>
+              </ol>
+            </div>
+          </div>
+        </MobileSheet>
+      )}
 
       </div>
 

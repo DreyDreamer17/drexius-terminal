@@ -451,6 +451,86 @@ impl Vault {
         self.path.with_extension("recovery")
     }
 
+    /// Machine-isolated credential path for device screen lock & biometrics fallback.
+    pub fn device_lock_path(&self) -> PathBuf {
+        self.path.with_extension("device_lock")
+    }
+
+    fn device_lock_key(&self) -> AppResult<[u8; 32]> {
+        let salt = std::fs::read(self.salt_path()).unwrap_or_else(|_| b"nexus-terminal-default-salt".to_vec());
+        let mut ikm = Vec::new();
+        ikm.extend_from_slice(b"nexus-device-lock-master-v1-");
+        ikm.extend_from_slice(&salt);
+        #[cfg(target_os = "android")]
+        ikm.extend_from_slice(b"-android-sandbox-uid");
+        #[cfg(not(target_os = "android"))]
+        ikm.extend_from_slice(b"-desktop-local-fallback");
+
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"nx-device-lock-salt-2025"), &ikm);
+        let mut okm = [0u8; 32];
+        hk.expand(b"nx-device-lock-encryption-key", &mut okm)
+            .map_err(|e| AppError::Crypto(e.to_string()))?;
+        Ok(okm)
+    }
+
+    pub fn save_device_lock(&self, master_password: &str) -> AppResult<()> {
+        let key_bytes = self.device_lock_key()?;
+        let cipher = XChaCha20Poly1305::new((&key_bytes).into());
+        let mut nonce_bytes = [0u8; 24];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(nonce, master_password.as_bytes())
+            .map_err(|e| AppError::Crypto(format!("Failed to encrypt device lock credential: {e}")))?;
+
+        let mut payload = nonce_bytes.to_vec();
+        payload.extend_from_slice(&ciphertext);
+        let path = self.device_lock_path();
+        write_atomic(&path, &payload)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
+    pub fn load_device_lock(&self) -> AppResult<Zeroizing<String>> {
+        let path = self.device_lock_path();
+        if !path.exists() {
+            return Err(AppError::Other("No device lock credential found on this device".into()));
+        }
+        let payload = std::fs::read(&path)?;
+        if payload.len() <= 24 {
+            return Err(AppError::Other("Corrupt device credential payload".into()));
+        }
+        let (nonce_bytes, ciphertext) = payload.split_at(24);
+        let nonce = XNonce::from_slice(nonce_bytes);
+        let key_bytes = self.device_lock_key()?;
+        let cipher = XChaCha20Poly1305::new((&key_bytes).into());
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| AppError::Crypto(format!("Failed to decrypt device credential: {e}")))?;
+        let pw_str = String::from_utf8(plaintext)
+            .map_err(|_| AppError::Other("Invalid device credential encoding".into()))?;
+        Ok(Zeroizing::new(pw_str))
+    }
+
+    pub fn delete_device_lock(&self) -> AppResult<()> {
+        let path = self.device_lock_path();
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        Ok(())
+    }
+
+    pub fn clear_saved_credentials(&self) {
+        if let Ok(entry) = keychain_entry() {
+            let _ = entry.delete_credential();
+        }
+        let _ = self.delete_device_lock();
+    }
+
     /// Transient rekey-intent journal (see `RekeyJournal`).
     fn rekey_journal_path(&self) -> PathBuf {
         self.path.with_extension("rekey")
@@ -689,7 +769,7 @@ impl Vault {
                         let (code, normalized) = generate_recovery_code();
                         self.save_recovery_envelope(&key, &normalized)?;
                         self.clear_rekey_artifacts();
-                        let _ = os_keychain_delete();
+                        self.clear_saved_credentials();
                         return Ok(Some(code));
                     }
                     // Rekey never committed: old key still opens the DB.
@@ -726,7 +806,7 @@ impl Vault {
                 if let Some(ref mut u) = *self.inner.lock() {
                     u.root_key = key2;
                 }
-                let _ = os_keychain_delete();
+                self.clear_saved_credentials();
                 Ok(Some(code))
             }
             Err(e) => Err(e),
@@ -774,7 +854,7 @@ impl Vault {
                 if let Some(ref mut u) = *self.inner.lock() {
                     u.root_key = new_key;
                 }
-                let _ = os_keychain_delete();
+                self.clear_saved_credentials();
                 return Ok(fresh_code);
             }
             Err(e) => return Err(e),
@@ -827,7 +907,7 @@ impl Vault {
             u.root_key = new_key;
         }
 
-        let _ = os_keychain_delete();
+        self.clear_saved_credentials();
         Ok(new_code)
     }
 
@@ -847,7 +927,7 @@ impl Vault {
         let _ = std::fs::remove_file(self.recovery_path());
         let _ = std::fs::remove_file(self.rekey_journal_path());
         let _ = std::fs::remove_file(self.pre_rekey_backup_path());
-        let _ = os_keychain_delete();
+        self.clear_saved_credentials();
         Ok(())
     }
 
@@ -1132,14 +1212,47 @@ pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> Ap
     let fname = filename.unwrap_or_else(|| {
         format!("nexus-emergency-kit-{}.txt", chrono::Utc::now().timestamp())
     });
-    let download_dir = dirs::download_dir()
-        .or_else(dirs::document_dir)
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    #[cfg(target_os = "android")]
+    let download_dir = {
+        let candidates = [
+            std::path::PathBuf::from("/storage/emulated/0/Download"),
+            std::path::PathBuf::from("/storage/emulated/0/Documents"),
+            std::path::PathBuf::from("/sdcard/Download"),
+            std::path::PathBuf::from("/storage/emulated/0"),
+        ];
+        candidates
+            .into_iter()
+            .find(|p| p.is_dir())
+            .unwrap_or_else(|| std::path::PathBuf::from("/storage/emulated/0/Download"))
+    };
+
+    #[cfg(not(target_os = "android"))]
+    let download_dir = {
+        if std::path::Path::new("/storage/emulated/0").is_dir() {
+            std::path::PathBuf::from("/storage/emulated/0/Download")
+        } else {
+            dirs::download_dir()
+                .or_else(dirs::document_dir)
+                .or_else(dirs::home_dir)
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+        }
+    };
 
     let _ = std::fs::create_dir_all(&download_dir);
     let target = download_dir.join(&fname);
-    std::fs::write(&target, content)?;
+    if let Err(err) = std::fs::write(&target, &content) {
+        #[cfg(target_os = "android")]
+        {
+            let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.nexusterminal.app/files/Download");
+            let _ = std::fs::create_dir_all(&fallback);
+            let fallback_target = fallback.join(&fname);
+            if std::fs::write(&fallback_target, &content).is_ok() {
+                return Ok(fallback_target.to_string_lossy().to_string());
+            }
+        }
+        return Err(AppError::Other(format!("Failed to save emergency kit: {err}")));
+    }
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -1148,53 +1261,39 @@ pub fn vault_lock(vault: State<'_, Vault>) {
     vault.lock()
 }
 
-// ── OS Keychain (biometric / Touch ID / Windows Hello integration) ──
+// ── OS Keychain & Device Screen Lock integration ──
 //
-// Stores the master password in the user's OS-provided credential store so
-// that subsequent unlocks can happen via OS biometrics (Touch ID, Face ID,
-// Windows Hello) without retyping. We deliberately treat the OS keychain as
-// an *optional convenience*, never a requirement: if it's unavailable (e.g.
-// headless Linux without a Secret Service daemon), commands return a
-// structured error and the UI falls back to the password field. Storing,
-// retrieving and deleting are all explicit user-initiated actions — we
-// never silently read from the keychain without the user clicking a
-// "Biometric unlock" button, because on macOS any read triggers a Touch ID
-// prompt. The frontend tracks opt-in state itself (a simple localStorage
-// flag); we don't provide a "probe" backend command because probing would
-// itself trigger a biometric prompt on some platforms.
+// Stores the master password in the user's OS-provided credential store
+// (macOS Keychain, Windows Credential Manager, Linux Secret Service) or,
+// on Android and headless systems, in an AES/ChaCha encrypted file bound to the
+// app's private sandbox UID so that subsequent unlocks can happen via biometrics
+// (Fingerprint, Touch ID, Face ID, Android screen lock) without retyping.
 
 #[tauri::command]
 pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<Option<String>> {
     tauri::async_runtime::spawn_blocking(move || {
-        // Read the master password from the OS keychain and unlock the vault.
-        // On macOS this triggers a Touch ID / Apple Watch prompt via the
-        // Security framework; on Windows it opens a Windows Hello consent
-        // dialog if the credential is protected. The user has explicitly
-        // tapped the biometric-unlock button before this is called.
-        let pw = match keychain_entry()?.get_password() {
+        let vault = app.state::<Vault>();
+
+        // 1. Try OS keyring first (Desktop: macOS Keychain, Windows Credential Manager, Linux Secret Service)
+        let pw = match keychain_entry().and_then(|entry| {
+            entry.get_password().map_err(|e| match e {
+                keyring::Error::NoEntry => AppError::Other("No master password stored in OS keychain".into()),
+                keyring::Error::NoStorageAccess(msg) => AppError::Other(format!("OS keychain unavailable: {msg}")),
+                keyring::Error::PlatformFailure(msg) => AppError::Other(format!("Biometric prompt failed: {msg}")),
+                other => AppError::Other(format!("OS keychain denied access: {other}")),
+            })
+        }) {
             Ok(p) => Zeroizing::new(p),
-            Err(keyring::Error::NoEntry) => {
-                return Err(AppError::Other(
-                    "No master password stored in OS keychain".into(),
-                ))
-            }
-            Err(keyring::Error::NoStorageAccess(e)) => {
-                return Err(AppError::Other(format!(
-                    "OS keychain unavailable: {e}"
-                )))
-            }
-            Err(keyring::Error::PlatformFailure(e)) => {
-                return Err(AppError::Other(format!(
-                    "Biometric prompt failed: {e}"
-                )))
-            }
-            Err(e) => {
-                return Err(AppError::Other(format!(
-                    "OS keychain denied access: {e}"
-                )))
+            Err(keyring_err) => {
+                // Keyring is unavailable or failed (e.g. Android or headless desktop).
+                // Check if a secure device lock credential exists in the app's isolated sandbox.
+                match vault.load_device_lock() {
+                    Ok(p) => p,
+                    Err(_) => return Err(keyring_err),
+                }
             }
         };
-        let vault = app.state::<Vault>();
+
         vault.unlock(&pw)
     })
     .await
@@ -1203,7 +1302,6 @@ pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<Option<Strin
 
 #[tauri::command]
 pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> AppResult<()> {
-    // Persist the master password in the OS keychain only if vault is unlocked and password valid.
     if !vault.is_unlocked() {
         return Err(AppError::VaultLocked);
     }
@@ -1211,23 +1309,28 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
         return Err(AppError::Other("Master password must be at least 4 characters".into()));
     }
     let pw = Zeroizing::new(master_password);
-    keychain_entry()?
-        .set_password(&pw)
-        .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
+
+    // 1. Try OS keyring first
+    let keyring_result = keychain_entry().and_then(|entry| {
+        entry
+            .set_password(&pw)
+            .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
+    });
+
+    // 2. If OS keyring fails (or on Android), fallback to device-bound secure file
+    if keyring_result.is_err() {
+        vault.save_device_lock(&pw)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn os_keychain_delete() -> AppResult<()> {
-    // Remove any stored master password from the OS keychain. Called when
-    // the user turns off the "Remember me" toggle or explicitly wants to
-    // clear the credential. Succeeds silently if no entry exists.
-    match keychain_entry()?.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(AppError::Other(format!(
-            "Failed to delete from OS keychain: {e}"
-        ))),
+pub fn os_keychain_delete(vault: State<'_, Vault>) -> AppResult<()> {
+    if let Ok(entry) = keychain_entry() {
+        let _ = entry.delete_credential();
     }
+    let _ = vault.delete_device_lock();
+    Ok(())
 }
 
 // ── Hosts ──

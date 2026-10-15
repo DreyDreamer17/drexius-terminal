@@ -363,7 +363,7 @@ export const bridge = {
   },
 
   async osKeychainUnlock(): Promise<string | null> {
-    if (!isTauri) throw new Error('OS keychain is only available in the desktop app');
+    if (!isTauri) throw new Error('Device quick unlock is only available in the installed app');
     return invoke('os_keychain_unlock');
   },
 

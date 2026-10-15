@@ -40,8 +40,8 @@ fn is_sensitive_path(p: &Path) -> bool {
             if SENSITIVE_NAMES.iter().any(|d| name == *d) {
                 return true;
             }
-            // The vault database, its salt file and the recovery envelope.
-            if name.starts_with("nexus.vault") {
+            // The vault database, its salt file, recovery envelope and device lock credential.
+            if name.starts_with("nexus.vault") || name.starts_with("nexus.device_lock") {
                 return true;
             }
             // The Tauri application data directory (stores the vault).
@@ -63,6 +63,17 @@ fn approved_roots() -> Vec<PathBuf> {
     roots.push(PathBuf::from("/media"));
     roots.push(PathBuf::from("/Volumes"));
     roots.push(std::env::temp_dir());
+    #[cfg(target_os = "android")]
+    {
+        roots.push(PathBuf::from("/storage"));
+        roots.push(PathBuf::from("/sdcard"));
+        roots.push(PathBuf::from("/data/user/0/dev.nexusterminal.app"));
+        roots.push(PathBuf::from("/data/data/dev.nexusterminal.app"));
+    }
+    if std::path::Path::new("/storage/emulated/0").exists() {
+        roots.push(PathBuf::from("/storage"));
+        roots.push(PathBuf::from("/sdcard"));
+    }
     if cfg!(windows) {
         // Allow drive roots (e.g. `D:\`) so removable drives stay reachable.
         for letter in b'A'..=b'Z' {

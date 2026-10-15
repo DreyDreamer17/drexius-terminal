@@ -437,9 +437,31 @@ pub struct LocalDirResponse {
 
 #[tauri::command]
 pub fn local_fs_home() -> AppResult<String> {
-    dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| AppError::Other("Could not resolve home directory".into()))
+    #[cfg(target_os = "android")]
+    {
+        let candidates = [
+            "/storage/emulated/0/Download",
+            "/storage/emulated/0/Documents",
+            "/storage/emulated/0",
+            "/sdcard",
+        ];
+        for candidate in &candidates {
+            if std::path::Path::new(candidate).is_dir() {
+                return Ok(candidate.to_string());
+            }
+        }
+        return Ok("/storage/emulated/0".to_string());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        if std::path::Path::new("/storage/emulated/0").is_dir() {
+            return Ok("/storage/emulated/0".to_string());
+        }
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .ok_or_else(|| AppError::Other("Could not resolve home directory".into()))
+    }
 }
 
 #[tauri::command]
@@ -449,14 +471,38 @@ pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
             // Policy: approved roots only, credential stores never.
             crate::fs_guard::ensure_local_path_allowed(p)?
         }
-        _ => dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        _ => {
+            #[cfg(target_os = "android")]
+            {
+                std::path::PathBuf::from("/storage/emulated/0")
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                if std::path::Path::new("/storage/emulated/0").is_dir() {
+                    std::path::PathBuf::from("/storage/emulated/0")
+                } else {
+                    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
+                }
+            }
+        }
     };
 
     let canonical = target.canonicalize().unwrap_or(target);
     let current_path = canonical.to_string_lossy().to_string();
     let parent_path = canonical.parent().map(|p| p.to_string_lossy().to_string());
 
-    let read_dir = std::fs::read_dir(&canonical)?;
+    let read_dir = match std::fs::read_dir(&canonical) {
+        Ok(rd) => rd,
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::PermissionDenied {
+                return Err(AppError::Other(
+                    "Storage permission required to browse this directory. Please grant storage access in Android App Settings."
+                        .into(),
+                ));
+            }
+            return Err(err.into());
+        }
+    };
     let mut entries = Vec::new();
     for item in read_dir.flatten() {
         let meta = match item.metadata() {

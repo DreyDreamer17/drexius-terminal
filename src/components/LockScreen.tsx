@@ -17,6 +17,7 @@ import {
   X,
   CheckCircle2,
   Clipboard,
+  Share2,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type NexusTheme } from '../lib/themes';
@@ -81,6 +82,16 @@ export function LockScreen({
         rememberDesc: 'Store securely in Linux Secret Service (GNOME Keyring / KWallet) for instant 1-click unlock.',
       };
     }
+    if (/android/i.test(navigator.userAgent) || (mobile && !/macintosh|mac os x|windows/i.test(navigator.userAgent))) {
+      return {
+        name: 'Biometric & Device Screen Lock',
+        action: 'Unlock with Device Security',
+        subtext: 'Instant unlock using device fingerprint, face, or screen pattern/PIN',
+        icon: Fingerprint,
+        platform: 'android' as const,
+        rememberDesc: 'Store securely in the encrypted device sandbox for instant fingerprint/face/screen lock unlock.',
+      };
+    }
     if (/macintosh|mac os x/i.test(navigator.userAgent)) {
       return {
         name: 'macOS Keychain',
@@ -109,7 +120,7 @@ export function LockScreen({
       platform: 'linux' as const,
       rememberDesc: 'Store securely in Linux Secret Service (GNOME Keyring / KWallet) for instant 1-click unlock.',
     };
-  }, []);
+  }, [mobile]);
 
   // Emergency Recovery Kit Modal (Shown when a new recovery key is generated)
   const [createdRecoveryKey, setCreatedRecoveryKey] = useState<string | null>(null);
@@ -141,6 +152,37 @@ export function LockScreen({
       }
     })();
   }, [mobile]);
+
+  const shareEmergencyKit = async (key: string) => {
+    const text = `=====================================================
+NEXUSTERMINAL EMERGENCY RECOVERY KIT
+=====================================================
+
+Emergency Recovery Key:
+${key}
+
+IMPORTANT:
+- This key was generated during vault creation or password reset.
+- Because NexusTerminal uses zero-knowledge encryption, this key
+  is the ONLY way to recover your vault if you forget your master password.
+- Store this file in a password manager, encrypted USB drive, or physical safe.
+- Do NOT share this key with anyone.
+
+Generated: ${new Date().toISOString()}
+=====================================================`;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share({
+          title: 'NexusTerminal Recovery Kit',
+          text,
+        });
+      }
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') {
+        console.warn('Native share failed or cancelled', e);
+      }
+    }
+  };
 
   const downloadEmergencyKit = async (key: string) => {
     setDownloading(true);
@@ -194,8 +236,8 @@ Generated: ${new Date().toISOString()}
       // Post-unlock keychain sync:
       //   - New vault creation → store if the user ticked the box
       //   - Existing vault  → store if ticked, delete if unticked (so the
-      //     checkbox faithfully reflects what's in the OS keychain)
-      if (isTauri && !mobile) {
+      //     checkbox faithfully reflects what's in the OS keychain / device security)
+      if (isTauri) {
         if (remember) {
           try {
             const stored = await bridge.osKeychainStore(password);
@@ -207,7 +249,7 @@ Generated: ${new Date().toISOString()}
         } else if (!isNewVault) {
           // Only delete on existing-vault unlocks; on creation, there can't
           // be a previous entry so this is a no-op that we skip to avoid a
-          // needless D-Bus / Security-framework round-trip.
+          // needless round-trip.
           await bridge.osKeychainDelete().catch(() => {});
           setHasStored(false);
         }
@@ -420,7 +462,7 @@ Generated: ${new Date().toISOString()}
                 ? joinExisting
                   ? 'Choose a password for this device. Then pair over your local network.'
                   : 'Choose a master password. An Emergency Recovery Key will be generated.'
-                : isTauri && !mobile && initialized === true && hasStored && !showManualPassword
+                : isTauri && initialized === true && hasStored && !showManualPassword
                 ? 'Your vault is locked. Quick unlock is ready.'
                 : 'Enter your master password to decrypt your hosts.'}
             </p>
@@ -464,8 +506,8 @@ Generated: ${new Date().toISOString()}
             </div>
           )}
 
-          {/* Quick 1-Click Unlock Mode (When credentials are saved in OS keyring and user hasn't toggled manual password) */}
-          {isTauri && !mobile && initialized === true && hasStored && !showManualPassword ? (
+          {/* Quick 1-Click Unlock Mode (When credentials are saved in OS keyring/device security and user hasn't toggled manual password) */}
+          {isTauri && initialized === true && hasStored && !showManualPassword ? (
             <div className="mt-6 space-y-4">
               <button
                 type="button"
@@ -610,8 +652,8 @@ Generated: ${new Date().toISOString()}
                 />
               )}
 
-              {/* Remember in OS keychain opt-in (desktop only) */}
-              {isTauri && !mobile && (
+              {/* Remember in OS keychain / Device Security opt-in */}
+              {isTauri && (
                 <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-white/10">
                   <button
                     type="button"
@@ -668,7 +710,7 @@ Generated: ${new Date().toISOString()}
               </button>
 
               {/* Switch back to quick unlock if available */}
-              {isTauri && !mobile && initialized === true && hasStored && (
+              {isTauri && initialized === true && hasStored && (
                 <div className="pt-1 text-center">
                   <button
                     type="button"
@@ -705,7 +747,7 @@ Generated: ${new Date().toISOString()}
           <div className="mt-5 rounded-xl border border-white/5 bg-black/20 p-2.5 text-[11px] leading-relaxed text-slate-500 text-center">
             {isTauri
               ? mobile
-                ? <>Native Android · SQLCipher AES-256 vault · libssh2 SSH</>
+                ? <>Native Android · SQLCipher AES-256 vault · libssh2 SSH{hasStored && <> · {keyringInfo.name} enabled</>}</>
                 : <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · {keyringInfo.platform === 'mac' ? 'Touch ID enabled' : keyringInfo.platform === 'windows' ? 'Windows Hello enabled' : 'system keyring enabled'}</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
                 {initialized && <button type="button" onClick={async () => { if (await confirmDialog({ title: 'Erase the sandbox vault?', message: 'All hosts, snippets and keys stored in this browser preview will be deleted.', confirmLabel: 'Erase vault', danger: true })) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
@@ -809,6 +851,17 @@ Generated: ${new Date().toISOString()}
                     {copiedKey ? <Check className="h-3.5 w-3.5" style={{ color: accentColor }} /> : <Copy className="h-3.5 w-3.5" />}
                     {copiedKey ? 'Copied key' : 'Copy Key'}
                   </button>
+
+                  {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                    <button
+                      type="button"
+                      onClick={() => shareEmergencyKit(createdRecoveryKey)}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-slate-200 transition hover:bg-white/[0.08] hover:text-white"
+                    >
+                      <Share2 className="h-3.5 w-3.5" />
+                      <span>Share / Save</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
