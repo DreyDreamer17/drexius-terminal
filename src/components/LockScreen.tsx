@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Lock,
   Loader2,
@@ -10,6 +10,7 @@ import {
   Fingerprint,
   Check,
   KeyRound,
+  Key,
   Copy,
   Download,
   AlertTriangle,
@@ -62,11 +63,53 @@ export function LockScreen({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [hasStored, setHasStored] = useState(false);
+  const [showManualPassword, setShowManualPassword] = useState(false);
   const [bioBusy, setBioBusy] = useState(false);
   // "Remember in OS keychain" — visible on desktop only, defaults to off for
   // fresh vault creation; when unlocking an existing vault we default to
   // whatever the current storage state is (checked if already stored).
   const [remember, setRemember] = useState(false);
+
+  const keyringInfo = useMemo(() => {
+    if (typeof navigator === 'undefined') {
+      return {
+        name: 'System Keyring',
+        action: 'Quick Unlock with System Keyring',
+        subtext: 'Instant 1-click unlock using your saved desktop session credentials',
+        icon: KeyRound,
+        platform: 'linux' as const,
+        rememberDesc: 'Store securely in Linux Secret Service (GNOME Keyring / KWallet) for instant 1-click unlock.',
+      };
+    }
+    if (/macintosh|mac os x/i.test(navigator.userAgent)) {
+      return {
+        name: 'macOS Keychain',
+        action: 'Unlock with Touch ID',
+        subtext: 'Unlock using Touch ID or your Mac login password',
+        icon: Fingerprint,
+        platform: 'mac' as const,
+        rememberDesc: 'Store securely in Apple Keychain (supports Touch ID & login password).',
+      };
+    }
+    if (/windows/i.test(navigator.userAgent)) {
+      return {
+        name: 'Windows Credential Manager',
+        action: 'Unlock with Windows Hello',
+        subtext: 'Unlock using Windows Hello PIN, face recognition, or fingerprint',
+        icon: ShieldCheck,
+        platform: 'windows' as const,
+        rememberDesc: 'Store securely in Windows Credential Manager (supports Windows Hello & PIN).',
+      };
+    }
+    return {
+      name: 'System Keyring',
+      action: 'Quick Unlock with System Keyring',
+      subtext: 'Instant 1-click unlock using your saved desktop session credentials',
+      icon: KeyRound,
+      platform: 'linux' as const,
+      rememberDesc: 'Store securely in Linux Secret Service (GNOME Keyring / KWallet) for instant 1-click unlock.',
+    };
+  }, []);
 
   // Emergency Recovery Kit Modal (Shown when a new recovery key is generated)
   const [createdRecoveryKey, setCreatedRecoveryKey] = useState<string | null>(null);
@@ -243,6 +286,19 @@ Generated: ${new Date().toISOString()}
     // New vaults need a real password; unlocking keeps accepting whatever the
     // vault was created with (older 4-char vaults must not be bricked).
     if (isNew && pw.length < 8) { setErr('Use at least 8 characters (12+ recommended)'); return; }
+
+    // If quick unlock is available and manual password has not been entered,
+    // trigger quick unlock instead of erroring on empty password.
+    if (!isNew && hasStored && !showManualPassword && !pw) {
+      await biometricUnlock();
+      return;
+    }
+
+    if (!isNew && !pw) {
+      setErr('Please enter your master password');
+      return;
+    }
+
     await doUnlock(pw, isNew);
   };
 
@@ -259,13 +315,12 @@ Generated: ${new Date().toISOString()}
     } catch (er) {
       const msg = isBridgeError(er) ? er.message : String(er);
       // If the entry is gone (NoEntry) or access was denied permanently,
-      // clear the local opt-in flag so the button hides and the user falls
-      // back to manual password entry. We don't probe again — that would
-      // re-trigger a biometric prompt.
+      // clear the local opt-in flag and reveal manual password entry.
       setErr(msg);
       if (/no master password stored|not found|no entry/i.test(msg)) {
         setHasStored(false);
         setRemember(false);
+        setShowManualPassword(true);
         localStorage.removeItem('nx.os_keychain');
       }
     } finally {
@@ -365,6 +420,8 @@ Generated: ${new Date().toISOString()}
                 ? joinExisting
                   ? 'Choose a password for this device. Then pair over your local network.'
                   : 'Choose a master password. An Emergency Recovery Key will be generated.'
+                : isTauri && !mobile && initialized === true && hasStored && !showManualPassword
+                ? 'Your vault is locked. Quick unlock is ready.'
                 : 'Enter your master password to decrypt your hosts.'}
             </p>
           </div>
@@ -407,194 +464,249 @@ Generated: ${new Date().toISOString()}
             </div>
           )}
 
-          {/* Biometric unlock shortcut — only on desktop when a stored password exists */}
-          {isTauri && initialized === true && hasStored && (
-            <button
-              type="button"
-              onClick={biometricUnlock}
-              disabled={bioBusy || busy}
-              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium transition disabled:opacity-50"
-              style={{
-                backgroundColor: `${accentColor}15`,
-                borderColor: `${accentColor}40`,
-                color: accentColor,
-              }}
-            >
-              {bioBusy ? (
-                <><Loader2 className="h-4 w-4 animate-spin" />Unlocking…</>
-              ) : (
-                <><Fingerprint className="h-4 w-4" />{typeof navigator !== 'undefined' && /macintosh|mac os x/i.test(navigator.userAgent) ? 'Unlock with Touch ID' : typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent) ? 'Unlock with Windows Hello' : 'Unlock with OS Keyring'}</>
-              )}
-            </button>
-          )}
-
-          {isTauri && initialized === true && hasStored && (
-            <div className="mt-3 flex items-center gap-2">
-              <div className="h-px flex-1 bg-white/10" />
-              <span className="text-[10px] uppercase tracking-wider text-slate-600">or enter password</span>
-              <div className="h-px flex-1 bg-white/10" />
-            </div>
-          )}
-
-          <div className="mt-5 space-y-3">
-            <div className="relative">
-              <input
-                autoFocus
-                type={show ? 'text' : 'password'}
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-                onPaste={(e) => {
-                  e.preventDefault();
-                  const text = e.clipboardData?.getData('text/plain') ?? '';
-                  if (text) setPw(text);
-                }}
-                onContextMenu={async (e) => {
-                  e.preventDefault();
-                  await pasteFromClipboard(setPw);
-                }}
-                spellCheck={false}
-                autoComplete="off"
-                placeholder="Master password"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
-                style={{
-                  outlineColor: accentColor,
-                }}
-              />
+          {/* Quick 1-Click Unlock Mode (When credentials are saved in OS keyring and user hasn't toggled manual password) */}
+          {isTauri && !mobile && initialized === true && hasStored && !showManualPassword ? (
+            <div className="mt-6 space-y-4">
               <button
                 type="button"
-                onClick={() => setShow((s: boolean) => !s)}
-                aria-label={show ? 'Hide password' : 'Show password'}
-                className="nx-icon-btn absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition p-1.5 rounded-lg min-h-0 min-w-0 flex items-center justify-center"
-              >
-                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-            {initialized === false && pw.length > 0 && (() => {
-              const strength = getPasswordStrength(pw);
-              return (
-                <div className="space-y-1.5 px-0.5">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-slate-400">Strength</span>
-                    <span className="font-medium" style={{ color: strength.color }}>{strength.label}</span>
-                  </div>
-                  <div className="grid grid-cols-4 gap-1.5 h-1">
-                    {[1, 2, 3, 4].map((step) => (
-                      <div
-                        key={step}
-                        className="h-full rounded-full transition-colors duration-200"
-                        style={{
-                          backgroundColor: step <= strength.score ? strength.color : 'rgba(255, 255, 255, 0.1)',
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-            {initialized === false && (
-              <input
-                type={show ? 'text' : 'password'}
-                value={pw2}
-                onChange={(e) => setPw2(e.target.value)}
-                onPaste={(e) => {
-                  e.preventDefault();
-                  const text = e.clipboardData?.getData('text/plain') ?? '';
-                  if (text) setPw2(text);
-                }}
-                onContextMenu={async (e) => {
-                  e.preventDefault();
-                  await pasteFromClipboard(setPw2);
-                }}
-                spellCheck={false}
-                autoComplete="off"
-                placeholder="Confirm master password"
-                className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
+                onClick={biometricUnlock}
+                disabled={bioBusy || busy}
+                autoFocus
+                className="nx-lock-submit flex w-full items-center justify-center gap-2.5 rounded-2xl py-3.5 px-4 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[50px] shadow-lg cursor-pointer"
                 style={{
-                  outlineColor: accentColor,
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 10px 30px -5px ${accentColor}60`,
                 }}
-              />
-            )}
+              >
+                {bioBusy ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Unlocking…</span>
+                  </>
+                ) : (
+                  <>
+                    <keyringInfo.icon className="h-4 w-4" />
+                    <span>{keyringInfo.action}</span>
+                  </>
+                )}
+              </button>
 
-            {/* Remember in OS keychain opt-in (desktop only) */}
-            {isTauri && !mobile && (
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-white/10">
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={remember}
-                  onClick={() => setRemember((r: boolean) => !r)}
-                  className="nx-icon-btn mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition min-h-0 min-w-0"
-                  style={
-                    remember
-                      ? {
-                          borderColor: `${accentColor}70`,
-                          backgroundColor: `${accentColor}30`,
-                          color: accentColor,
-                        }
-                      : {
-                          borderColor: 'rgba(255,255,255,0.2)',
-                          backgroundColor: 'rgba(255,255,255,0.05)',
-                          color: 'transparent',
-                        }
-                  }
-                >
-                  {remember && <Check className="h-3 w-3" strokeWidth={3} />}
-                </button>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
-                    <Fingerprint className="h-3.5 w-3.5" style={{ color: accentColor }} />
-                    Remember in OS keychain
-                  </div>
-                  <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
-                    Store an encrypted copy of the master password in macOS Keychain, Windows Credential Manager, or Linux Secret Service. Lets you unlock with Touch ID / Face ID / Windows Hello next time.
-                  </div>
-                </div>
-              </label>
-            )}
+              <p className="text-center text-[11px] text-slate-400">
+                {keyringInfo.subtext}
+              </p>
 
-            {err && <p className="text-xs text-rose-400">{err}</p>}
-            <button
-              disabled={busy || initialized === null}
-              className="nx-lock-submit flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[48px]"
-              style={{
-                backgroundColor: accentColor,
-                color: '#000000',
-                boxShadow: `0 10px 30px -5px ${accentColor}60`,
-              }}
-            >
-              {busy ? (
-                <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</>
-              ) : initialized === false ? (
-                'Create vault'
-              ) : hasStored ? (
-                'Unlock with password'
-              ) : (
-                'Unlock'
-              )}
-            </button>
+              {err && <p className="text-xs text-rose-400 text-center">{err}</p>}
 
-            {initialized === true && (
-              <div className="mt-3 text-center">
+              <div className="pt-2 flex items-center justify-center">
                 <button
                   type="button"
                   onClick={() => {
-                    setRecoveryTab('recover');
-                    setRecoveryErr(null);
-                    setShowRecoveryModal(true);
+                    setShowManualPassword(true);
+                    setErr(null);
                   }}
-                  className="text-xs text-slate-400 hover:text-white transition underline-offset-4 hover:underline"
+                  className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition underline-offset-4 hover:underline cursor-pointer"
                 >
-                  Forgot master password?
+                  <Key className="h-3.5 w-3.5" />
+                  <span>Or enter master password manually</span>
                 </button>
               </div>
-            )}
-          </div>
+
+              {initialized === true && (
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRecoveryTab('recover');
+                      setRecoveryErr(null);
+                      setShowRecoveryModal(true);
+                    }}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition underline-offset-4 hover:underline cursor-pointer"
+                  >
+                    Forgot master password?
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="mt-5 space-y-3">
+              <div className="relative">
+                <input
+                  autoFocus
+                  type={show ? 'text' : 'password'}
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData?.getData('text/plain') ?? '';
+                    if (text) setPw(text);
+                  }}
+                  onContextMenu={async (e) => {
+                    e.preventDefault();
+                    await pasteFromClipboard(setPw);
+                  }}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder={initialized === false ? 'Master password (8+ chars)' : 'Master password'}
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
+                  style={{
+                    outlineColor: accentColor,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShow((s: boolean) => !s)}
+                  aria-label={show ? 'Hide password' : 'Show password'}
+                  className="nx-icon-btn absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition p-1.5 rounded-lg min-h-0 min-w-0 flex items-center justify-center cursor-pointer"
+                >
+                  {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+
+              {initialized === false && pw.length > 0 && (() => {
+                const strength = getPasswordStrength(pw);
+                return (
+                  <div className="space-y-1.5 px-0.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-400">Strength</span>
+                      <span className="font-medium" style={{ color: strength.color }}>{strength.label}</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5 h-1">
+                      {[1, 2, 3, 4].map((step) => (
+                        <div
+                          key={step}
+                          className="h-full rounded-full transition-colors duration-200"
+                          style={{
+                            backgroundColor: step <= strength.score ? strength.color : 'rgba(255, 255, 255, 0.1)',
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {initialized === false && (
+                <input
+                  type={show ? 'text' : 'password'}
+                  value={pw2}
+                  onChange={(e) => setPw2(e.target.value)}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData?.getData('text/plain') ?? '';
+                    if (text) setPw2(text);
+                  }}
+                  onContextMenu={async (e) => {
+                    e.preventDefault();
+                    await pasteFromClipboard(setPw2);
+                  }}
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder="Confirm master password"
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:ring-2"
+                  style={{
+                    outlineColor: accentColor,
+                  }}
+                />
+              )}
+
+              {/* Remember in OS keychain opt-in (desktop only) */}
+              {isTauri && !mobile && (
+                <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-white/5 bg-black/20 p-3 transition hover:border-white/10">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={remember}
+                    onClick={() => setRemember((r: boolean) => !r)}
+                    className="nx-icon-btn mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border transition min-h-0 min-w-0"
+                    style={
+                      remember
+                        ? {
+                            borderColor: `${accentColor}70`,
+                            backgroundColor: `${accentColor}30`,
+                            color: accentColor,
+                          }
+                        : {
+                            borderColor: 'rgba(255,255,255,0.2)',
+                            backgroundColor: 'rgba(255,255,255,0.05)',
+                            color: 'transparent',
+                          }
+                    }
+                  >
+                    {remember && <Check className="h-3 w-3" strokeWidth={3} />}
+                  </button>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-slate-200">
+                      <keyringInfo.icon className="h-3.5 w-3.5" style={{ color: accentColor }} />
+                      Remember in {keyringInfo.name}
+                    </div>
+                    <div className="mt-0.5 text-[10.5px] leading-snug text-slate-500">
+                      {keyringInfo.rememberDesc}
+                    </div>
+                  </div>
+                </label>
+              )}
+
+              {err && <p className="text-xs text-rose-400">{err}</p>}
+
+              <button
+                disabled={busy || initialized === null}
+                className="nx-lock-submit flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[48px] cursor-pointer"
+                style={{
+                  backgroundColor: accentColor,
+                  color: '#000000',
+                  boxShadow: `0 10px 30px -5px ${accentColor}60`,
+                }}
+              >
+                {busy ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" />Deriving key (Argon2id)…</>
+                ) : initialized === false ? (
+                  'Create vault'
+                ) : (
+                  'Unlock with password'
+                )}
+              </button>
+
+              {/* Switch back to quick unlock if available */}
+              {isTauri && !mobile && initialized === true && hasStored && (
+                <div className="pt-1 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowManualPassword(false);
+                      setErr(null);
+                    }}
+                    className="flex items-center justify-center gap-1.5 mx-auto text-xs text-slate-400 hover:text-white transition underline-offset-4 hover:underline cursor-pointer"
+                  >
+                    <keyringInfo.icon className="h-3.5 w-3.5" />
+                    <span>Switch back to {keyringInfo.action}</span>
+                  </button>
+                </div>
+              )}
+
+              {initialized === true && (
+                <div className="mt-3 text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRecoveryTab('recover');
+                      setRecoveryErr(null);
+                      setShowRecoveryModal(true);
+                    }}
+                    className="text-xs text-slate-400 hover:text-white transition underline-offset-4 hover:underline cursor-pointer"
+                  >
+                    Forgot master password?
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="mt-5 rounded-xl border border-white/5 bg-black/20 p-2.5 text-[11px] leading-relaxed text-slate-500 text-center">
             {isTauri
               ? mobile
                 ? <>Native Android · SQLCipher AES-256 vault · libssh2 SSH</>
-                : <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · biometric unlock available</>}.</>
+                : <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · {keyringInfo.platform === 'mac' ? 'Touch ID enabled' : keyringInfo.platform === 'windows' ? 'Windows Hello enabled' : 'system keyring enabled'}</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
                 {initialized && <button type="button" onClick={async () => { if (await confirmDialog({ title: 'Erase the sandbox vault?', message: 'All hosts, snippets and keys stored in this browser preview will be deleted.', confirmLabel: 'Erase vault', danger: true })) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
           </div>
