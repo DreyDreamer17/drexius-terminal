@@ -95,6 +95,11 @@ const COMMON_SHELL_COMMANDS = [
 ];
 const COMMON_SHELL_COMMANDS_LOWER = COMMON_SHELL_COMMANDS.map((c) => c.toLowerCase());
 
+/** How many times an interrupted *auto-resume* is retried with backoff before the
+ *  failure is surfaced as an error dialog. Chosen for phone reality: after an
+ *  unlock the radio can need a few attempts before DNS/TCP works again. */
+const MAX_RESUME_ATTEMPTS = 6;
+
 interface Props {
   pane: Pane;
   host: Host;
@@ -692,9 +697,27 @@ export const TerminalPane = memo(function TerminalPane({
         } else {
           const msg = isBridgeError(e) ? e.message : String(e);
           setError(msg);
-          setStatus('error');
-          update({ status: 'error' });
-          term.write(`\x1b[31m✖ ${msg}\x1b[0m\r\n`);
+          // A *resume* attempt failing is not yet a user-facing error: the link
+          // was already down, so keep the "auto-resume in Ns" bar alive and try
+          // again with backoff. Previously the countdown was cleared on entry to
+          // connect() and never re-armed here, so one mistimed retry ended the
+          // chain — and right after a phone unlock is exactly when a retry is
+          // most likely to mistime (radio/DNS still coming back). A
+          // user-initiated connect still fails loudly with the dialog below.
+          if (resume && retryRef.current < MAX_RESUME_ATTEMPTS) {
+            retryRef.current += 1;
+            const wait = Math.min(30, 3 * 2 ** (retryRef.current - 1));
+            setStatus('disconnected');
+            update({ status: 'disconnected' });
+            setCountdown(wait);
+            term.write(
+              `\x1b[90m↻ ${msg} — retry ${retryRef.current}/${MAX_RESUME_ATTEMPTS} in ${wait}s\x1b[0m\r\n`
+            );
+          } else {
+            setStatus('error');
+            update({ status: 'error' });
+            term.write(`\x1b[31m✖ ${msg}\x1b[0m\r\n`);
+          }
         }
       }
     },
@@ -1522,6 +1545,26 @@ export const TerminalPane = memo(function TerminalPane({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [active, mobile]);
+
+  // Phones freeze JS timers along with the app, so the countdown above stalls
+  // while backgrounded and only resumes after a return. When the tab becomes
+  // visible again with a dropped, resumable link, retry now: re-arm to 1s and
+  // let the existing countdown effect perform the connect, so a reconnect that
+  // is already in flight (status 'connecting') can never be doubled up.
+  // Deliberately scoped to 'disconnected' — never 'error' — so a wrong password
+  // or an auth refusal can't be re-attempted (and hammer the server) every time
+  // the user glances at the app. Local/serial panes report resumable: false and
+  // are excluded for the same reason they have no retry path.
+  useEffect(() => {
+    if (isLocal || isSerial || status !== 'disconnected') return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (sessionRef.current) return;
+      setCountdown(1);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [status, isLocal, isSerial]);
 
   // Auto-reconnect countdown with exponential backoff
   useEffect(() => {

@@ -147,6 +147,26 @@ export default function App() {
   const [sessionSheet, setSessionSheet] = useState(false);
 
   const [unlocked, setUnlocked] = useState(false);
+  // The vault can be unlocked while this UI is not. Android recreates the
+  // Activity/WebView when an app switch is worth more memory than the process,
+  // and the Rust side keeps running with the key still in memory; a reload
+  // remounts this tree on any platform. `vault_status` already reports whether
+  // a key is held, so honour it instead of painting a lock screen over an
+  // unlocked vault. Manual and idle locks both call `bridge.lock()`, which
+  // clears the key, so this can never undo a deliberate lock.
+  useEffect(() => {
+    if (unlocked || !isTauri) return;
+    let active = true;
+    bridge
+      .vaultStatus()
+      .then((s) => {
+        if (active && s.unlocked) setUnlocked(true);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [unlocked]);
   // Initialize vault-backed AI settings only after the first unlock, then keep
   // the panel mounted through auto-lock and mobile navigation.
   const [workspaceReady, setWorkspaceReady] = useState(false);

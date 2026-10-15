@@ -1,0 +1,140 @@
+# Deterministic verification battery: the checks that can fail for a real
+# reason, without needing a display, a browser, a device or signing keys.
+#
+# Deliberately NOT run here:
+#   * tests/mobile-ui.smoke.mjs — it requires CHROMIUM_PATH pointing at a real
+#     Chromium binary and never downloads one. To add it: install a browser,
+#     export CHROMIUM_PATH, then `npm run test:mobile-ui`.
+#   * `tauri build` / bundling — needs app signing and icon toolchain.
+#   * Anything touching the OS keychain — CI runners have no keyring service,
+#     which is exactly the path `os_keychain_status` guards at startup.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Superseded runs on the same ref are worthless; cancel them.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    name: Frontend — typecheck, build, mobile unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node 22 is not incidental: `npm run test:mobile` calls
+      # `node --experimental-strip-types`, which needs Node >= 22.6.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:mobile
+      # Not redundant with the rust job: this is the check that actually
+      # protects src/lib/types.ts <-> component bindings.
+      - run: npm run build
+
+  relay:
+    name: Relay — python unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # relay.py is stdlib-only (hmac/json/argparse), so no pip install step.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: unittest discover
+        run: python -m unittest discover -s relay -v
+
+  rust:
+    name: Rust — cargo test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Tauri v2 on Linux links against WebKitGTK/GTK at compile time.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      # No third-party Rust action: the runners already ship rustup, and a
+      # versioned action I cannot test here is a worse bet than three commands.
+      - name: Select stable toolchain and add lint components
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustc --version
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build the frontend so tauri-build has something to embed
+        # src-tauri/tauri.conf.json points frontendDist at ../dist, and dist/ is
+        # gitignored — so a clean checkout has nothing for tauri-build to resolve
+        # when build.rs runs. Locally that was always masked by an existing dist/.
+        # npm run build is ~9s, which beats setting up an artifact handoff.
+        run: |
+          npm ci
+          npm run build
+
+      # Only the downloaded crate sources are cached, not target/: ssh2 and
+      # rusqlite both vendor OpenSSL, so target/ runs into GBs and would blow
+      # past the cache limit for a modest win.
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: cargo test
+        working-directory: src-tauri
+        # --locked: Cargo.lock is committed, so a dependency that drifted out
+        # of the lock fails loudly here instead of being silently re-resolved.
+        # --no-fail-fast: run every test binary, report all failures at once.
+        run: cargo test --locked --no-fail-fast
+
+      # Advisory until the tree is formatted: sync.rs/vault.rs have long
+      # hand-written lines, so blocking on fmt would redden every PR. Fix once
+      # with `cargo fmt --all` in src-tauri, then drop continue-on-error.
+      - name: cargo fmt --check (advisory)
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo fmt --all --check
+
+      # Same deal: informative for now, tighten later.
+      - name: clippy (advisory)
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo clippy --all-targets -- -D warnings
