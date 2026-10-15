@@ -144,6 +144,10 @@ export function LockScreen({
       const s = await bridge.vaultStatus();
       setInitialized(s.initialized);
       if (isTauri) {
+        // Deliberately *not* a keyring read: on this screen the user has typed
+        // nothing yet, and a keyring access can pop a Touch ID / Secret Service
+        // prompt. `osKeychainStatus()` only stats the device-lock file; keyring
+        // opt-in is the localStorage flag set when the user ticked "Remember".
         const hasDeviceCred = await bridge.osKeychainStatus();
         const enabled = bridge.osKeychainEnabled() || hasDeviceCred;
         setHasStored(enabled);

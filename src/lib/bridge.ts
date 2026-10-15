@@ -212,6 +212,21 @@ function enqueueSessionWrite<T>(sessionId: string, fn: () => Promise<T>): Promis
 }
 
 // ─────────────────────────────── API ───────────────────────────────────
+/** Shape of `sync_status` / `sync_now`. `skippedBlobs` counts records the relay
+ * served that this device could not decrypt (another sync group, or a corrupt
+ * blob). They are skipped rather than failing the sync, so a non-zero value is a
+ * diagnostic — not a lost update. */
+export interface SyncStatusInfo {
+  enabled: boolean;
+  relayUrl: string | null;
+  deviceId: string;
+  lastSync: number | null;
+  cursor: number;
+  lastError: string | null;
+  hasToken?: boolean;
+  skippedBlobs?: number;
+}
+
 export type AiAuthKind = 'none' | 'bearer' | 'anthropic' | 'gemini';
 
 export interface AiProxyRequest {
@@ -357,15 +372,20 @@ export const bridge = {
   // when that flag is true. If the OS-side entry was deleted out-of-band
   // (e.g. via Keychain Access), osKeychainUnlock will return NoEntry and
   // we surface the error + fall back to password entry.
+  //
+  // `osKeychainStatus()` keeps the same promise: by default it only reports
+  // whether a *device-bound* credential file exists. Pass `probeKeyring: true`
+  // only from a view the user opened on purpose (Quick Unlock settings), which
+  // is also where an unexpected prompt is explainable.
   osKeychainEnabled(): boolean {
     if (!isTauri) return false;
     try { return localStorage.getItem('nx.os_keychain') === '1'; } catch { return false; }
   },
 
-  async osKeychainStatus(): Promise<boolean> {
+  async osKeychainStatus(probeKeyring = false): Promise<boolean> {
     if (!isTauri) return false;
     try {
-      return await invoke<boolean>('os_keychain_status');
+      return await invoke<boolean>('os_keychain_status', { probeKeyring });
     } catch {
       return false;
     }
@@ -1127,14 +1147,14 @@ export const bridge = {
   },
 
   // ── Zero-knowledge Sync ──
-  async syncStatus(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null; hasToken?: boolean }> {
+  async syncStatus(): Promise<SyncStatusInfo> {
     if (isTauri) return invoke('sync_status');
-    return { enabled: false, relayUrl: null, deviceId: 'demo', lastSync: null, cursor: 0, lastError: null, hasToken: false };
+    return { enabled: false, relayUrl: null, deviceId: 'demo', lastSync: null, cursor: 0, lastError: null, hasToken: false, skippedBlobs: 0 };
   },
   async syncConfigure(relayUrl: string | null, deviceToken?: string): Promise<void> {
     if (isTauri) return invoke('sync_configure', { relayUrl, deviceToken: deviceToken ?? null });
   },
-  async syncNow(): Promise<{ enabled: boolean; relayUrl: string | null; deviceId: string; lastSync: number | null; cursor: number; lastError: string | null; hasToken?: boolean }> {
+  async syncNow(): Promise<SyncStatusInfo> {
     if (isTauri) return invoke('sync_now');
     throw new Error('Sync is only available in the desktop app');
   },

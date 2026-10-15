@@ -1344,17 +1344,31 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
     }
 }
 
+/// "Is there a stored quick-unlock credential on this device?"
+///
+/// The device-lock file is a plain `stat()` and always checked. Reading the OS
+/// keyring is *not* free: on macOS an access can raise a Touch ID / keychain
+/// dialog and on Linux a Secret Service prompt. The app mounts a lock screen
+/// before the user has touched anything, so the keyring is only consulted when
+/// a view the user deliberately opened asks for it (`probeKeyring: true`) —
+/// see `bridge.osKeychainStatus` and the Quick Unlock settings sheet.
 #[tauri::command]
-pub fn os_keychain_status(vault: State<'_, Vault>) -> bool {
+pub fn os_keychain_status(vault: State<'_, Vault>, probe_keyring: Option<bool>) -> bool {
     if vault.device_lock_path().exists() {
         return true;
     }
     #[cfg(not(target_os = "android"))]
     {
-        keychain_entry().and_then(|e| e.get_password().map_err(|e| AppError::Other(e.to_string()))).is_ok()
+        probe_keyring.unwrap_or(false)
+            && keychain_entry()
+                .and_then(|e| e.get_password().map_err(|e| AppError::Other(e.to_string())))
+                .is_ok()
     }
     #[cfg(target_os = "android")]
     {
+        // Android has no OS-keyring entry: the sandboxed device-lock file above
+        // is the only store, so there is nothing to probe.
+        let _ = probe_keyring;
         false
     }
 }
@@ -2354,40 +2368,48 @@ pub fn clipboard_history_add(
     source: Option<String>,
     vault: State<'_, Vault>,
 ) -> AppResult<ClipboardItem> {
-    let trimmed = content.trim();
+    // Store and compare the trimmed text: copying the same command again with a
+    // trailing newline should bump the existing entry, not duplicate it.
+    let trimmed = content.trim().to_string();
     if trimmed.is_empty() {
         return Err(AppError::Other("Empty clipboard content".into()));
     }
-    if looks_sensitive_text(trimmed) {
+    if looks_sensitive_text(&trimmed) {
         return Err(AppError::Other("Not recorded: clipboard content appears to contain sensitive information or credentials.".into()));
     }
-    let char_count = content.chars().count();
-    let line_count = content.lines().count().max(1);
+    let char_count = trimmed.chars().count();
+    let line_count = trimmed.lines().count().max(1);
 
     vault.with(|c| {
-        let existing_id: Option<String> = c
-            .query_row("SELECT id FROM clipboard_history WHERE content=?1", [&content], |r| r.get(0))
+        // Read `pinned` back with the row: bumping an entry must not report an
+        // unpinned item for a pinned row (the UI keeps a pin it just refreshed).
+        let existing: Option<(String, bool)> = c
+            .query_row(
+                "SELECT id, pinned FROM clipboard_history WHERE content=?1",
+                [&trimmed],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+            )
             .optional()?;
 
-        if let Some(eid) = existing_id {
+        if let Some((eid, pinned)) = existing {
             c.execute(
                 "UPDATE clipboard_history SET copied_at=?1, source=?2 WHERE id=?3",
                 params![now(), source, eid],
             )?;
             return Ok(ClipboardItem {
                 id: eid,
-                content,
+                content: trimmed,
                 char_count,
                 line_count,
                 source,
                 copied_at: now(),
-                pinned: false,
+                pinned,
             });
         }
 
         let item = ClipboardItem {
             id: uuid::Uuid::new_v4().to_string(),
-            content: content.clone(),
+            content: trimmed.clone(),
             char_count,
             line_count,
             source: source.clone(),

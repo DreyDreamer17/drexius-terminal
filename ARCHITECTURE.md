@@ -78,7 +78,9 @@ nexusterminal/
   to the keychain without user action. Critically, we do **not** probe the keychain on
   startup (on macOS, any read triggers a Touch ID dialog) — the frontend tracks opt-in
   with a localStorage flag and only calls `os_keychain_unlock` when the user clicks a
-  visible "Unlock with Touch ID" button. If the OS keychain is unavailable (headless
+  visible "Unlock with Touch ID" button. `os_keychain_status` follows the same rule: it
+  answers from a `stat()` of the device-lock file unless the caller explicitly passes
+  `probeKeyring: true`, which only the Quick Unlock settings sheet does. If the OS keychain is unavailable (headless
   Linux, sandboxed builds) commands return an error and the UI falls back to password
   entry.
 * **The WebView can handle secrets.** Host credentials are entered in React forms before IPC

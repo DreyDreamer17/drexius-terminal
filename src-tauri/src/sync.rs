@@ -284,6 +284,10 @@ pub struct SyncStatus {
     pub cursor: u64,
     pub last_error: Option<String>,
     pub has_token: bool,
+    /// Blobs the relay served that this device could not read (another sync
+    /// group, a corrupt record, or an id the relay no longer stores). They are
+    /// skipped, not fatal; this counts the last attempt.
+    pub skipped_blobs: u64,
     #[serde(skip)]
     pub device_token: Option<String>,
 }
@@ -702,22 +706,84 @@ fn hlc_wins(a: &str, b: &str) -> bool {
     (a_ms, a_c, a_d) > (b_ms, b_c, b_d)
 }
 
+/// Result of fetching + opening one remote blob.
+#[derive(Debug)]
+enum BlobOutcome {
+    Applied,
+    /// A blob this device will *never* be able to read, with the reason.
+    Skipped(String),
+}
+
+/// Count and log a skip. Kept as a function so both fetch loops report
+/// identically (the pull loop drains in two places).
+fn record_skipped_blob(reason: String, skipped: &mut u64) {
+    *skipped += 1;
+    log::warn!("Skipping unreadable sync blob — {reason}");
+}
+
+/// Fetch/open classification for one relay blob.
+///
+/// Failures are split by whether waiting can help. A transport error stays
+/// fatal, so the cursor is not persisted and the next run retries. A blob that
+/// is undecryptable or missing is *never* going to become readable — another
+/// sync group sharing the relay, a truncated record, a relay database restored
+/// from an older backup — so it is skipped and the cursor still advances.
+///
+/// Without that split one foreign blob wedged sync permanently: the cursor is
+/// written only after a fully successful pass, so every later attempt died on
+/// the same record and nothing synced again. Skipping is safe: the record is
+/// keyed by `HMAC(K_index, table:id)` under *their* key and sealed under *their*
+/// `K_sync`, so there is nothing here to lose by ignoring it.
+fn open_remote_blob(
+    blob_id: &str,
+    cur: u64,
+    result: AppResult<Option<Vec<u8>>>,
+    keys: &SyncKeys,
+    blobs: &mut HashMap<String, (SyncRecord, u64)>,
+    hlcs: &mut HashMap<(String, String), String>,
+) -> AppResult<BlobOutcome> {
+    let bytes = match result {
+        Ok(Some(bytes)) => bytes,
+        // The relay's change log lists an id it no longer serves.
+        Ok(None) => {
+            return Ok(BlobOutcome::Skipped(format!(
+                "{blob_id}: listed in the change log but not served"
+            )))
+        }
+        // Transient (timeout, DNS, TLS, 5xx): abort, keep the cursor, retry next run.
+        Err(AppError::Network(e)) => return Err(AppError::Network(e)),
+        Err(e) => return Ok(BlobOutcome::Skipped(format!("{blob_id}: {e}"))),
+    };
+    let rec = match keys.open(blob_id, &bytes) {
+        Ok(rec) => rec,
+        // AEAD failure (wrong group key / tampered) or an unparsable record.
+        Err(AppError::Crypto(e)) => {
+            return Ok(BlobOutcome::Skipped(format!("{blob_id}: {e}")))
+        }
+        Err(e) => return Err(e),
+    };
+    if !SYNC_TABLES.contains(&rec.table.as_str()) {
+        return Ok(BlobOutcome::Skipped(format!(
+            "{blob_id}: unsupported sync table '{}'",
+            rec.table
+        )));
+    }
+    hlcs.insert((rec.table.clone(), rec.id.clone()), rec.hlc.clone());
+    blobs.insert(blob_id.to_string(), (rec, cur));
+    Ok(BlobOutcome::Applied)
+}
+
 fn accept_remote_blob(
     fetched: Result<(String, u64, AppResult<Option<Vec<u8>>>), tokio::task::JoinError>,
     keys: &SyncKeys,
     blobs: &mut HashMap<String, (SyncRecord, u64)>,
     hlcs: &mut HashMap<(String, String), String>,
-) -> AppResult<()> {
-    let (blob_id, cur, result) = fetched
-        .map_err(|e| AppError::Other(format!("Sync fetch task failed: {e}")))?;
-    let bytes = result?.ok_or_else(|| AppError::Network(format!("Relay listed missing blob {blob_id}")))?;
-    let rec = keys.open(&blob_id, &bytes)?;
-    if !SYNC_TABLES.contains(&rec.table.as_str()) {
-        return Err(AppError::Crypto(format!("Unsupported sync table: {}", rec.table)));
+) -> AppResult<BlobOutcome> {
+    match fetched {
+        Ok((blob_id, cur, result)) => open_remote_blob(&blob_id, cur, result, keys, blobs, hlcs),
+        // A panicked fetch task poisons only its own blob.
+        Err(e) => Ok(BlobOutcome::Skipped(format!("fetch task failed: {e}"))),
     }
-    hlcs.insert((rec.table.clone(), rec.id.clone()), rec.hlc.clone());
-    blobs.insert(blob_id, (rec, cur));
-    Ok(())
 }
 
 fn accept_pushed_blob(
@@ -836,6 +902,7 @@ async fn sync_now_inner(engine: &SyncEngine, vault: &Vault) -> AppResult<SyncSta
 
     let mut remote_blobs: HashMap<String, (SyncRecord, u64)> = HashMap::new();
     let mut remote_hlcs: HashMap<(String, String), String> = HashMap::new();
+    let mut skipped_blobs: u64 = 0;
     let max_cursor: u64 = changes.iter().map(|(_, cur)| *cur).max().unwrap_or(0);
 
     let mut fetch_set = tokio::task::JoinSet::new();
@@ -847,12 +914,18 @@ async fn sync_now_inner(engine: &SyncEngine, vault: &Vault) -> AppResult<SyncSta
         });
         if fetch_set.len() >= 16 {
             let result = fetch_set.join_next().await.expect("nonempty fetch set");
-            accept_remote_blob(result, &keys, &mut remote_blobs, &mut remote_hlcs)?;
+            let outcome = accept_remote_blob(result, &keys, &mut remote_blobs, &mut remote_hlcs)?;
+            if let BlobOutcome::Skipped(reason) = outcome {
+                record_skipped_blob(reason, &mut skipped_blobs);
+            }
         }
     }
 
     while let Some(res) = fetch_set.join_next().await {
-        accept_remote_blob(res, &keys, &mut remote_blobs, &mut remote_hlcs)?;
+        let outcome = accept_remote_blob(res, &keys, &mut remote_blobs, &mut remote_hlcs)?;
+        if let BlobOutcome::Skipped(reason) = outcome {
+            record_skipped_blob(reason, &mut skipped_blobs);
+        }
     }
 
     let mut pulled = 0usize;
@@ -983,6 +1056,10 @@ async fn sync_now_inner(engine: &SyncEngine, vault: &Vault) -> AppResult<SyncSta
     s.last_sync = Some(completed_at);
     s.cursor = next_cursor;
     s.last_error = None;
+    // Surfaces permanent per-blob problems without failing the run: a non-zero
+    // count means the relay is holding records this device can't read (most
+    // often a second sync group sharing one relay/token).
+    s.skipped_blobs = skipped_blobs;
     let _ = pushed;
     let _ = pulled;
     Ok(s.clone())
@@ -1081,5 +1158,72 @@ mod tests {
         assert!(hlc_wins("1000:1:a", "1000:0:a"));
         assert!(hlc_wins("1000:0:b", "1000:0:a"));
         assert!(!hlc_wins("1000:0:a", "1000:0:b"));
+    }
+
+    fn host_record(id: &str, hlc: &str) -> SyncRecord {
+        SyncRecord {
+            table: "hosts".into(),
+            id: id.into(),
+            hlc: hlc.into(),
+            deleted: false,
+            body: serde_json::json!({ "hostname": "10.0.0.1" }),
+        }
+    }
+
+    /// A blob we can never read is skipped so the cursor advances; a transport
+    /// error stays fatal so the cursor is held and the record is retried.
+    #[test]
+    fn unreadable_blobs_are_skipped_but_transport_errors_are_not() {
+        let ours = SyncKeys::derive(&[7u8; 32]).unwrap();
+        let theirs = SyncKeys::derive(&[8u8; 32]).unwrap();
+        let mut blobs: HashMap<String, (SyncRecord, u64)> = HashMap::new();
+        let mut hlcs: HashMap<(String, String), String> = HashMap::new();
+        let rec = host_record("abc", "1:0:a");
+
+        // Another sync group sharing this relay: skipped, and nothing applied.
+        let their_id = theirs.blind_id("hosts", "abc");
+        let their_blob = theirs.seal(&rec).unwrap();
+        let out = open_remote_blob(&their_id, 5, Ok(Some(their_blob)), &ours, &mut blobs, &mut hlcs);
+        assert!(matches!(out, Ok(BlobOutcome::Skipped(_))));
+        assert!(blobs.is_empty() && hlcs.is_empty());
+
+        // Listed in the change log but not served: waiting will not help.
+        let out = open_remote_blob("v2-abc", 6, Ok(None), &ours, &mut blobs, &mut hlcs);
+        assert!(matches!(out, Ok(BlobOutcome::Skipped(_))));
+
+        // Truncated ciphertext: skipped as well.
+        let out = open_remote_blob("v2-abc", 7, Ok(Some(vec![9u8; 40])), &ours, &mut blobs, &mut hlcs);
+        assert!(matches!(out, Ok(BlobOutcome::Skipped(_))));
+
+        // Transient failures must abort the run so no change is marked applied.
+        let err = open_remote_blob(
+            "v2-abc",
+            8,
+            Err(AppError::Network("connection reset".into())),
+            &ours,
+            &mut blobs,
+            &mut hlcs,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AppError::Network(_)));
+
+        // Our own blob applies and its HLC is recorded for push de-duplication.
+        let our_id = ours.blind_id("hosts", "abc");
+        let our_blob = ours.seal(&rec).unwrap();
+        let out = open_remote_blob(&our_id, 9, Ok(Some(our_blob)), &ours, &mut blobs, &mut hlcs);
+        assert!(matches!(out, Ok(BlobOutcome::Applied)));
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(
+            hlcs.get(&("hosts".to_string(), "abc".to_string())).map(String::as_str),
+            Some("1:0:a")
+        );
+    }
+
+    #[test]
+    fn skipped_blobs_are_counted() {
+        let mut skipped = 0u64;
+        record_skipped_blob("v2-aa: authentication tag mismatch".into(), &mut skipped);
+        record_skipped_blob("v2-bb: listed in the change log but not served".into(), &mut skipped);
+        assert_eq!(skipped, 2);
     }
 }

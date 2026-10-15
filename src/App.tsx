@@ -154,9 +154,15 @@ export default function App() {
   // A confirm left open across an auto-lock must not fire once the vault is locked.
   useEffect(() => { if (!unlocked) cancelPendingConfirm(); }, [unlocked]);
 
+  // Quick-unlock status. `osKeychainStatus()` on its own only stats the
+  // device-bound credential file, so it is safe to run on every mount/page
+  // change. Reading the OS keyring can raise a platform prompt (Touch ID on
+  // macOS, a Secret Service dialog on Linux), so that probe is limited to the
+  // sheet the user opened *in order to manage quick unlock*.
   useEffect(() => {
     if (!isTauri) return;
-    bridge.osKeychainStatus().then((hasStored) => {
+    const probeKeyring = settingsPicker === 'quickunlock';
+    bridge.osKeychainStatus(probeKeyring).then((hasStored) => {
       const enabled = hasStored || bridge.osKeychainEnabled();
       setDeviceLockEnabled(enabled);
       if (hasStored && !bridge.osKeychainEnabled()) {
@@ -164,6 +170,19 @@ export default function App() {
       }
     }).catch(() => {});
   }, [unlocked, mobilePage, settingsPicker]);
+
+  // Once the user has authenticated it is safe to confirm the OS keyring, so the
+  // quick-unlock button comes back if localStorage was cleared but the keychain
+  // entry survives (Keychain Access cleanup, fresh profile, browser storage
+  // reset). Guarded by the opt-in flag, so this never reads the keyring twice.
+  useEffect(() => {
+    if (!isTauri || !unlocked || bridge.osKeychainEnabled()) return;
+    bridge.osKeychainStatus(true).then((hasStored) => {
+      if (!hasStored) return;
+      try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+      setDeviceLockEnabled(true);
+    }).catch(() => {});
+  }, [unlocked]);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(readAutoLockMinutes);
   const [showAutoLockMenu, setShowAutoLockMenu] = useState(false);
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -2076,7 +2095,7 @@ function SyncModal({
   const bgColor = theme?.xterm?.background ?? '#0e131d';
   const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
   const [token, setToken] = useState('');
-  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string; hasToken?: boolean; relayUrl?: string | null } | null>(null);
+  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string; hasToken?: boolean; relayUrl?: string | null; skippedBlobs?: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -2117,7 +2136,7 @@ function SyncModal({
         await bridge.syncConfigure(url || null, tokenArg);
       }
       const out = await bridge.syncNow();
-      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken });
+      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken, skippedBlobs: out.skippedBlobs });
       toast('Encrypted sync completed');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -2232,6 +2251,12 @@ function SyncModal({
             <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">
               device <span style={{ color: accentColor }}>{status.deviceId}</span> · last sync <span className="text-emerald-300">{lastSyncStr}</span>
               {status.lastError && <div className="mt-1 text-rose-300">error: {status.lastError}</div>}
+              {!!status.skippedBlobs && (
+                <div className="mt-1 text-amber-300">
+                  skipped {status.skippedBlobs} unreadable blob{status.skippedBlobs === 1 ? '' : 's'} — another
+                  sync group on this relay, or a record the relay no longer serves. Sync continued.
+                </div>
+              )}
             </div>
           )}
 
