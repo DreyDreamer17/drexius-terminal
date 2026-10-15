@@ -7,6 +7,7 @@
  *                      via WebCrypto (PBKDF2-SHA256 310k → AES-256-GCM).
  */
 import { invoke, Channel } from '@tauri-apps/api/core';
+import { readText as tauriReadText, writeText as tauriWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { DemoShell, homeOf, vfs } from './demoShell';
 import type {
   ActiveTunnelInfo,
@@ -1573,5 +1574,43 @@ export const bridge = {
       list = list.filter((i) => i.pinned);
       localStorage.setItem('nx.clip_history', JSON.stringify(list));
     } catch {}
+  },
+
+  // ── Native & Browser System Clipboard Read/Write ──
+  async readClipboard(): Promise<string> {
+    if (isTauri) {
+      try {
+        const text = await tauriReadText();
+        if (typeof text === 'string') return text;
+      } catch (err) {
+        console.warn('Native clipboard read failed, falling back:', err);
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+      try {
+        return await navigator.clipboard.readText();
+      } catch {
+        /* fallback failed */
+      }
+    }
+    return '';
+  },
+
+  async writeClipboard(content: string): Promise<void> {
+    if (isTauri) {
+      try {
+        await tauriWriteText(content);
+        return;
+      } catch (err) {
+        console.warn('Native clipboard write failed, falling back:', err);
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(content);
+      } catch {
+        /* fallback failed */
+      }
+    }
   },
 };

@@ -58,13 +58,11 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
   useEffect(() => {
     refresh();
     // Also read system clipboard if new text is there
-    if (navigator.clipboard?.readText) {
-      navigator.clipboard.readText().then((txt) => {
-        if (txt && txt.trim().length > 0) {
-          bridge.addClipboardHistory(txt, 'System Clipboard').then(() => refresh()).catch(() => {});
-        }
-      }).catch(() => {});
-    }
+    bridge.readClipboard().then((txt) => {
+      if (txt && txt.trim().length > 0) {
+        bridge.addClipboardHistory(txt, 'System Clipboard').then(() => refresh()).catch(() => {});
+      }
+    }).catch(() => {});
     inputRef.current?.focus();
   }, []);
 
@@ -114,7 +112,7 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
 
   const handleCopyOnly = (c: ClipboardItem, e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(c.content).catch(() => {});
+    bridge.writeClipboard(c.content).catch(() => {});
     setCopiedId(c.id);
     setTimeout(() => setCopiedId(null), 1500);
     toast('Copied to system clipboard');

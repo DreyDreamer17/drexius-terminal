@@ -129,7 +129,7 @@ Generated: ${new Date().toISOString()}
 
   const copyToClipboard = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await bridge.writeClipboard(text);
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
     } catch (_) {}
@@ -137,7 +137,7 @@ Generated: ${new Date().toISOString()}
 
   const pasteFromClipboard = async (setter: (val: string) => void) => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await bridge.readClipboard();
       if (text) setter(text.trim());
     } catch (err) {
       console.warn('Clipboard read failed', err);

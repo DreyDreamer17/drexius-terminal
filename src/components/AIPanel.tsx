@@ -2931,7 +2931,7 @@ function OpenCodeWorkflowCard({
 
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(data.output || data.target);
+    bridge.writeClipboard(data.output || data.target);
     setCopied(true);
     toast('Output copied to clipboard');
     setTimeout(() => setCopied(false), 1500);
@@ -3197,7 +3197,7 @@ function CodeBlock({
         <div className="ml-auto flex gap-0.5">
           <button
             onClick={() => {
-              navigator.clipboard.writeText(cleanCode);
+              bridge.writeClipboard(cleanCode);
               toast('Copied');
             }}
             className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"

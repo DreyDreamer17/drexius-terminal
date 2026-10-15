@@ -1007,8 +1007,31 @@ export const TerminalPane = memo(function TerminalPane({
         return false;
       }
 
-      // Ctrl+Shift+V or Cmd+Shift+V -> Clipboard History
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v' && e.type === 'keydown') {
+      // Ctrl+Shift+C (Linux/Win) or Cmd+C (macOS) -> Copy selection to clipboard
+      if (e.type === 'keydown' && (((e.ctrlKey && e.shiftKey) || (e.metaKey && !e.shiftKey)) && e.key.toLowerCase() === 'c')) {
+        if (term.hasSelection()) {
+          const sel = term.getSelection();
+          if (sel) {
+            bridge.writeClipboard(sel).catch(() => {});
+            bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
+          }
+          return false;
+        }
+      }
+
+      // Ctrl+Shift+V (Linux/Win) or Cmd+V (macOS) -> Paste directly from system clipboard into terminal
+      if (e.type === 'keydown' && (((e.ctrlKey && e.shiftKey) || (e.metaKey && !e.shiftKey)) && e.key.toLowerCase() === 'v')) {
+        bridge.readClipboard().then((txt) => {
+          if (txt) {
+            term.paste(txt);
+            bridge.addClipboardHistory(txt, 'System Clipboard').catch(() => {});
+          }
+        }).catch((err) => console.warn('Terminal paste failed:', err));
+        return false;
+      }
+
+      // Ctrl+Shift+H / Cmd+Shift+H or Ctrl+Alt+V / Cmd+Option+V -> Clipboard History modal
+      if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key.toLowerCase() === 'h') || (e.altKey && e.key.toLowerCase() === 'v'))) {
         setShowClipboard(true);
         return false;
       }
@@ -1137,13 +1160,22 @@ export const TerminalPane = memo(function TerminalPane({
       if (term.hasSelection()) {
         const sel = term.getSelection();
         if (sel && sel.trim().length > 0) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          bridge.writeClipboard(sel).catch(() => {});
           bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
         }
       }
     };
+    const handleNativePaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData('text/plain');
+      if (text) {
+        e.preventDefault();
+        term.paste(text);
+        bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
+      }
+    };
     const elContainer = elRef.current;
     elContainer?.addEventListener('mouseup', handleMouseUpCopy);
+    elContainer?.addEventListener('paste', handleNativePaste as EventListener);
 
     registry.set({
       paneId: pane.id,
@@ -1184,6 +1216,7 @@ export const TerminalPane = memo(function TerminalPane({
     return () => {
       genRef.current += 1;
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
+      elContainer?.removeEventListener('paste', handleNativePaste as EventListener);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener);
       helperTextarea?.removeEventListener('compositionend', handleCompositionEnd as EventListener, true);
       helperTextarea?.removeEventListener('input', handleInput as EventListener, true);
@@ -1446,7 +1479,7 @@ export const TerminalPane = memo(function TerminalPane({
         if (termRef.current?.hasSelection()) return;
         e.preventDefault();
         try {
-          const text = await navigator.clipboard.readText();
+          const text = await bridge.readClipboard();
           if (text) {
             if (termRef.current) {
               termRef.current.paste(text);
@@ -1459,6 +1492,7 @@ export const TerminalPane = memo(function TerminalPane({
                 onData?.(text);
               }
             }
+            bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
           }
         } catch {
           // clipboard permission not granted
@@ -1522,7 +1556,7 @@ export const TerminalPane = memo(function TerminalPane({
               <History className="h-3 w-3" />
             </button>
             <button
-              title="Clipboard History (⌘⇧V / Ctrl+Shift+V)"
+              title="Clipboard History (Ctrl+Shift+H / ⌘⇧H / ⌃⌥V)"
               onClick={() => setShowClipboard(true)}
               className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-cyan-300 transition"
             >
@@ -1570,13 +1604,13 @@ export const TerminalPane = memo(function TerminalPane({
             background={theme.xterm.background || '#0e131d'}
             menuAt={touchMenu}
             onCopy={async (text) => {
-              try { await navigator.clipboard.writeText(text); toast('Copied'); }
+              try { await bridge.writeClipboard(text); toast('Copied'); }
               catch { toast('Clipboard access denied'); }
               bridge.addClipboardHistory(text, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
             }}
             onPaste={async () => {
               setTouchMenu(null);
-              try { const text = await navigator.clipboard.readText(); if (text) handlePasteClipboard(text); else toast('Clipboard is empty'); }
+              try { const text = await bridge.readClipboard(); if (text) handlePasteClipboard(text); else toast('Clipboard is empty'); }
               catch { toast('Clipboard access denied — use your keyboard’s Paste action'); }
             }}
             onClips={() => { setTouchMenu(null); setShowClipboard(true); }}
