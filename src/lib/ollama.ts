@@ -1432,5 +1432,5 @@ export function offlineAnswer(prompt: string, context: string): string {
   if (parts.length && parts.some((p) => EXPLAIN[p])) {
     return ['**Offline breakdown:**', '', ...parts.map((p, i) => `${i + 1}. \`${p}\` — ${EXPLAIN[p] ?? 'custom command'}`), '', 'Risk: **' + classifyRisk(cmd).level + '**'].join('\n');
   }
-  return "I can't reach an active AI provider right now. You can configure **DeepSeek**, **OpenAI**, **Anthropic Claude**, **Groq**, **OpenRouter**, or a local **Ollama** model via the AI Settings (⚙️ icon) above.\n\nKey features:\n• **Multi-key pooling & load balancing** (Round Robin, P2C, Random)\n• **Automatic failover** on rate limits (HTTP 429)\n• **Encrypted vault sync** across paired devices\n• **Automatic secret redaction** from terminal output.";
+  return "I can't reach an active AI provider right now. You can configure **DeepSeek**, **OpenAI**, **Anthropic Claude**, **Groq**, **OpenRouter**, or a local **Ollama** model via the AI Settings (••• icon) above.\n\nKey features:\n• **Multi-key pooling & load balancing** (Round Robin, P2C, Random)\n• **Automatic failover** on rate limits (HTTP 429)\n• **Encrypted vault sync** across paired devices\n• **Automatic secret redaction** from terminal output.";
 }

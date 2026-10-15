@@ -1151,7 +1151,7 @@ export function AIPanel({
         ...history,
         {
           role: 'assistant',
-          content: `⚠️ **No API keys configured for ${activeConfig.name}**.\n\nPlease click the **Settings (⚙️)** button above to add your API key or batch-import multiple keys for pooled load balancing.\n\n` +
+          content: `⚠️ **No API keys configured for ${activeConfig.name}**.\n\nPlease click the **Settings (•••)** button above to add your API key or batch-import multiple keys for pooled load balancing.\n\n` +
             offlineAnswer(prompt, attachedTerminal),
           offline: true,
         },
@@ -1574,24 +1574,83 @@ export function AIPanel({
           </div>
 
           {/* OpenCode Free Information Banner */}
-          {activeConfig.providerId === 'opencode' && (
-            <div className="space-y-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs">
-              <div className="flex items-center gap-2 font-medium text-emerald-300">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                <span>OpenCode Free Frontier Models</span>
-              </div>
-              <p className="text-[11px] leading-relaxed text-emerald-200/80">
-                {opencodeInstalled
-                  ? 'OpenCode CLI is detected on your system. NexusTerminal routes directly through your local OpenCode runtime to access zero-cost hosted models (Nemotron-3 Ultra, Ling 3.1 Flash, LongCat 2.5, etc.) with no API keys or subscription needed.'
-                  : 'OpenCode CLI was not detected on your system. Run the command below in your terminal to install OpenCode and unlock free frontier models:'}
-              </p>
-              {!opencodeInstalled && (
+          {activeConfig.providerId === 'opencode' && (() => {
+            const isRemoteActive = hostOpencodeStatus?.isRemote && hostOpencodeStatus.installed;
+            const isLocalActive = opencodeInstalled;
+
+            if (isRemoteActive) {
+              return (
+                <div className="space-y-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-medium text-emerald-300">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                      <span>Remote OpenCode Active on {hostOpencodeStatus.hostLabel}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => probeHostOpencode(true)}
+                      className="p-1 rounded hover:bg-white/10 text-emerald-300 hover:text-white transition cursor-pointer flex items-center gap-1 text-[10px]"
+                      title="Re-check host"
+                    >
+                      <RefreshCw className={cn("h-3 w-3", probingHostOpencode && "animate-spin")} />
+                      <span>Re-check</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-emerald-200/80">
+                    OpenCode CLI is detected and running natively on remote host <strong className="text-white">{hostOpencodeStatus.hostLabel}</strong>. NexusTerminal routes AI queries and tool execution directly through the remote OpenCode runtime with zero configuration and no API keys required.
+                  </p>
+                </div>
+              );
+            }
+
+            if (isLocalActive) {
+              return (
+                <div className="space-y-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-emerald-300">
+                    <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                    <span>OpenCode Free Frontier Models (Local Runtime)</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-emerald-200/80">
+                    OpenCode CLI is detected on your local system. NexusTerminal routes directly through your local OpenCode runtime to access zero-cost hosted models (Nemotron-3 Ultra, Muse Spark, Ling 3.1 Flash, etc.) with no API keys or subscription needed.
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-2 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 font-medium text-amber-300">
+                    <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                    <span>
+                      {hostOpencodeStatus?.isRemote
+                        ? `OpenCode not on ${hostOpencodeStatus.hostLabel}`
+                        : 'OpenCode CLI Not Detected'}
+                    </span>
+                  </div>
+                  {hostOpencodeStatus?.isRemote && (
+                    <button
+                      type="button"
+                      onClick={installOnRemoteHost}
+                      className="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 hover:text-white font-medium text-[10px] transition cursor-pointer flex items-center gap-1 shrink-0"
+                      title="Run curl installer on remote host terminal"
+                    >
+                      <Sparkles className="h-3 w-3" />
+                      Install on Host
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] leading-relaxed text-amber-200/80">
+                  {hostOpencodeStatus?.isRemote
+                    ? `OpenCode CLI was not detected on remote host "${hostOpencodeStatus.hostLabel}". Run the command below in your host terminal to install OpenCode and unlock free frontier models:`
+                    : 'OpenCode CLI was not detected on your system. Run the command below in your terminal to install OpenCode and unlock free frontier models:'}
+                </p>
                 <div className="mt-2 rounded bg-black/40 p-2 font-mono text-[11px] text-cyan-300 select-all border border-white/5">
                   curl -fsSL https://opencode.ai/install.sh | bash
                 </div>
-              )}
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           {/* Endpoint Base URL */}
           {activeConfig.providerId !== 'opencode' && (
@@ -2139,9 +2198,19 @@ export function AIPanel({
             </p>
 
             {activeConfig.providerId !== 'ollama' && activeConfig.providerId !== 'opencode' && activeConfig.apiKeys.length === 0 && (
-              <div className="mt-3 flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300">
-                <AlertCircle className="h-3.5 w-3.5" />
-                <span>No API keys configured. Click Settings (⚙️) to add keys.</span>
+              <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  <span className="truncate">No API keys configured.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCfg(true)}
+                  className="flex items-center gap-1 rounded bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 px-2 py-0.5 text-[11px] font-semibold text-amber-200 transition cursor-pointer shrink-0"
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                  <span>Settings</span>
+                </button>
               </div>
             )}
 
