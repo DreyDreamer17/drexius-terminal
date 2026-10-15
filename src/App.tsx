@@ -734,7 +734,7 @@ export default function App() {
     >
       {/* Top Header Bar — floating controls across the top */}
       {!zen && (
-        <header className="max-md:hidden flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 z-30">
+        <header className="max-md:hidden flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 relative z-50">
           {/* Logo / Sidebar Toggle Button (replaces hamburger menu, aligned with rail below) */}
           <div className="flex w-12 shrink-0 items-center justify-center">
             <button
@@ -952,7 +952,7 @@ export default function App() {
       {/* No page header on phones: the bottom navigation already says where you are, and every
           section starts with its own working row (vault switcher, pane bar, panel header). The AI page
           is the assistant alone — snippets live in the terminal key row's Snippets drawer. */}
-      {mobile && mobilePage === 'hosts' && <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2">
+      {mobile && mobilePage === 'hosts' && <div className="relative z-30 flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-2">
         <VaultMenu vaults={vaults} activeVaultId={activeVaultId} onSelectVault={setActiveVaultId}
           onCreateVault={handleCreateVault} onDeleteVault={handleDeleteVault}
           onOpenShareModal={() => setShareModal({ initialTab: 'share' })}

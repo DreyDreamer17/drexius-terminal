@@ -16,6 +16,8 @@ import type { NexusTheme } from '../lib/themes';
 import { safeUid } from '../utils/uuid';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
+import { useMobile } from '../hooks/useMobile';
+import { MobileSheet, ResponsiveOverlay, SheetHandle } from './MobileSheet';
 
 interface Props {
   vaults: Vault[];
@@ -41,6 +43,7 @@ export function VaultMenu({
   theme,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const mobile = useMobile();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newVaultName, setNewVaultName] = useState('');
   const [newVaultColor, setNewVaultColor] = useState('#10b981');
@@ -120,11 +123,11 @@ export function VaultMenu({
           />
         </button>
 
-        {open && (
+        {!mobile && open && (
           <>
-            <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
             <div
-              className="absolute left-0 top-9 z-40 w-72 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+              className="absolute left-0 top-9 z-50 w-72 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
               style={{
                 background: bgColor,
                 boxShadow: `0 0 30px ${accentColor}18, 0 20px 45px rgba(0, 0, 0, 0.75)`,
@@ -159,8 +162,9 @@ export function VaultMenu({
                 </span>
               </div>
 
-              <div className="relative py-1 space-y-1">
+              <div className="relative py-1 space-y-1 max-h-60 overflow-y-auto">
                 <button
+                  type="button"
                   onClick={() => {
                     onSelectVault('all');
                     setOpen(false);
@@ -197,6 +201,7 @@ export function VaultMenu({
                   return (
                     <div key={v.id} className="group relative flex items-center gap-1 rounded-xl">
                       <button
+                        type="button"
                         onClick={() => {
                           onSelectVault(v.id);
                           setOpen(false);
@@ -246,6 +251,7 @@ export function VaultMenu({
                       </button>
                       {!isPersonal && (
                         <button
+                          type="button"
                           onClick={async (e) => {
                             e.stopPropagation();
                             if (await confirmDialog({ title: `Delete team vault "${v.name}"?`, message: 'Its hosts will move back to your Personal Vault.', confirmLabel: 'Delete vault', danger: true })) {
@@ -266,6 +272,7 @@ export function VaultMenu({
               {/* Action shortcuts */}
               <div className="relative mt-1 border-t border-white/5 pt-1.5 space-y-1">
                 <button
+                  type="button"
                   onClick={() => {
                     setOpen(false);
                     setShowCreateModal(true);
@@ -279,6 +286,7 @@ export function VaultMenu({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => {
                     setOpen(false);
                     onOpenShareModal();
@@ -299,6 +307,7 @@ export function VaultMenu({
                 </button>
 
                 <button
+                  type="button"
                   onClick={() => {
                     setOpen(false);
                     onOpenImportModal();
@@ -313,6 +322,7 @@ export function VaultMenu({
 
                 {onOpenPairingModal && (
                   <button
+                    type="button"
                     onClick={() => {
                       setOpen(false);
                       onOpenPairingModal();
@@ -331,13 +341,254 @@ export function VaultMenu({
         )}
       </div>
 
+      {/* Mobile Bottom Sheet: native touch-friendly sheet portaled to body */}
+      {mobile && open && (
+        <MobileSheet
+          title="Vaults & Sharing"
+          kicker="Zero-Knowledge"
+          subtitle="Switch vaults or collaborate"
+          icon={FolderKanban}
+          theme={theme}
+          onClose={() => setOpen(false)}
+        >
+          <div className="space-y-4">
+            {/* Vault List */}
+            <div className="space-y-1.5">
+              <p className="px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Switch Vault
+              </p>
+
+              {/* All Vaults */}
+              <button
+                type="button"
+                onClick={() => {
+                  onSelectVault('all');
+                  setOpen(false);
+                }}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-2xl p-3 text-left transition-all border',
+                  activeVaultId === 'all'
+                    ? 'border-cyan-400/40 bg-cyan-500/15 text-white shadow-lg'
+                    : 'border-white/5 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06] active:bg-white/[0.08]'
+                )}
+                style={
+                  activeVaultId === 'all'
+                    ? {
+                        backgroundColor: `${accentColor}18`,
+                        borderColor: `${accentColor}40`,
+                        boxShadow: `0 0 16px ${accentColor}20`,
+                      }
+                    : undefined
+                }
+              >
+                <div
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10"
+                  style={{ backgroundColor: activeVaultId === 'all' ? `${accentColor}25` : 'rgba(255,255,255,0.05)' }}
+                >
+                  <FolderKanban className="h-5 w-5" style={{ color: activeVaultId === 'all' ? accentColor : '#38bdf8' }} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-sm truncate">All Vaults</p>
+                  <p className="text-xs text-slate-400">Consolidated view across all vaults</p>
+                </div>
+                {activeVaultId === 'all' && (
+                  <Check className="h-5 w-5 shrink-0" style={{ color: accentColor }} />
+                )}
+              </button>
+
+              {/* Individual Vaults */}
+              {vaults.map((v) => {
+                const isSelected = v.id === activeVaultId;
+                const isPersonal = v.kind === 'personal';
+                return (
+                  <div
+                    key={v.id}
+                    className={cn(
+                      'flex items-center gap-2 rounded-2xl p-3 transition-all border',
+                      isSelected
+                        ? 'border-cyan-400/40 bg-cyan-500/15 text-white shadow-lg'
+                        : 'border-white/5 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06] active:bg-white/[0.08]'
+                    )}
+                    style={
+                      isSelected
+                        ? {
+                            backgroundColor: `${accentColor}18`,
+                            borderColor: `${accentColor}40`,
+                            boxShadow: `0 0 16px ${accentColor}20`,
+                          }
+                        : undefined
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectVault(v.id);
+                        setOpen(false);
+                      }}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <div
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-white/10"
+                        style={{
+                          backgroundColor: isSelected
+                            ? `${accentColor}25`
+                            : isPersonal
+                            ? 'rgba(255,255,255,0.05)'
+                            : `${v.color || '#10b981'}25`,
+                        }}
+                      >
+                        {isPersonal ? (
+                          <User className="h-5 w-5" style={{ color: isSelected ? accentColor : (theme?.accent || '#22d3ee') }} />
+                        ) : (
+                          <span
+                            className="h-3 w-3 rounded-full shadow-sm"
+                            style={{ background: v.color || '#10b981', boxShadow: `0 0 8px ${v.color || '#10b981'}` }}
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-sm truncate">{v.name}</span>
+                          {isPersonal && (
+                            <span className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                              Default
+                            </span>
+                          )}
+                        </div>
+                        {v.description && (
+                          <p className="text-xs text-slate-400 truncate">{v.description}</p>
+                        )}
+                      </div>
+                      {isSelected && (
+                        <Check className="h-5 w-5 shrink-0" style={{ color: accentColor }} />
+                      )}
+                    </button>
+                    {!isPersonal && (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (await confirmDialog({
+                            title: `Delete team vault "${v.name}"?`,
+                            message: 'Its hosts will move back to your Personal Vault.',
+                            confirmLabel: 'Delete vault',
+                            danger: true
+                          })) {
+                            await onDeleteVault(v.id);
+                          }
+                        }}
+                        title="Delete vault"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-rose-400 hover:bg-rose-500/20 active:bg-rose-500/30 transition"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Actions & Sharing */}
+            <div className="space-y-1.5 pt-2 border-t border-white/10">
+              <p className="px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Actions & Sharing
+              </p>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  setShowCreateModal(true);
+                }}
+                className="flex w-full items-center gap-3 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-left text-slate-200 hover:bg-white/[0.06] active:bg-white/[0.08] transition"
+              >
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+                  <Plus className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-sm">New Team Vault…</p>
+                  <p className="text-xs text-slate-400">Create an isolated vault for team hosts & secrets</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenShareModal();
+                }}
+                className="flex w-full items-center gap-3 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-left text-slate-200 hover:bg-white/[0.06] active:bg-white/[0.08] transition"
+              >
+                <div
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border"
+                  style={{
+                    borderColor: `${accentColor}35`,
+                    backgroundColor: `${accentColor}18`,
+                    color: accentColor,
+                  }}
+                >
+                  <Share2 className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-sm">Share / Invite Members…</p>
+                  <p className="text-xs text-slate-400">Export encrypted vault bundle for team members</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenImportModal();
+                }}
+                className="flex w-full items-center gap-3 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-left text-slate-200 hover:bg-white/[0.06] active:bg-white/[0.08] transition"
+              >
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/15 text-fuchsia-400">
+                  <Download className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-sm">Import Shared Vault (.nxvault)…</p>
+                  <p className="text-xs text-slate-400">Decrypt and import a team vault file</p>
+                </div>
+              </button>
+
+              {onOpenPairingModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenPairingModal();
+                  }}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-left text-amber-200 hover:bg-white/[0.06] active:bg-white/[0.08] transition"
+                >
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-amber-500/30 bg-amber-500/15 text-amber-400">
+                    <QrCode className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-sm">Link Device (QR & PIN)…</p>
+                    <p className="text-xs text-amber-300/70">Sync vaults directly with desktop or phone</p>
+                  </div>
+                </button>
+              )}
+            </div>
+          </div>
+        </MobileSheet>
+      )}
+
       {/* Create Team Vault Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-200">
+        <ResponsiveOverlay
+          portal
+          label="Create Team Vault"
+          onClose={() => setShowCreateModal(false)}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-200"
+        >
           <div
-            className="relative w-full max-w-sm rounded-2xl border border-white/10 p-5 shadow-2xl overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+            className="nx-sheet relative w-full max-w-sm rounded-2xl border border-white/10 p-5 shadow-2xl overflow-hidden"
             style={{ background: bgColor }}
           >
+            <SheetHandle onClose={() => setShowCreateModal(false)} />
             {/* Top ambient radial glow */}
             <div
               className="pointer-events-none absolute inset-x-0 top-0 h-36 opacity-25"
@@ -444,7 +695,7 @@ export function VaultMenu({
               </div>
             </form>
           </div>
-        </div>
+        </ResponsiveOverlay>
       )}
     </>
   );

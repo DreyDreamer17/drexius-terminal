@@ -16,6 +16,7 @@ import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type NexusTheme } from '../lib/themes';
+import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 
 interface Props {
   vaults: Vault[];
@@ -150,11 +151,18 @@ export function TeamShareModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <ResponsiveOverlay
+      portal
+      label="Team vault sharing"
+      onClose={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+    >
       <div
-        className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-white/10 shadow-2xl flex flex-col max-h-[85vh]"
+        onMouseDown={(e) => e.stopPropagation()}
+        className="nx-sheet relative w-full max-w-xl overflow-hidden rounded-2xl border border-white/10 shadow-2xl flex flex-col max-h-[85vh]"
         style={{ backgroundColor: bgColor }}
       >
+        <SheetHandle onClose={onClose} />
         {/* Top ambient radial glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
@@ -432,6 +440,6 @@ export function TeamShareModal({
           )}
         </div>
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }
