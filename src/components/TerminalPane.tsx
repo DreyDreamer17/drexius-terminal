@@ -1,7 +1,7 @@
 import { useMobile } from '../hooks/useMobile';
 import { useTerminalTouch, type TerminalTouchGesture } from '../hooks/useTerminalTouch';
 import { TerminalSelection } from './TerminalSelection';
-import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, type TerminalModifiers } from '../lib/mobileTerminal';
+import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, SmartTerminalWriter, type TerminalModifiers } from '../lib/mobileTerminal';
 import { TerminalAccessory } from './TerminalAccessory';
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
@@ -173,6 +173,7 @@ export const TerminalPane = memo(function TerminalPane({
   const [showCmdSearch, setShowCmdSearch] = useState(false);
   const [showClipboard, setShowClipboard] = useState(false);
   const pasteLockRef = useRef(false);
+  const smartWriterRef = useRef<SmartTerminalWriter | null>(null);
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
@@ -526,7 +527,7 @@ export const TerminalPane = memo(function TerminalPane({
             if (dead()) return;
             switch (ev.type) {
               case 'output':
-                term.write(ev.data);
+                smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
                 break;
               case 'cwd':
                 setCwd(ev.path);
@@ -575,7 +576,7 @@ export const TerminalPane = memo(function TerminalPane({
             if (dead()) return;
             switch (ev.type) {
               case 'output':
-                term.write(ev.data);
+                smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
                 break;
               case 'cwd':
                 setCwd(ev.path);
@@ -633,7 +634,7 @@ export const TerminalPane = memo(function TerminalPane({
           if (dead()) return;
           switch (ev.type) {
             case 'output':
-              term.write(ev.data);
+              smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
               break;
             case 'cwd':
               setCwd(ev.path);
@@ -922,6 +923,7 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     termRef.current = term;
+    smartWriterRef.current = new SmartTerminalWriter(term);
     fitRef.current = fit;
     searchRef.current = search;
     setTermInstance(term);
@@ -1245,6 +1247,8 @@ export const TerminalPane = memo(function TerminalPane({
       }
       sessionRef.current = null;
       registry.delete(pane.id);
+      smartWriterRef.current?.dispose();
+      smartWriterRef.current = null;
       term.dispose();
       setTermInstance(null);
       onChangeRef.current?.();

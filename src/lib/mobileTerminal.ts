@@ -121,3 +121,123 @@ export const keyPaletteGroups = [
 /** Terminal font-size bounds shared by the desktop stepper and the phone pinch gesture. */
 export const TERMINAL_FONT_MIN = 10;
 export const TERMINAL_FONT_MAX = 22;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Smart Wrapped Line Progress Bar Rewind
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TerminalLike {
+  write(data: string | Uint8Array): void;
+  buffer: {
+    active: {
+      type: string;
+      cursorX: number;
+      cursorY: number;
+      baseY: number;
+      length: number;
+      getLine(y: number): { isWrapped: boolean } | undefined;
+    };
+  };
+}
+
+/**
+ * Counts how many rows above the cursor are wrapped continuation lines.
+ * Returns 0 if the cursor is on the first row of a logical line, or if the terminal
+ * is in alternate screen buffer (e.g. htop, vim).
+ */
+export function getWrappedRowsAbove(term: TerminalLike): number {
+  try {
+    const buf = term.buffer.active;
+    if (buf.type !== 'normal') return 0;
+    let count = 0;
+    let lineIdx = buf.baseY + buf.cursorY;
+    while (lineIdx > 0 && lineIdx < buf.length) {
+      const line = buf.getLine(lineIdx);
+      if (!line || !line.isWrapped) break;
+      count++;
+      lineIdx--;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Streams terminal output while rewriting standalone Carriage Returns (`\r` without `\n`)
+ * so that CLI progress bars (speedtest, curl, wget, npm, pip, docker) that wrap on narrow
+ * mobile screens update in place instead of duplicating and scrolling down the terminal.
+ */
+export class SmartTerminalWriter {
+  private term: TerminalLike;
+  private pendingCr = false;
+  private crTimer: ReturnType<typeof setTimeout> | null = null;
+  private decoder: TextDecoder | null = null;
+
+  constructor(term: TerminalLike) {
+    this.term = term;
+  }
+
+  write(data: string | Uint8Array) {
+    let chunk = typeof data === 'string' ? data : (this.decoder ??= new TextDecoder()).decode(data);
+    if (this.crTimer) {
+      clearTimeout(this.crTimer);
+      this.crTimer = null;
+    }
+
+    if (this.pendingCr) {
+      this.pendingCr = false;
+      if (chunk.startsWith('\n')) {
+        this.term.write('\r\n' + chunk.slice(1));
+        return;
+      } else {
+        this._emitStandaloneCR();
+      }
+    }
+
+    if (chunk.endsWith('\r')) {
+      this.pendingCr = true;
+      chunk = chunk.slice(0, -1);
+      this.crTimer = setTimeout(() => this.flush(), 25);
+      if (!chunk) return;
+    }
+
+    if (!chunk.includes('\r')) {
+      this.term.write(chunk);
+      return;
+    }
+
+    const parts = chunk.split(/\r(?!\n)/);
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        this._emitStandaloneCR();
+      }
+      if (parts[i].length > 0) {
+        this.term.write(parts[i]);
+      }
+    }
+  }
+
+  private _emitStandaloneCR() {
+    const wrapped = getWrappedRowsAbove(this.term);
+    if (wrapped > 0) {
+      this.term.write(`\x1b[${wrapped}A\r\x1b[J`);
+    } else {
+      this.term.write('\r');
+    }
+  }
+
+  flush() {
+    if (this.pendingCr) {
+      this.pendingCr = false;
+      this._emitStandaloneCR();
+    }
+  }
+
+  dispose() {
+    if (this.crTimer) {
+      clearTimeout(this.crTimer);
+      this.crTimer = null;
+    }
+  }
+}

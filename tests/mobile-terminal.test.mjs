@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { accessoryKeys, isTerminalModifierKey, modifiedTerminalInput } from '../src/lib/mobileTerminal.ts';
+import { accessoryKeys, isTerminalModifierKey, modifiedTerminalInput, getWrappedRowsAbove, SmartTerminalWriter } from '../src/lib/mobileTerminal.ts';
 
 const ctrl = { ctrl: true, alt: false };
 const alt = { ctrl: false, alt: true };
@@ -49,4 +49,58 @@ test('accessory emits standard terminal key sequences', () => {
   assert.deepEqual(Object.fromEntries(accessoryKeys), {
     ESC: '\x1b', TAB: '\t', '↑': '\x1b[A', '↓': '\x1b[B', '←': '\x1b[D', '→': '\x1b[C', '|': '|', '/': '/', '~': '~', '-': '-',
   });
+});
+
+test('getWrappedRowsAbove detects continuation rows correctly', () => {
+  const makeTerm = (linesWrapped, cursorY, type = 'normal') => ({
+    buffer: {
+      active: {
+        type,
+        cursorX: 5,
+        cursorY,
+        baseY: 0,
+        length: linesWrapped.length,
+        getLine(y) {
+          return linesWrapped[y] !== undefined ? { isWrapped: linesWrapped[y] } : undefined;
+        },
+      },
+    },
+  });
+
+  assert.equal(getWrappedRowsAbove(makeTerm([false, false, false], 2)), 0);
+  assert.equal(getWrappedRowsAbove(makeTerm([false, true, true], 2)), 2);
+  assert.equal(getWrappedRowsAbove(makeTerm([false, true, false], 2)), 0);
+  assert.equal(getWrappedRowsAbove(makeTerm([false, true, true], 2, 'alternate')), 0);
+});
+
+test('SmartTerminalWriter rewinds cursor and clears on standalone CR for wrapped progress bars', () => {
+  const written = [];
+  const mockTerm = {
+    written,
+    write(d) { written.push(d); },
+    buffer: {
+      active: {
+        type: 'normal',
+        cursorX: 5,
+        cursorY: 2,
+        baseY: 0,
+        length: 3,
+        getLine(y) {
+          return { isWrapped: y > 0 }; // lines 1 and 2 are wrapped from line 0
+        },
+      },
+    },
+  };
+
+  const writer = new SmartTerminalWriter(mockTerm);
+  // Standard CRLF should pass through normally without rewinding
+  writer.write('Progress: done\r\n');
+  assert.deepEqual(written, ['Progress: done\r\n']);
+
+  // Standalone CR should rewind wrapped rows
+  written.length = 0;
+  writer.write('\rDownload: 50%');
+  assert.deepEqual(written, ['\x1b[2A\r\x1b[J', 'Download: 50%']);
+
+  writer.dispose();
 });
