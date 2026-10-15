@@ -1,6 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Theme.nexus_terminal" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+    <style name="Theme.nexus_terminal.Base" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/nexus_background</item>
+        <item name="android:statusBarColor">@color/nexus_background</item>
+        <item name="android:navigationBarColor">@color/nexus_background</item>
+    </style>
+
+    <style name="Theme.nexus_terminal" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/nexus_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/nexus_splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.nexus_terminal.Base</item>
     </style>
 </resources>

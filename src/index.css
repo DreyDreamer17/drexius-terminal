@@ -368,3 +368,150 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
     color: var(--nx-accent); transform: scale(.96); box-shadow: 0 0 12px color-mix(in srgb, var(--nx-accent) 25%, transparent);
   }
 }
+
+/* ─── NEXUS Launch Splash Screen ────────────────────────────────────────────── */
+.splash-screen {
+  background: var(--screen-bg, #050715);
+  color: var(--screen-fg, #f5f6fc);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  transition: background .5s, color .5s;
+}
+.screen-atmosphere {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 43% 41%, #00678612, transparent 43%), radial-gradient(ellipse at 100% 25%, #6222a90d, transparent 47%);
+  pointer-events: none;
+}
+.appearance-daylight .screen-atmosphere {
+  background: radial-gradient(ellipse at 50% 35%, #3dd1c91c, transparent 56%);
+}
+.network-backdrop {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  color: var(--screen-network, #2850c9);
+  opacity: .46;
+  pointer-events: none;
+}
+.appearance-midnight .network-backdrop { opacity: .17; }
+.appearance-daylight .network-backdrop { opacity: .48; }
+.network-dot { animation: network-breathe 5s infinite ease-in-out; }
+.network-dot-1 { animation-delay: -1.5s; }
+.network-dot-2 { animation-delay: -3s; }
+
+.splash-brand {
+  position: absolute;
+  top: 23.1%;
+  width: 100%;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+}
+.splash-symbol {
+  width: 69%;
+  height: auto;
+  filter: drop-shadow(0 0 12px #08b1e214);
+}
+.splash-wordmark {
+  width: 71.5%;
+  height: auto;
+  margin-top: 24px;
+  animation: wordmark-arrive .8s .4s both;
+}
+.splash-tagline {
+  color: var(--screen-muted, #9baec9);
+  margin: 15px 0 0;
+  font-size: clamp(7px, .66vw, 9px);
+  font-family: inherit;
+  font-weight: 400;
+  letter-spacing: .75px;
+  animation: wordmark-arrive .8s .65s both;
+  white-space: nowrap;
+}
+.is-animated .mark-wire {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: wire-connect 1.8s .15s both cubic-bezier(.3, 0, .2, 1);
+}
+.is-animated .mark-node {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: node-connect .65s var(--node-delay) both cubic-bezier(.16, 1, .3, 1);
+}
+.splash-loading {
+  position: absolute;
+  width: 60%;
+  left: 20%;
+  bottom: 13.9%;
+  user-select: none;
+}
+.loading-track {
+  height: 2px;
+  width: 100%;
+  border-radius: 5px;
+  background: #28345670;
+  overflow: hidden;
+}
+.loading-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00eadb 0%, #159bff 50%, #8745fa 100%);
+  box-shadow: 0 0 8px #00e4eb40;
+  transition: width .1s linear;
+}
+.loading-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--screen-muted, #9baec9);
+  font-family: monospace;
+  font-size: 6.7px;
+  font-weight: 400;
+  letter-spacing: .3px;
+  margin: 13px -22px 0;
+  height: 10px;
+  white-space: nowrap;
+}
+.is-complete .loading-status { color: #8dc8c6; }
+.appearance-daylight .is-complete .loading-status { color: #267a72; }
+.privacy-signature {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  position: absolute;
+  bottom: 6.6%;
+  left: 0;
+  width: 100%;
+  color: var(--screen-muted, #9baec9);
+  opacity: .52;
+  font-size: 5.3px;
+  font-weight: 500;
+  letter-spacing: 1.3px;
+  user-select: none;
+}
+.privacy-signature > svg { height: 8px; width: 8px; stroke-width: 1.3; }
+.appearance-daylight .network-mark { filter: drop-shadow(0 0 10px #0c88b118); }
+
+.splash-fullscreen .splash-brand { top: 18%; }
+.splash-fullscreen .splash-symbol { width: min(36vh, 250px); }
+.splash-fullscreen .splash-wordmark { width: min(40vh, 285px); margin-top: 25px; }
+.splash-fullscreen .splash-tagline { font-size: 11px; margin-top: 18px; letter-spacing: 1.3px; }
+.splash-fullscreen .splash-loading { width: 235px; left: 50%; transform: translateX(-50%); bottom: 14%; }
+.splash-fullscreen .loading-track { height: 3px; }
+.splash-fullscreen .loading-status { font-size: 9px; margin-top: 18px; }
+.splash-fullscreen .privacy-signature { font-size: 7px; bottom: 6.5%; }
+.splash-fullscreen .privacy-signature > svg { width: 11px; height: 11px; }
+
+@keyframes wire-connect { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes node-connect { from { opacity: 0; transform: scale(.45); } to { opacity: 1; transform: scale(1); } }
+@keyframes wordmark-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes network-breathe { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+

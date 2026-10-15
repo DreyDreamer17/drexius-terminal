@@ -48,6 +48,7 @@ import { registry } from './lib/sessions';
 import { THEMES, type NexusTheme } from './lib/themes';
 import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import { LockScreen } from './components/LockScreen';
+import { LaunchSplash } from './components/LaunchSplash';
 import { HostSidebar } from './components/HostSidebar';
 import { HostModal } from './components/HostModal';
 import { VaultMenu } from './components/VaultMenu';
@@ -145,6 +146,7 @@ export default function App() {
   }, [settingsPicker]);
 
   const [sessionSheet, setSessionSheet] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
 
   const [unlocked, setUnlocked] = useState(false);
   // The vault can be unlocked while this UI is not. Android recreates the
@@ -793,6 +795,7 @@ export default function App() {
 
   return (
     <>
+    {showSplash && <LaunchSplash onFinished={() => setShowSplash(false)} />}
     {!unlocked && (
       <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
         <LockScreen onUnlocked={() => setUnlocked(true)}

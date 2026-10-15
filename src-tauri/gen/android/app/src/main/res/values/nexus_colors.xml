@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="nexus_background">#050715</color>
+  <color name="nexus_foreground">#F5F6FC</color>
+  <color name="nexus_accent">#00D7ED</color>
+</resources>
