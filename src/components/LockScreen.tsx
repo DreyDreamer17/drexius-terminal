@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Lock,
   Loader2,
@@ -358,7 +358,7 @@ Generated: ${new Date().toISOString()}
     await doUnlock(pw, isNew);
   };
 
-  const biometricUnlock = async (opts?: { auto?: boolean }) => {
+  const biometricUnlock = async () => {
     setBioBusy(true); setErr(null);
     try {
       if (isTauri && mobile) {
@@ -371,24 +371,10 @@ Generated: ${new Date().toISOString()}
             cancelTitle: 'Use Master Password',
           });
         } catch (bioErr: any) {
-          const msg = bioErr?.message || String(bioErr);
-          // If user clicked cancel or opted for password fallback, switch cleanly to manual password entry
-          if (/cancel|dismiss|fallback|negative/i.test(msg)) {
-            setShowManualPassword(true);
-            setErr(null);
-            return;
-          }
-          // `auto` (fired on mount, no tap) must not fall through to the
-          // file-based unlock below: that key is HKDF over nexus.salt plus a
-          // constant, i.e. obfuscation, and it is only meant to be reached by
-          // deliberate choice. Anything that blocks an untethered prompt — the
-          // platform refusing a gesture-less BiometricPrompt, no enrolled
-          // biometric, plugin unavailable, timeout — stops at manual entry.
-          if (opts?.auto) {
-            setShowManualPassword(true);
-            return;
-          }
-          console.warn('Biometric prompt warning:', bioErr);
+          // If biometric prompt was dismissed, cancelled, or failed, switch cleanly to manual password entry
+          setShowManualPassword(true);
+          setErr(null);
+          return;
         }
       }
 
@@ -402,28 +388,11 @@ Generated: ${new Date().toISOString()}
     } catch (er) {
       const msg = isBridgeError(er) ? er.message : String(er);
       setErr(msg);
-      if (/no master password stored|not found|no entry/i.test(msg)) {
-        setShowManualPassword(true);
-      }
+      setShowManualPassword(true);
     } finally {
       setBioBusy(false);
     }
   };
-
-  // Phones: this screen appears when the process was reclaimed and the in-memory
-  // key really is gone — there the choice is a tap before the biometric prompt,
-  // so ask once as soon as we know a credential is stored, instead of making the
-  // user tap first. Runs after the mount effect resolves `hasStored`, fires at
-  // most once per mount, and only when an existing vault is waiting.
-  const autoUnlockTriedRef = useRef(false);
-  useEffect(() => {
-    if (autoUnlockTriedRef.current) return;
-    if (!isTauri || !mobile) return;
-    if (initialized !== true || !hasStored || showManualPassword) return;
-    autoUnlockTriedRef.current = true;
-    void biometricUnlock({ auto: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialized, hasStored, showManualPassword, mobile]);
 
   const features = [
     { icon: ShieldCheck, t: 'SQLCipher AES-256 vault', d: 'Argon2id-derived key, zero plaintext on disk' },

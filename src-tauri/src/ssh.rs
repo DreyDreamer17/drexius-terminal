@@ -26,16 +26,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
 
-/// Shell hook prefix injected at login: emits OSC-7 (`ESC ] 7 ; file://host/cwd BEL`)
-/// on every prompt so we can snapshot the working directory. Idempotent and
-/// prefixed with a space so it stays out of shell history (`HISTCONTROL=ignorespace`).
-/// Does NOT run `clear` so existing terminal scrollback is never wiped.
-const OSC7_HOOK_PREFIX: &str = concat!(
-    " __nx_osc7(){ printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-$(hostname)}\" \"$PWD\"; };",
-    " case \"$PROMPT_COMMAND\" in *__nx_osc7*) ;; *) PROMPT_COMMAND=\"__nx_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\";; esac;",
-    " [ -n \"$ZSH_VERSION\" ] && precmd_functions+=(__nx_osc7);"
-);
-
 /// Maximum per-session scrollback retained in Rust memory (256 KiB) so a WebView
 /// reload or Android Activity recreation can re-attach without losing output.
 const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
@@ -616,18 +606,17 @@ pub fn ssh_connect(
     let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Login bootstrap: OSC-7 hook + optional resume of snapshotted cwd.
-    // Never run `clear` here (`clear` sends ESC[3J which wipes the user's scrollback!).
-    let mut init = String::from(OSC7_HOOK_PREFIX);
     let mut initial_cwd = String::from("~");
     if req.resume {
         if let Some(snap) = snaps.get(&host.id).or_else(|| vault.load_snapshot(&host.id).ok().flatten()) {
             initial_cwd = snap.cwd.clone();
-            init.push_str(&format!(" cd {} 2>/dev/null;", cd_path_quote(&snap.cwd)));
+            // Only cd if the snapshotted directory is not home
+            if !snap.cwd.is_empty() && snap.cwd != "~" && !snap.cwd.starts_with("/home/") && snap.cwd != "/root" {
+                let cmd = format!(" cd {} 2>/dev/null\n", cd_path_quote(&snap.cwd));
+                let _ = tx.try_send(Cmd::Write(cmd.into_bytes()));
+            }
         }
     }
-    init.push_str(" __nx_boot_done=1\n");
-    let _ = tx.try_send(Cmd::Write(init.into_bytes()));
 
     let events_shared = Arc::new(Mutex::new(on_event.clone()));
     let scrollback = Arc::new(Mutex::new(Vec::with_capacity(16 * 1024)));
@@ -813,89 +802,6 @@ fn request_pty_size_nb(ch: &mut Channel, cols: u32, rows: u32) -> std::io::Resul
     }
 }
 
-/// Strips the echoed `__nx_osc7(){ ... __nx_boot_done=1` login bootstrap line from early
-/// PTY output so we don't need to execute `clear` (which would send `ESC[3J` and wipe
-/// the terminal scrollback buffer).
-#[derive(Default)]
-struct BootstrapEchoFilter {
-    done: bool,
-    suppressing: bool,
-    carry: Vec<u8>,
-}
-
-impl BootstrapEchoFilter {
-    fn filter(&mut self, input: &[u8]) -> Vec<u8> {
-        if self.done {
-            return input.to_vec();
-        }
-        self.carry.extend_from_slice(input);
-        let mut out = Vec::with_capacity(self.carry.len());
-
-        loop {
-            if !self.suppressing {
-                if let Some(pos) = find_subslice(&self.carry, b"__nx_osc7(){") {
-                    // Also drop a single leading space if present right before `__nx_osc7(){`
-                    let keep_end = if pos > 0 && self.carry[pos - 1] == b' ' {
-                        pos - 1
-                    } else {
-                        pos
-                    };
-                    out.extend_from_slice(&self.carry[..keep_end]);
-                    self.carry.drain(..pos);
-                    self.suppressing = true;
-                } else {
-                    // Keep a small tail in case `__nx_osc7(){` straddles two read chunks
-                    if self.carry.len() > 16 {
-                        let flush_len = self.carry.len() - 16;
-                        out.extend_from_slice(&self.carry[..flush_len]);
-                        self.carry.drain(..flush_len);
-                    }
-                    break;
-                }
-            }
-
-            if self.suppressing {
-                if let Some(end_pos) = find_subslice(&self.carry, b"__nx_boot_done=1") {
-                    let mut drain_to = end_pos + b"__nx_boot_done=1".len();
-                    while drain_to < self.carry.len()
-                        && (self.carry[drain_to] == b'\r' || self.carry[drain_to] == b'\n')
-                    {
-                        drain_to += 1;
-                    }
-                    self.carry.drain(..drain_to);
-                    self.suppressing = false;
-                    self.done = true;
-                    out.extend_from_slice(&self.carry);
-                    self.carry.clear();
-                    break;
-                } else {
-                    // Wait for the end marker (cap carry to avoid unbounded growth)
-                    if self.carry.len() > 4096 {
-                        self.carry.clear();
-                        self.suppressing = false;
-                        self.done = true;
-                    }
-                    break;
-                }
-            }
-        }
-        out
-    }
-
-    fn flush_remaining(&mut self) -> Vec<u8> {
-        self.done = true;
-        self.suppressing = false;
-        std::mem::take(&mut self.carry)
-    }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
 fn io_loop(
     _sess: Session,
     mut ch: Channel,
@@ -911,8 +817,6 @@ fn io_loop(
 ) -> (String, bool) {
     let mut buf = vec![0u8; 64 * 1024];
     let mut osc = Osc7Parser::default();
-    let mut boot_filter = BootstrapEchoFilter::default();
-    let boot_deadline = Instant::now() + Duration::from_secs(6);
     let mut line = String::new();
     let mut last_size = initial_size;
 
@@ -921,23 +825,6 @@ fn io_loop(
             let _ = ch.send_eof();
             let _ = ch.close();
             return ("closed by user".into(), false);
-        }
-
-        if !boot_filter.done && Instant::now() > boot_deadline {
-            let rem = boot_filter.flush_remaining();
-            if !rem.is_empty() {
-                {
-                    let mut sb = scrollback.lock();
-                    sb.extend_from_slice(&rem);
-                    if sb.len() > MAX_SCROLLBACK_BYTES {
-                        let excess = sb.len() - MAX_SCROLLBACK_BYTES;
-                        sb.drain(0..excess);
-                    }
-                }
-                let _ = events.lock().send(SshEvent::Output {
-                    b64: B64.encode(&rem),
-                });
-            }
         }
 
         let mut idle = true;
@@ -993,23 +880,20 @@ fn io_loop(
                     *cwd_state.lock() = cwd.clone();
                     let _ = events.lock().send(SshEvent::Cwd { path: cwd });
                 }
-                let cleaned = boot_filter.filter(chunk);
-                if !cleaned.is_empty() {
-                    {
-                        let mut sb = scrollback.lock();
-                        sb.extend_from_slice(&cleaned);
-                        if sb.len() > MAX_SCROLLBACK_BYTES {
-                            let excess = sb.len() - MAX_SCROLLBACK_BYTES;
-                            sb.drain(0..excess);
-                        }
+                {
+                    let mut sb = scrollback.lock();
+                    sb.extend_from_slice(chunk);
+                    if sb.len() > MAX_SCROLLBACK_BYTES {
+                        let excess = sb.len() - MAX_SCROLLBACK_BYTES;
+                        sb.drain(0..excess);
                     }
-                    // Best-effort delivery to the currently attached WebView channel.
-                    // Never close the SSH channel if the WebView is temporarily detached
-                    // or recreating — the session stays alive in Rust and re-attaches via `ssh_attach`.
-                    let _ = events.lock().send(SshEvent::Output {
-                        b64: B64.encode(&cleaned),
-                    });
                 }
+                // Best-effort delivery to the currently attached WebView channel.
+                // Never close the SSH channel if the WebView is temporarily detached
+                // or recreating — the session stays alive in Rust and re-attaches via `ssh_attach`.
+                let _ = events.lock().send(SshEvent::Output {
+                    b64: B64.encode(chunk),
+                });
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {}
             Err(e) => return (format!("connection lost: {e}"), true),

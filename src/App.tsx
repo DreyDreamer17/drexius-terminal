@@ -166,7 +166,6 @@ export default function App() {
 
   const [sessionSheet, setSessionSheet] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
-  const [vaultChecked, setVaultChecked] = useState(!isTauri);
 
   const [unlocked, setUnlocked] = useState(false);
   // The vault can be unlocked while this UI is not. Android recreates the
@@ -178,7 +177,6 @@ export default function App() {
   // clears the key, so this can never undo a deliberate lock.
   useEffect(() => {
     if (unlocked || !isTauri) {
-      setVaultChecked(true);
       return;
     }
     let active = true;
@@ -188,13 +186,9 @@ export default function App() {
         if (!active) return;
         if (s.unlocked) {
           setUnlocked(true);
-          setShowSplash(false);
         }
-        setVaultChecked(true);
       })
-      .catch(() => {
-        if (active) setVaultChecked(true);
-      });
+      .catch(() => {});
     return () => {
       active = false;
     };
@@ -495,7 +489,7 @@ export default function App() {
 
   // ── Tabs / panes ──
   const openHost = useCallback((h: Host) => {
-    const pane: Pane = { id: uid(), hostId: h.id, resume: true };
+    const pane: Pane = { id: uid(), hostId: h.id, resume: false };
     const tab: Tab = { id: uid(), title: h.label, color: h.color, panes: [pane], layout: 'single', activePaneId: pane.id };
     setTabs((t) => [...t, tab]);
     setActiveTabId(tab.id);
@@ -952,8 +946,8 @@ export default function App() {
 
   return (
     <>
-    {vaultChecked && showSplash && !unlocked && <LaunchSplash onFinished={() => setShowSplash(false)} />}
-    {vaultChecked && !unlocked && (
+    {showSplash && <LaunchSplash onFinished={() => setShowSplash(false)} />}
+    {!unlocked && !showSplash && (
       <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
         <LockScreen onUnlocked={() => setUnlocked(true)}
           onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
@@ -962,7 +956,10 @@ export default function App() {
     <WorkspaceAccessContext.Provider value={unlocked}>
     <div
       inert={!unlocked}
-      className="nx-app-shell flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30"
+      className={cn(
+        "nx-app-shell flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30",
+        !unlocked && "invisible"
+      )}
       style={{ background: theme.xterm.background }}
     >
       {/* Top Header Bar — floating controls across the top */}
