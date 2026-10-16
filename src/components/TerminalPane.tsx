@@ -33,6 +33,8 @@ import {
   Plus,
   HardDrive,
   Server,
+  Boxes,
+  Radio,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
@@ -111,6 +113,8 @@ interface Props {
   active: boolean;
   showHeader: boolean;
   mobileHidden?: boolean;
+  broadcast?: boolean;
+  onOpenDocker?: () => void;
   onFocus: () => void;
   onClose: () => void;
   onChange: () => void;
@@ -130,6 +134,7 @@ export interface MobileSessionBarActions {
   onConnectHost: () => void;
   onLocalTerminal: () => void;
   onSftp: () => void;
+  onDocker?: () => void;
   onSerial: () => void;
   onAssistant: () => void;
   onSnippets: () => void;
@@ -146,6 +151,8 @@ export const TerminalPane = memo(function TerminalPane({
   lineHeight = 1.0,
   active,
   showHeader,
+  broadcast = false,
+  onOpenDocker,
   mobileHidden = false,
   onFocus,
   onClose,
@@ -673,8 +680,9 @@ export const TerminalPane = memo(function TerminalPane({
           if (term.cols && term.rows) {
             bridge.resizeLocalPty(sid, term.cols, term.rows);
           }
-          if (host.startupCommand && host.startupCommand.trim()) {
-            const startup = host.startupCommand.trim() + '\n';
+          const startupCmd = pane.startupCommand || host.startupCommand;
+          if (startupCmd && startupCmd.trim()) {
+            const startup = startupCmd.trim() + '\n';
             setTimeout(() => {
               if (sessionRef.current === sid) {
                 bridge.writeLocalPty(sid, startup);
@@ -778,8 +786,9 @@ export const TerminalPane = memo(function TerminalPane({
           lastSentSize.current = { cols: term.cols, rows: term.rows };
           bridge.resize(sid, term.cols, term.rows);
         }
-        if (host.startupCommand && host.startupCommand.trim()) {
-          const startup = host.startupCommand.trim() + '\n';
+        const startupCmd = pane.startupCommand || host.startupCommand;
+        if (startupCmd && startupCmd.trim()) {
+          const startup = startupCmd.trim() + '\n';
           setTimeout(() => {
             if (sessionRef.current === sid) {
               bridge.write(sid, startup);
@@ -1912,12 +1921,14 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }}
       className={cn(
-        'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-colors',
+        'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-all',
         mobileHidden && 'max-md:hidden',
         showHeader
           ? cn(
               'rounded-xl border',
-              active
+              broadcast
+                ? 'border-rose-500/50 shadow-[0_0_16px_rgba(244,63,94,0.3)]'
+                : active
                 ? 'border-white/15 shadow-[0_0_0_1px_rgba(34,211,238,0.15),0_10px_40px_-10px_rgba(34,211,238,0.25)]'
                 : 'border-white/5'
             )
@@ -1943,11 +1954,29 @@ export const TerminalPane = memo(function TerminalPane({
               {host.label}
             </span>
           )}
+          {broadcast && (
+            <span className="flex items-center gap-1 rounded bg-rose-500/20 border border-rose-500/40 px-1.5 py-0.2 text-[9px] font-bold text-rose-300 animate-pulse shrink-0">
+              <Radio className="h-2.5 w-2.5" />
+              BROADCAST
+            </span>
+          )}
           <span className="flex min-w-0 items-center gap-1 truncate font-mono text-slate-500">
             <FolderOpen className="h-3 w-3 shrink-0" />
             {isSerial ? (pane.serialOptions?.portName ?? 'Serial') : cwd}
           </span>
           <div className="ml-auto flex items-center gap-1">
+            {!isSerial && onOpenDocker && (
+              <button
+                title="Inspect Docker containers on this host"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenDocker();
+                }}
+                className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-white transition"
+              >
+                <Boxes className="h-3 w-3" />
+              </button>
+            )}
             <button
               title="Search buffer (⌘F / Ctrl+F)"
               onClick={() => {

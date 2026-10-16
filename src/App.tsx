@@ -42,6 +42,7 @@ import {
   Download,
   Share2,
   FolderLock,
+  Boxes,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -64,6 +65,7 @@ import { KeychainPanel } from './components/KeychainPanel';
 import { PortForwardingPanel } from './components/PortForwardingPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { KnownHostsPanel } from './components/KnownHostsPanel';
+import { DockerPanel } from './components/DockerPanel';
 import { AIPanel } from './components/AIPanel';
 import { SftpTab } from './components/SftpTab';
 import { PaneErrorBoundary } from './components/PaneErrorBoundary';
@@ -238,7 +240,8 @@ export default function App() {
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
   const [tabs, setTabs] = useState<Tab[]>(() => persistedWorkspace?.tabs ?? []);
   const [activeTabId, setActiveTabId] = useState<string | null>(() => persistedWorkspace?.activeTabId ?? null);
-  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
+  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | 'docker' | null>(null);
+  const [dockerHostId, setDockerHostId] = useState<string | null>(null);
   const [showAI, setShowAI] = useState(false);
 
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
@@ -508,6 +511,31 @@ export default function App() {
       id: uid(),
       title: 'Local Shell',
       color: '#22d3ee',
+      panes: [pane],
+      layout: 'single',
+      activePaneId: pane.id,
+    };
+    setTabs((t) => [...t, tab]);
+    setActiveTabId(tab.id);
+    setQuick(false);
+    setPanel(null);
+    setShowAI(false);
+    setNewConnNonce((n) => n + 1);
+    setMobilePage('terminals');
+  }, []);
+
+  const openTerminalWithCommand = useCallback((targetHost: Host, command: string, title?: string) => {
+    const isLocal = targetHost.id === LOCAL_HOST.id;
+    const pane: Pane = {
+      id: uid(),
+      hostId: targetHost.id,
+      isLocal,
+      startupCommand: command,
+    };
+    const tab: Tab = {
+      id: uid(),
+      title: title || `${targetHost.label}`,
+      color: targetHost.color || (isLocal ? '#22d3ee' : '#38bdf8'),
       panes: [pane],
       layout: 'single',
       activePaneId: pane.id,
@@ -820,18 +848,27 @@ export default function App() {
       if (!inTerminal && k === 'k') { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
       if (k === 'k' && e.shiftKey) { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
       if (!e.shiftKey) return;
-      if (k === 'i') { e.preventDefault(); e.stopPropagation(); setBroadcast((b) => !b); }
+      if (k === 'i') {
+        e.preventDefault();
+        e.stopPropagation();
+        setBroadcast((b) => {
+          const next = !b;
+          toast(next ? '⚡ Broadcast Cluster Mode: ON (Input sent to all panes in tab)' : 'Broadcast Cluster Mode: OFF');
+          return next;
+        });
+      }
       else if (k === 'd') { e.preventDefault(); e.stopPropagation(); splitActive('vertical'); }
       else if (k === 'e') { e.preventDefault(); e.stopPropagation(); splitActive('horizontal'); }
       else if (k === 'a') { e.preventDefault(); e.stopPropagation(); setShowAI((v) => !v); }
       else if (k === 'f') { e.preventDefault(); e.stopPropagation(); openSftpTab(); }
       else if (k === 'z') { e.preventDefault(); e.stopPropagation(); setZen((v) => !v); }
       else if (k === 'b') { e.preventDefault(); e.stopPropagation(); setShowRail((v) => !v); }
+      else if (k === 'u' || (e.altKey && k === 'd')) { e.preventDefault(); e.stopPropagation(); setPanel((p) => (p === 'docker' ? null : 'docker')); }
       else if (k === '/') { e.preventDefault(); e.stopPropagation(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu]);
+  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu, toast]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret, alreadySaved?: boolean) => {
@@ -903,6 +940,7 @@ export default function App() {
 
   const rail = [
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
+    { id: 'docker', icon: Boxes, label: 'Docker Containers (⌘⇧U)', on: panel === 'docker', act: () => setPanel((p) => (p === 'docker' ? null : 'docker')) },
     { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
     { id: 'tunnels', icon: Network, label: 'Port Forwarding (Tunnels)', on: panel === 'tunnels', act: () => setPanel((p) => (p === 'tunnels' ? null : 'tunnels')) },
     { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
@@ -1129,7 +1167,13 @@ export default function App() {
             {activeTab && activeTab.panes.length > 1 && (
               <button
                 title={broadcast ? 'Broadcast input: ON (⌘⇧I) — Keys sent to all panes' : 'Broadcast input: OFF (⌘⇧I)'}
-                onClick={() => setBroadcast((b) => !b)}
+                onClick={() => {
+                  setBroadcast((b) => {
+                    const next = !b;
+                    toast(next ? '⚡ Broadcast Cluster Mode: ON (Input sent to all panes in tab)' : 'Broadcast Cluster Mode: OFF');
+                    return next;
+                  });
+                }}
                 className={cn(
                   'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition border font-medium',
                   broadcast
@@ -1363,7 +1407,10 @@ export default function App() {
               onClick={() => setPanel(null)}
             />
             <aside
-              className="nx-mobile-panel fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
+              className={cn(
+                "nx-mobile-panel fixed bottom-0 top-10 z-40 border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col",
+                panel === 'docker' ? 'w-[360px] sm:w-[420px]' : 'w-[340px]'
+              )}
               style={{
                 left: (zen || !showRail) ? 0 : 48,
                 background: theme.xterm.background || '#0e131d',
@@ -1402,6 +1449,16 @@ export default function App() {
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
+                  />
+                )}
+                {panel === 'docker' && (
+                  <DockerPanel
+                    hosts={hosts}
+                    activeHostId={dockerHostId || (terminalContext?.panes.find((p) => p.id === activePaneId)?.isLocal ? '__local__' : terminalContext?.panes.find((p) => p.id === activePaneId)?.hostId)}
+                    onOpenTerminalWithCommand={openTerminalWithCommand}
+                    toast={toast}
+                    theme={theme}
+                    onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                   />
                 )}
                 {panel === 'keychain' && (
@@ -1523,6 +1580,11 @@ export default function App() {
                         active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
                         mobileHidden={t.activePaneId !== p.id}
                         showHeader={isSplit}
+                        broadcast={broadcast && t.panes.length > 1}
+                        onOpenDocker={() => {
+                          setDockerHostId(p.isLocal ? '__local__' : h.id);
+                          setPanel('docker');
+                        }}
                         onFocus={() => focusPane(t.id, p.id)}
                         onClose={() => closePane(t.id, p.id)}
                         onChange={bump}
@@ -1647,6 +1709,7 @@ export default function App() {
           <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
           <button className="nx-settings-row" onClick={() => setShowTailscale(true)}><Network size={18} /> Tailscale sync & discovery</button>
           <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
+          <button className="nx-settings-row" onClick={() => setPanel('docker')}><Boxes size={18} /> Docker containers</button>
           <button className="nx-settings-row" onClick={() => setPanel('keychain')}><KeyRound size={18} /> Keychain</button>
           <button className="nx-settings-row" onClick={() => setPanel('tunnels')}><Network size={18} /> Port forwarding & tunnels</button>
           <button className="nx-settings-row" onClick={() => setPanel('known_hosts')}><ShieldCheck size={18} /> Known hosts</button>

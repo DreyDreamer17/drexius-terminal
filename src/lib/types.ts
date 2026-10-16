@@ -111,6 +111,17 @@ export interface TailscaleDevice {
   isSelf?: boolean;
 }
 
+export interface DockerContainer {
+  id: string;
+  names: string;
+  image: string;
+  status: string;
+  state: string;
+  ports: string;
+  createdAt: string;
+  command: string;
+}
+
 /** Input for generating a key pair. There is deliberately no private-key
  *  field: `keychain_generate_and_save` generates *and* stores the key in Rust,
  *  so raw key material never crosses the IPC boundary. */
@@ -195,6 +206,8 @@ export interface Pane {
   serialOptions?: SerialOpenOptions;
   /** Live backend session ID for reattaching across WebView/component remounts. */
   sessionId?: string | null;
+  /** Startup command executed right after connection initializes. */
+  startupCommand?: string;
 }
 
 export interface ActiveSshSession {

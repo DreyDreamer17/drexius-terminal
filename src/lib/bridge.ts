@@ -40,6 +40,7 @@ import type {
   Snapshot,
   Snippet,
   TailscaleDevice,
+  DockerContainer,
   TunnelConfig,
   Vault,
 } from './types';
@@ -591,6 +592,28 @@ export const bridge = {
     if (isTauri) return invoke('tailscale_save_credentials', { apiKey, tailnet: tailnet || null });
     localStorage.setItem('nx.tailscale.apikey', apiKey);
     if (tailnet) localStorage.setItem('nx.tailscale.tailnet', tailnet);
+  },
+
+  // ── Docker Containers ──
+  async dockerListContainers(hostId: string): Promise<DockerContainer[]> {
+    if (isTauri) return invoke('docker_list_containers', { hostId });
+    return [
+      { id: 'c1a2b3c4', names: 'nginx-proxy', image: 'nginx:alpine', status: 'Up 4 days', state: 'running', ports: '80->80/tcp, 443->443/tcp', createdAt: '4 days ago', command: '/docker-entrypoint.sh nginx -g ...' },
+      { id: 'd5e6f7a8', names: 'postgres-db', image: 'postgres:16', status: 'Up 4 days', state: 'running', ports: '5432->5432/tcp', createdAt: '4 days ago', command: 'docker-entrypoint.sh postgres' },
+      { id: 'b9c0d1e2', names: 'redis-cache', image: 'redis:7-alpine', status: 'Up 4 days', state: 'running', ports: '6379->6379/tcp', createdAt: '4 days ago', command: 'docker-entrypoint.sh redis-server' },
+      { id: 'f3a4b5c6', names: 'home-assistant', image: 'homeassistant/home-assistant:stable', status: 'Up 2 days', state: 'running', ports: '8123->8123/tcp', createdAt: '2 days ago', command: '/init' },
+      { id: 'e7f8a9b0', names: 'ollama-server', image: 'ollama/ollama:latest', status: 'Exited (0) 5 hours ago', state: 'exited', ports: '11434->11434/tcp', createdAt: '1 week ago', command: '/bin/ollama serve' },
+    ];
+  },
+
+  async dockerContainerAction(hostId: string, containerId: string, action: 'start' | 'stop' | 'restart' | 'pause' | 'unpause'): Promise<string> {
+    if (isTauri) return invoke('docker_container_action', { hostId, containerId, action });
+    return `Container ${containerId} ${action}ed`;
+  },
+
+  async dockerContainerLogs(hostId: string, containerId: string, tail?: number): Promise<string> {
+    if (isTauri) return invoke('docker_container_logs', { hostId, containerId, tail: tail ?? 200 });
+    return `[2026-10-16 11:20:01] Starting service...\n[2026-10-16 11:20:02] Listening on 0.0.0.0\n[2026-10-16 11:20:05] Ready to accept connections.\n[2026-10-16 11:25:30] Received health check GET /healthz 200 OK`;
   },
 
   // ── Snippets ──
