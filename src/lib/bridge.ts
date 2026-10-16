@@ -39,6 +39,7 @@ import type {
   SessionEvent,
   Snapshot,
   Snippet,
+  TailscaleDevice,
   TunnelConfig,
   Vault,
 } from './types';
@@ -533,6 +534,63 @@ export const bridge = {
     }
     await persistDemo();
     return hosts.length;
+  },
+
+  // ── Tailscale ──
+  async detectTailscaleCli(): Promise<TailscaleDevice[] | null> {
+    if (isTauri) return invoke('tailscale_detect_cli');
+    return null;
+  },
+
+  async fetchTailscaleApi(apiKey: string, tailnet?: string | null): Promise<TailscaleDevice[]> {
+    if (isTauri) return invoke('tailscale_fetch_api', { apiKey, tailnet: tailnet || null });
+    return [
+      { id: 'ts-1', name: 'dreycore.ts.net', hostname: 'dreycore', ip: '100.94.246.28', os: 'linux', online: true, tags: ['tag:server'], tailscaleSsh: true },
+      { id: 'ts-2', name: 'homelab-nas.ts.net', hostname: 'homelab-nas', ip: '100.110.12.5', os: 'linux', online: true, tags: ['tag:storage'], tailscaleSsh: false },
+      { id: 'ts-3', name: 'backup-vps.ts.net', hostname: 'backup-vps', ip: '100.75.88.99', os: 'linux', online: false, tags: [], tailscaleSsh: false },
+    ];
+  },
+
+  async importTailscaleDevices(
+    devices: Array<{ hostname: string; ip: string; username: string; os?: string | null; tailscaleSsh: boolean; vaultId: string }>
+  ): Promise<number> {
+    if (isTauri) return invoke('tailscale_import', { devices });
+    const s = need();
+    for (const d of devices) {
+      s.hosts.push({
+        id: uid(),
+        label: d.hostname,
+        hostname: d.ip,
+        port: 22,
+        username: d.username || 'root',
+        authMethod: d.tailscaleSsh ? 'agent' : 'key',
+        tags: ['tailscale'],
+        group: 'Tailscale',
+        color: '#6366f1',
+        hasSecret: false,
+        os: d.os || null,
+        vaultId: d.vaultId || 'personal',
+      });
+    }
+    await persistDemo();
+    return devices.length;
+  },
+
+  async getTailscaleCredentials(): Promise<{ apiKey: string | null; tailnet: string | null }> {
+    if (isTauri) {
+      const res: { api_key?: string | null; tailnet?: string | null } = await invoke('tailscale_get_credentials');
+      return { apiKey: res?.api_key || null, tailnet: res?.tailnet || null };
+    }
+    return {
+      apiKey: localStorage.getItem('nx.tailscale.apikey'),
+      tailnet: localStorage.getItem('nx.tailscale.tailnet'),
+    };
+  },
+
+  async saveTailscaleCredentials(apiKey: string, tailnet?: string | null): Promise<void> {
+    if (isTauri) return invoke('tailscale_save_credentials', { apiKey, tailnet: tailnet || null });
+    localStorage.setItem('nx.tailscale.apikey', apiKey);
+    if (tailnet) localStorage.setItem('nx.tailscale.tailnet', tailnet);
   },
 
   // ── Snippets ──

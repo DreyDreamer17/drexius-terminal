@@ -56,6 +56,7 @@ import { TeamShareModal } from './components/TeamShareModal';
 import { SerialModal } from './components/SerialModal';
 import { DevicePairingModal } from './components/DevicePairingModal';
 import { SshConfigModal } from './components/SshConfigModal';
+import { TailscaleModal } from './components/TailscaleModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -430,6 +431,7 @@ export default function App() {
   const [showSerial, setShowSerial] = useState(false);
   const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
   const [showSshConfig, setShowSshConfig] = useState(false);
+  const [showTailscale, setShowTailscale] = useState(false);
 
   useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
@@ -1396,6 +1398,7 @@ export default function App() {
                     onOpenSerial={() => setShowSerial(true)}
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
+                    onOpenTailscale={() => setShowTailscale(true)}
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
@@ -1642,6 +1645,7 @@ export default function App() {
         <h2 className="nx-section-label">Connections & security</h2>
         <div className="nx-settings-group">
           <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
+          <button className="nx-settings-row" onClick={() => setShowTailscale(true)}><Network size={18} /> Tailscale sync & discovery</button>
           <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
           <button className="nx-settings-row" onClick={() => setPanel('keychain')}><KeyRound size={18} /> Keychain</button>
           <button className="nx-settings-row" onClick={() => setPanel('tunnels')}><Network size={18} /> Port forwarding & tunnels</button>
@@ -2158,6 +2162,31 @@ export default function App() {
           defaultVaultId={activeVaultId}
           onClose={() => setShowSshConfig(false)}
           onSuccess={refresh}
+          toast={toast}
+          theme={theme}
+        />
+      )}
+      {showTailscale && (
+        <TailscaleModal
+          vaults={vaults}
+          defaultVaultId={activeVaultId}
+          onClose={() => setShowTailscale(false)}
+          onSuccess={refresh}
+          onDirectConnect={(h) => {
+            const tempHost: Host = {
+              id: uid(),
+              label: h.label || 'Tailscale Host',
+              hostname: h.hostname || '',
+              port: h.port || 22,
+              username: h.username || 'root',
+              authMethod: h.authMethod || 'key',
+              group: 'Tailscale',
+              tags: ['tailscale'],
+              hasSecret: false,
+              os: h.os || null,
+            };
+            openHost(tempHost);
+          }}
           toast={toast}
           theme={theme}
         />

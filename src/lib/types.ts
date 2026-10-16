@@ -97,6 +97,20 @@ export interface ParsedSshHost {
   group?: string | null;
 }
 
+export interface TailscaleDevice {
+  id: string;
+  name: string;
+  hostname: string;
+  ip: string;
+  ipv6?: string | null;
+  os?: string | null;
+  online: boolean;
+  lastSeen?: string | null;
+  tags: string[];
+  tailscaleSsh: boolean;
+  isSelf?: boolean;
+}
+
 /** Input for generating a key pair. There is deliberately no private-key
  *  field: `keychain_generate_and_save` generates *and* stores the key in Rust,
  *  so raw key material never crosses the IPC boundary. */

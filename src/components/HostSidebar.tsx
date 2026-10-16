@@ -20,9 +20,10 @@ import {
   X,
   HardDrive,
   Server,
+  Network,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
-import type { NexusTheme } from '../lib/themes';
+import { THEMES, type NexusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { OsIcon } from './OsIcon';
 import { cn } from '../utils/cn';
@@ -42,6 +43,7 @@ interface Props {
   onOpenSerial: () => void;
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
+  onOpenTailscale?: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
   onClose?: () => void;
   theme?: NexusTheme;
@@ -91,6 +93,7 @@ export function HostSidebar({
   onOpenSerial,
   onOpenShareModal,
   onOpenSshConfig,
+  onOpenTailscale,
   onQuickConnectSsh,
   onClose,
   theme,
@@ -99,7 +102,9 @@ export function HostSidebar({
   const [actionHost, setActionHost] = useState<Host | null>(null);
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const accentColor = theme?.accent || '#22d3ee';
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const accentColor = activeTheme.accent;
+  const bgColor = activeTheme.xterm.background || '#0f141f';
 
   // Filter hosts by active vault first
   const vaultFilteredHosts = useMemo(() => {
@@ -201,7 +206,10 @@ export function HostSidebar({
 
       {/* Universal Search & Direct Connect Bar */}
       <div className="px-3 pt-3 pb-2">
-        <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 shadow-inner focus-within:border-cyan-400/40 focus-within:ring-1 focus-within:ring-cyan-400/20">
+        <div
+          className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1.5 shadow-inner transition focus-within:border-white/30"
+          style={{ '--nx-accent': accentColor } as React.CSSProperties}
+        >
           <Search className="h-3.5 w-3.5 text-slate-500 shrink-0" />
           <input
             value={q}
@@ -255,15 +263,21 @@ export function HostSidebar({
           {showMenu && (
             <>
               <div className="fixed inset-0 z-30" onClick={() => setShowMenu(false)} />
-              <div className="absolute left-0 top-8 z-40 w-44 rounded-xl border border-white/10 bg-[#0e131d] p-1 shadow-2xl">
+              <div
+                className="absolute left-0 top-8 z-40 w-48 rounded-xl border p-1 shadow-2xl animate-in fade-in zoom-in-95 duration-100"
+                style={{
+                  backgroundColor: bgColor,
+                  borderColor: `${accentColor}35`,
+                }}
+              >
                 <button
                   onClick={() => {
                     setShowMenu(false);
                     onEdit(null);
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
                 >
-                  <Plus className="h-3.5 w-3.5 text-cyan-400" />
+                  <Plus className="h-3.5 w-3.5" style={{ color: accentColor }} />
                   <span>New Host profile</span>
                 </button>
                 <button
@@ -271,7 +285,7 @@ export function HostSidebar({
                     setShowMenu(false);
                     onOpenShareModal();
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
                 >
                   <Users className="h-3.5 w-3.5 text-emerald-400" />
                   <span>Import Vault bundle…</span>
@@ -281,10 +295,20 @@ export function HostSidebar({
                     setShowMenu(false);
                     onOpenSshConfig();
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white"
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
                 >
                   <FolderInput className="h-3.5 w-3.5 text-amber-400" />
                   <span>Import ~/.ssh/config</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onOpenTailscale?.();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                >
+                  <Network className="h-3.5 w-3.5" style={{ color: accentColor }} />
+                  <span>Tailscale Sync…</span>
                 </button>
               </div>
             </>
@@ -427,7 +451,8 @@ export function HostSidebar({
                   {live.has(h.id) && <span className="md:hidden shrink-0 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300">Active</span>}
                   <button type="button" aria-label={`Actions for ${h.label}`} className="nx-touch-button md:hidden" onClick={e => { e.stopPropagation(); setActionHost(h); }}>•••</button>
                   <div
-                    className="max-md:!hidden absolute right-1.5 hidden items-center gap-0.5 rounded-md bg-[#121826] p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
+                    className="max-md:!hidden absolute right-1.5 hidden items-center gap-0.5 rounded-md p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
+                    style={{ backgroundColor: bgColor }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     {onOpenSftp && (
@@ -442,7 +467,7 @@ export function HostSidebar({
                     <button
                       title="Open in split pane"
                       onClick={() => onSplit(h)}
-                      className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-cyan-300"
+                      className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
                     >
                       <Columns2 className="h-3.5 w-3.5" />
                     </button>
@@ -473,7 +498,8 @@ export function HostSidebar({
             </p>
             <button
               onClick={() => onEdit(null)}
-              className="mt-3 inline-flex items-center gap-1.5 text-xs text-cyan-300 hover:underline"
+              className="mt-3 inline-flex items-center gap-1.5 text-xs hover:underline"
+              style={{ color: accentColor }}
             >
               <Plus className="h-3 w-3" /> Add a host to {activeVault?.name ?? 'vault'}
             </button>

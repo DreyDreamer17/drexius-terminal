@@ -14,6 +14,7 @@ mod vault;
 mod ai_client;
 mod opencode;
 mod ssh_config;
+mod tailscale;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -203,6 +204,12 @@ pub fn run() {
             opencode::opencode_detect_session,
             opencode::opencode_stream,
             opencode::opencode_stream_cancel,
+            // tailscale integration
+            tailscale::tailscale_detect_cli,
+            tailscale::tailscale_fetch_api,
+            tailscale::tailscale_import,
+            tailscale::tailscale_get_credentials,
+            tailscale::tailscale_save_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NexusTerminal");

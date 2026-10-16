@@ -151,7 +151,7 @@ export function HostModal({
     { id: 'key', label: 'Key', icon: KeyRound }, { id: 'password', label: 'Password', icon: Lock }, { id: 'agent', label: 'SSH Agent', icon: Fingerprint },
   ];
 
-  const input = 'w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400/50 focus:outline-none focus:ring-2 focus:ring-cyan-400/10';
+  const input = 'w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-white/30 focus:outline-none transition';
   const label = 'mb-1 block text-[11px] font-medium uppercase tracking-wider text-slate-500';
 
   return (
@@ -197,7 +197,7 @@ export function HostModal({
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
             <div><label className={label}>Label</label><input className={input} value={h.label} onChange={(e) => set('label', e.target.value)} placeholder="prod-web-01" /></div>
             <div><label className={label}>Color</label>
-              <div className="nx-color-picker flex h-[38px] items-center gap-1">{COLORS.map((c) => <button key={c} aria-label={`Host color ${c}`} aria-pressed={h.color === c} onClick={() => set('color', c)} className="grid h-5 w-5 shrink-0 place-items-center rounded-full transition"><span className={cn('h-5 w-5 rounded-full', h.color === c && 'ring-2 ring-white ring-offset-2 ring-offset-[#0e131d]')} style={{ background: c }} /></button>)}</div>
+              <div className="nx-color-picker flex h-[38px] items-center gap-1">{COLORS.map((c) => <button key={c} aria-label={`Host color ${c}`} aria-pressed={h.color === c} onClick={() => set('color', c)} className="grid h-5 w-5 shrink-0 place-items-center rounded-full transition"><span className={cn('h-5 w-5 rounded-full', h.color === c && 'ring-2 ring-white ring-offset-2 ring-offset-black')} style={{ background: c }} /></button>)}</div>
             </div>
           </div>
           <div className="grid grid-cols-[1fr_90px] gap-3">
@@ -260,11 +260,12 @@ export function HostModal({
                 type="button"
                 onClick={() => set('keychainId', null)}
                 className={cn(
-                  'rounded-md py-1.5 text-xs transition',
+                  'rounded-md py-1.5 text-xs transition border font-medium',
                   !h.keychainId
-                    ? 'bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-400/30'
-                    : 'text-slate-400 hover:text-white'
+                    ? ''
+                    : 'border-transparent text-slate-400 hover:text-white'
                 )}
+                style={!h.keychainId ? { backgroundColor: `${accentColor}20`, borderColor: `${accentColor}40`, color: accentColor } : undefined}
               >
                 Host-specific credentials
               </button>
@@ -327,11 +328,20 @@ export function HostModal({
                       key={m.id}
                       onClick={() => set('authMethod', m.id)}
                       className={cn(
-                        'flex items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition',
+                        'flex items-center justify-center gap-1.5 rounded-md py-1.5 text-xs transition border font-medium',
                         h.authMethod === m.id
-                          ? 'bg-cyan-400/15 text-cyan-200 ring-1 ring-cyan-400/30'
-                          : 'text-slate-400 hover:text-white'
+                          ? ''
+                          : 'border-transparent text-slate-400 hover:text-white'
                       )}
+                      style={
+                        h.authMethod === m.id
+                          ? {
+                              backgroundColor: `${accentColor}20`,
+                              borderColor: `${accentColor}40`,
+                              color: accentColor,
+                            }
+                          : undefined
+                      }
                     >
                       <m.icon className="h-3.5 w-3.5" />
                       {m.label}
@@ -356,7 +366,7 @@ export function HostModal({
                     <div>
                       <div className="mb-1 flex items-center justify-between">
                         <label className={cn(label, 'mb-0')}>Private key (RSA / ED25519 / ECDSA)</label>
-                        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-cyan-300 hover:text-cyan-200">
+                        <label className="flex cursor-pointer items-center gap-1 text-[11px] hover:underline" style={{ color: accentColor }}>
                           <Upload className="h-3 w-3" />Import file
                           <input
                             type="file"
