@@ -112,6 +112,7 @@ interface Props {
   lineHeight?: number;
   active: boolean;
   showHeader: boolean;
+  isSplit?: boolean;
   mobileHidden?: boolean;
   broadcast?: boolean;
   onOpenDocker?: () => void;
@@ -151,6 +152,7 @@ export const TerminalPane = memo(function TerminalPane({
   lineHeight = 1.0,
   active,
   showHeader,
+  isSplit = false,
   broadcast = false,
   onOpenDocker,
   mobileHidden = false,
@@ -872,6 +874,18 @@ export const TerminalPane = memo(function TerminalPane({
   // keypad and history drawers live in App and reach the pane through these.
   const accessoryKeyRef = useRef(sendAccessoryKey); accessoryKeyRef.current = sendAccessoryKey;
   const insertRef = useRef(handleSelectCommand); insertRef.current = handleSelectCommand;
+  const toggleSearchRef = useRef(() => setShowSearch((v) => !v));
+  toggleSearchRef.current = () => {
+    setShowSearch((v) => {
+      const next = !v;
+      if (next) setTimeout(() => searchInputRef.current?.select(), 50);
+      return next;
+    });
+  };
+  const openHistoryRef = useRef(() => setShowCmdSearch(true));
+  openHistoryRef.current = () => setShowCmdSearch(true);
+  const openClipboardRef = useRef(() => setShowClipboard(true));
+  openClipboardRef.current = () => setShowClipboard(true);
 
   // Phone selection UI: the long-press paste menu (no selection) and the live terminal for the overlay.
   const [touchMenu, setTouchMenu] = useState<{ x: number; y: number } | null>(null);
@@ -1559,6 +1573,9 @@ export const TerminalPane = memo(function TerminalPane({
       },
       key: (d) => accessoryKeyRef.current(d),
       insert: (c, execute) => insertRef.current(c, execute),
+      toggleSearch: () => toggleSearchRef.current(),
+      openHistory: () => openHistoryRef.current(),
+      openClipboard: () => openClipboardRef.current(),
     });
 
     const fitAndScheduleResize = () => {
@@ -1772,7 +1789,7 @@ export const TerminalPane = memo(function TerminalPane({
   const searchControls = (
     <>
       <div className="nx-terminal-search-field flex items-center gap-1.5">
-        <Search className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
+        <Search className="h-3.5 w-3.5 shrink-0" style={{ color: searchAccent }} aria-hidden="true" />
         <input
           ref={searchInputRef}
           type="text"
@@ -1795,7 +1812,18 @@ export const TerminalPane = memo(function TerminalPane({
           }}
           placeholder="Find in terminal…"
           aria-label="Find in terminal"
-          className="w-44 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+          className="w-44 rounded-lg border border-white/10 bg-black/40 px-2.5 py-1 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none transition-colors"
+          style={{
+            borderColor: searchQuery ? `${searchAccent}50` : undefined,
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.borderColor = `${searchAccent}70`;
+            e.currentTarget.style.boxShadow = `0 0 0 2px ${searchAccent}20`;
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.borderColor = searchQuery ? `${searchAccent}50` : 'rgba(255,255,255,0.1)';
+            e.currentTarget.style.boxShadow = 'none';
+          }}
         />
       </div>
       <button
@@ -1826,10 +1854,10 @@ export const TerminalPane = memo(function TerminalPane({
         title="Match Case"
         aria-label="Match case"
         aria-pressed={matchCase}
-        style={mobile ? searchToggle(matchCase) : undefined}
+        style={searchToggle(matchCase)}
         className={cn(
-          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-          matchCase ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+          'nx-terminal-search-toggle rounded px-1.5 py-0.5 text-[10px] font-mono font-bold transition border border-transparent',
+          matchCase ? '' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
         )}
       >
         Aa
@@ -1841,10 +1869,10 @@ export const TerminalPane = memo(function TerminalPane({
         title="Match Whole Word"
         aria-label="Match whole word"
         aria-pressed={matchWholeWord}
-        style={mobile ? searchToggle(matchWholeWord) : undefined}
+        style={searchToggle(matchWholeWord)}
         className={cn(
-          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-          matchWholeWord ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+          'nx-terminal-search-toggle rounded px-1.5 py-0.5 text-[10px] font-mono font-bold transition border border-transparent',
+          matchWholeWord ? '' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
         )}
       >
         \b
@@ -1856,10 +1884,10 @@ export const TerminalPane = memo(function TerminalPane({
         title="Use Regular Expression"
         aria-label="Use regular expression"
         aria-pressed={matchRegex}
-        style={mobile ? searchToggle(matchRegex) : undefined}
+        style={searchToggle(matchRegex)}
         className={cn(
-          'nx-terminal-search-toggle rounded px-1 py-0.5 text-[10px] font-mono font-bold transition',
-          matchRegex ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:text-slate-300'
+          'nx-terminal-search-toggle rounded px-1.5 py-0.5 text-[10px] font-mono font-bold transition border border-transparent',
+          matchRegex ? '' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
         )}
       >
         .*
@@ -1923,7 +1951,7 @@ export const TerminalPane = memo(function TerminalPane({
       className={cn(
         'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-all',
         mobileHidden && 'max-md:hidden',
-        showHeader
+        isSplit
           ? cn(
               'rounded-xl border',
               broadcast
@@ -1984,9 +2012,18 @@ export const TerminalPane = memo(function TerminalPane({
                 if (!showSearch) setTimeout(() => searchInputRef.current?.select(), 50);
               }}
               className={cn(
-                'rounded p-1 transition',
-                showSearch ? 'bg-cyan-500/20 text-cyan-300' : 'text-slate-500 hover:bg-white/5 hover:text-white'
+                'rounded p-1 transition border border-transparent',
+                showSearch ? '' : 'text-slate-500 hover:bg-white/5 hover:text-white'
               )}
+              style={
+                showSearch
+                  ? {
+                      backgroundColor: `${searchAccent}26`,
+                      color: searchAccent,
+                      borderColor: `${searchAccent}50`,
+                    }
+                  : undefined
+              }
             >
               <Search className="h-3 w-3" />
             </button>
@@ -2014,9 +2051,11 @@ export const TerminalPane = memo(function TerminalPane({
                 <Unplug className="h-3 w-3" />
               </button>
             )}
-            <button onClick={onClose} className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-rose-300">
-              <X className="h-3 w-3" />
-            </button>
+            {isSplit && (
+              <button onClick={onClose} title="Close split pane" className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-rose-300">
+                <X className="h-3 w-3" />
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -2025,10 +2064,20 @@ export const TerminalPane = memo(function TerminalPane({
       {showSearch && !mobile && (
         <div
           className={cn(
-            'nx-terminal-search absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#0e131d]/95 p-1.5 shadow-2xl backdrop-blur',
+            'nx-terminal-search absolute right-3 z-30 flex items-center gap-1.5 rounded-xl border p-1.5 shadow-2xl backdrop-blur-xl overflow-hidden',
             showHeader ? 'top-10' : 'top-2'
           )}
+          style={{
+            backgroundColor: theme.xterm.background || '#0e131d',
+            borderColor: `${searchAccent}35`,
+            boxShadow: `0 12px 32px rgba(0,0,0,0.5), 0 0 16px ${searchAccent}15`,
+            '--nx-accent': searchAccent,
+          } as React.CSSProperties}
         >
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 h-10 opacity-20"
+            style={{ background: `radial-gradient(ellipse at top, ${searchAccent} 0%, transparent 70%)` }}
+          />
           {searchControls}
         </div>
       )}

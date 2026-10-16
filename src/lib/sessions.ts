@@ -15,6 +15,12 @@ export interface LivePane {
   key?: (data: string) => void;
   /** Put a command on the prompt (optionally run it), keeping the pane's suggestion state in sync. */
   insert?: (command: string, execute?: boolean) => void;
+  /** Toggle the in-terminal search bar. */
+  toggleSearch?: () => void;
+  /** Open the command history & reverse search modal. */
+  openHistory?: () => void;
+  /** Open the clipboard history modal. */
+  openClipboard?: () => void;
 }
 
 const panes = new Map<string, LivePane>();

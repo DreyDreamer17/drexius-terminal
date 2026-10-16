@@ -25,10 +25,39 @@
 html, body, #root { height: 100%; background: #06080d; }
 body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 
-* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.08) transparent; }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
-*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+*:not(.no-scrollbar) { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.08) transparent; }
+*:not(.no-scrollbar)::-webkit-scrollbar { width: 8px; height: 8px; }
+*:not(.no-scrollbar)::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
+*:not(.no-scrollbar)::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+
+/* Bulletproof scrollbar elimination across WebKit, GTK, Firefox */
+.no-scrollbar,
+.no-scrollbar * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.no-scrollbar::-webkit-scrollbar,
+.no-scrollbar *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  background: transparent !important;
+  -webkit-appearance: none !important;
+}
+.no-scrollbar::-webkit-scrollbar-thumb,
+.no-scrollbar::-webkit-scrollbar-track,
+.no-scrollbar::-webkit-scrollbar-corner,
+.no-scrollbar *::-webkit-scrollbar-thumb,
+.no-scrollbar *::-webkit-scrollbar-track,
+.no-scrollbar *::-webkit-scrollbar-corner {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
+  opacity: 0 !important;
+}
 
 .xterm { height: 100%; }
 .xterm .xterm-viewport { background-color: transparent !important; }

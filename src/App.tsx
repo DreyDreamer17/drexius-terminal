@@ -36,6 +36,7 @@ import {
   Folder,
   LayoutGrid,
   ChevronRight,
+  ChevronLeft,
   Type,
   Fingerprint,
   Copy,
@@ -43,6 +44,8 @@ import {
   Share2,
   FolderLock,
   Boxes,
+  Search,
+  Clipboard,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -65,7 +68,7 @@ import { KeychainPanel } from './components/KeychainPanel';
 import { PortForwardingPanel } from './components/PortForwardingPanel';
 import { LogsPanel } from './components/LogsPanel';
 import { KnownHostsPanel } from './components/KnownHostsPanel';
-import { DockerPanel } from './components/DockerPanel';
+import { DockerModal } from './components/DockerModal';
 import { AIPanel } from './components/AIPanel';
 import { SftpTab } from './components/SftpTab';
 import { PaneErrorBoundary } from './components/PaneErrorBoundary';
@@ -240,8 +243,10 @@ export default function App() {
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
   const [tabs, setTabs] = useState<Tab[]>(() => persistedWorkspace?.tabs ?? []);
   const [activeTabId, setActiveTabId] = useState<string | null>(() => persistedWorkspace?.activeTabId ?? null);
-  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | 'docker' | null>(null);
+  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
+  const [showDockerModal, setShowDockerModal] = useState(false);
   const [dockerHostId, setDockerHostId] = useState<string | null>(null);
+  const [splitMenu, setSplitMenu] = useState<{ pref: 'vertical' | 'horizontal'; left: number; top: number } | null>(null);
   const [showAI, setShowAI] = useState(false);
 
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
@@ -410,6 +415,16 @@ export default function App() {
   const [showRail, setShowRail] = useState(() => localStorage.getItem('nx.rail') === '1');
   const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('nx.status') === '1');
   const [broadcast, setBroadcast] = useState(false);
+  const [showTerminalTools, setShowTerminalTools] = useState(() => localStorage.getItem('nx.terminalTools') === '1');
+  const toggleTerminalTools = useCallback(() => {
+    setShowTerminalTools((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('nx.terminalTools', next ? '1' : '0');
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const theme = THEMES.find((t) => t.id === themeId) ?? THEMES[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
@@ -417,6 +432,7 @@ export default function App() {
   if (activeTab && activeTab.kind !== 'sftp') lastTerminalTab.current = activeTab.id;
   const terminalContext = mobile && activeTab?.kind === 'sftp' ? tabs.find(t => t.id === lastTerminalTab.current) : activeTab;
   const activePaneId = terminalContext?.activePaneId ?? null;
+  const activePane = terminalContext?.panes.find((p) => p.id === activePaneId);
   const hostMap = useMemo(() => {
     const m = new Map(hosts.map((h) => [h.id, h]));
     m.set(LOCAL_HOST.id, LOCAL_HOST);
@@ -641,12 +657,6 @@ export default function App() {
     setTabs((ts) => ts.map((t) => t.id !== activeTab.id ? t : { ...t, panes: [...t.panes, pane], layout: layoutFor(t.panes.length + 1, pref), activePaneId: pane.id, title: t.panes.length ? `${t.title.split(' +')[0]} +${t.panes.length}` : h.label }));
   }, [activeTab, openHost, toast]);
 
-  const splitActive = (pref: Layout) => {
-    const p = activeTab?.panes.find((x) => x.id === activeTab.activePaneId);
-    const h = p && hostMap.get(p.hostId);
-    if (h) splitWith(h, pref);
-  };
-
   const cleanupPaneSession = useCallback((p: Pane) => {
     bridge.sftpClose(p.id).catch(() => {});
     const sid =
@@ -821,7 +831,7 @@ export default function App() {
         if (hasPendingConfirm()) return;
         // A terminal-screen drawer (AI / snippets) is the topmost layer on mobile: Escape dismisses it first.
         if (closeTerminalDrawerRef.current?.()) { e.preventDefault(); e.stopPropagation(); return; }
-        if (quick || showThemes || panel || modal || showAutoLockMenu) {
+        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu) {
           e.preventDefault();
           e.stopPropagation();
           setQuick(false);
@@ -829,6 +839,8 @@ export default function App() {
           setPanel(null);
           setModal(null);
           setShowAutoLockMenu(false);
+          setShowDockerModal(false);
+          setSplitMenu(null);
         }
         return;
       }
@@ -857,18 +869,32 @@ export default function App() {
           return next;
         });
       }
-      else if (k === 'd') { e.preventDefault(); e.stopPropagation(); splitActive('vertical'); }
-      else if (k === 'e') { e.preventDefault(); e.stopPropagation(); splitActive('horizontal'); }
+      else if (k === 'd') {
+        e.preventDefault();
+        e.stopPropagation();
+        setSplitMenu((prev) => (prev?.pref === 'vertical' ? null : { pref: 'vertical', left: 400, top: 45 }));
+      }
+      else if (k === 'e') {
+        e.preventDefault();
+        e.stopPropagation();
+        setSplitMenu((prev) => (prev?.pref === 'horizontal' ? null : { pref: 'horizontal', left: 430, top: 45 }));
+      }
       else if (k === 'a') { e.preventDefault(); e.stopPropagation(); setShowAI((v) => !v); }
       else if (k === 'f') { e.preventDefault(); e.stopPropagation(); openSftpTab(); }
       else if (k === 'z') { e.preventDefault(); e.stopPropagation(); setZen((v) => !v); }
       else if (k === 'b') { e.preventDefault(); e.stopPropagation(); setShowRail((v) => !v); }
-      else if (k === 'u' || (e.altKey && k === 'd')) { e.preventDefault(); e.stopPropagation(); setPanel((p) => (p === 'docker' ? null : 'docker')); }
+      else if (k === 'u' || (e.altKey && k === 'd')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+        setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+        setShowDockerModal((v) => !v);
+      }
       else if (k === '/') { e.preventDefault(); e.stopPropagation(); setShowStatusBar((v) => !v); }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu, toast]);
+  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu, showDockerModal, splitMenu, toast, terminalContext, activePaneId]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret, alreadySaved?: boolean) => {
@@ -940,7 +966,17 @@ export default function App() {
 
   const rail = [
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
-    { id: 'docker', icon: Boxes, label: 'Docker Containers (⌘⇧U)', on: panel === 'docker', act: () => setPanel((p) => (p === 'docker' ? null : 'docker')) },
+    {
+      id: 'docker',
+      icon: Boxes,
+      label: 'Docker Containers (⌘⇧U)',
+      on: showDockerModal,
+      act: () => {
+        const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+        setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+        setShowDockerModal((v) => !v);
+      },
+    },
     { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
     { id: 'tunnels', icon: Network, label: 'Port Forwarding (Tunnels)', on: panel === 'tunnels', act: () => setPanel((p) => (p === 'tunnels' ? null : 'tunnels')) },
     { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
@@ -1087,7 +1123,19 @@ export default function App() {
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 shrink-0" />
 
           {/* Floating Tabs */}
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div
+            onWheel={(e) => {
+              if (e.deltaY !== 0) {
+                e.currentTarget.scrollLeft += e.deltaY;
+                e.preventDefault();
+              }
+            }}
+            className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-0.5 py-0.5 select-none"
+            style={{
+              scrollbarWidth: 'none',
+              msOverflowStyle: 'none',
+            }}
+          >
             {tabs.map((t) => {
               const isSftp = t.kind === 'sftp';
               const tabLive = t.panes.map((p) => registry.get(p.id)?.status);
@@ -1104,13 +1152,22 @@ export default function App() {
                   key={t.id}
                   onClick={() => setActiveTabId(t.id)}
                   className={cn(
-                    'group relative flex h-7 min-w-[130px] max-w-[220px] cursor-pointer items-center gap-2 rounded-lg px-2.5 text-xs transition border shadow-sm',
+                    'group relative flex h-7 min-w-[130px] max-w-[220px] cursor-pointer items-center gap-2 rounded-lg px-2.5 text-xs transition border shadow-sm select-none',
                     isActive
                       ? isSftp
                         ? 'border-cyan-500/40 bg-cyan-950/70 text-cyan-200 ring-1 ring-cyan-500/20'
-                        : 'border-emerald-500/40 bg-emerald-950/70 text-emerald-200 ring-1 ring-emerald-500/20'
+                        : 'text-white font-medium border-transparent'
                       : 'border-white/5 bg-white/[0.03] text-slate-400 hover:border-white/10 hover:bg-white/[0.07] hover:text-slate-200'
                   )}
+                  style={
+                    isActive && !isSftp
+                      ? {
+                          backgroundColor: `${theme.accent}20`,
+                          borderColor: `${theme.accent}50`,
+                          boxShadow: `0 0 14px ${theme.accent}25`,
+                        }
+                      : undefined
+                  }
                 >
                   {isSftp ? (
                     <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
@@ -1126,7 +1183,8 @@ export default function App() {
                       e.stopPropagation();
                       closeTab(t.id);
                     }}
-                    className="ml-auto rounded p-0.5 text-slate-400 opacity-60 hover:bg-white/10 hover:text-white hover:opacity-100"
+                    title={`Close ${t.title}`}
+                    className="ml-auto rounded p-0.5 text-slate-400 opacity-60 hover:bg-white/10 hover:text-white hover:opacity-100 transition z-10"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -1137,9 +1195,24 @@ export default function App() {
               ref={quickBtnRef}
               onClick={toggleQuick}
               title="Quick connect (⌘K / ⌘⇧K)"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition"
+              className={cn(
+                'grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-all duration-150 border select-none',
+                quick
+                  ? 'text-white'
+                  : 'text-slate-400 hover:text-white bg-white/[0.04] border-white/10 hover:bg-white/[0.08] hover:border-white/20'
+              )}
+              style={
+                quick
+                  ? {
+                      backgroundColor: `${theme.accent}22`,
+                      borderColor: `${theme.accent}60`,
+                      boxShadow: `0 0 14px ${theme.accent}30`,
+                      color: theme.accent,
+                    }
+                  : undefined
+              }
             >
-              <Plus className="h-3.5 w-3.5" />
+              <Plus className="h-3.5 w-3.5" style={{ color: quick ? theme.accent : undefined }} />
             </button>
           </div>
 
@@ -1161,8 +1234,244 @@ export default function App() {
               <Radio className="h-3.5 w-3.5 text-amber-400" />
               <span className="hidden sm:inline">Serial</span>
             </button>
-            <button title="Split vertical (⌘⇧D)" disabled={!activeTab} onClick={() => splitActive('vertical')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Columns2 className="h-3.5 w-3.5" /></button>
-            <button title="Split horizontal (⌘⇧E)" disabled={!activeTab} onClick={() => splitActive('horizontal')} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white disabled:opacity-30"><Rows2 className="h-3.5 w-3.5" /></button>
+            <button
+              onClick={() => {
+                const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+                setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+                setShowDockerModal(true);
+              }}
+              title="Docker Containers (⌘⇧U)"
+              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+            >
+              <Boxes className="h-3.5 w-3.5 text-cyan-400" />
+              <span className="hidden sm:inline">Docker</span>
+            </button>
+            {activeTab && activeTab.panes.length === 1 && (
+              <div className="flex items-center gap-1 shrink-0">
+                <div className="h-4 w-px bg-white/10 mx-0.5" />
+                <button
+                  onClick={toggleTerminalTools}
+                  title={showTerminalTools ? 'Collapse terminal tools (Search, History, Clips)' : 'Expand terminal tools (Search, History, Clips)'}
+                  className={cn(
+                    'flex h-7 items-center gap-1 rounded-lg px-1.5 text-xs transition border select-none',
+                    showTerminalTools
+                      ? 'border-transparent'
+                      : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+                  )}
+                  style={
+                    showTerminalTools
+                      ? {
+                          backgroundColor: `${theme.accent}20`,
+                          borderColor: `${theme.accent}50`,
+                          color: theme.accent,
+                          boxShadow: `0 0 10px ${theme.accent}20`,
+                        }
+                      : undefined
+                  }
+                >
+                  {showTerminalTools ? (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  ) : (
+                    <>
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      <Search className="h-3 w-3 opacity-60" />
+                    </>
+                  )}
+                </button>
+                {showTerminalTools && (
+                  <div className="flex items-center gap-1 animate-in fade-in slide-in-from-right-2 duration-200">
+                    <button
+                      onClick={() => activeLive?.toggleSearch?.()}
+                      title="Search buffer (⌘F / Ctrl+F)"
+                      className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-white transition"
+                    >
+                      <Search className="h-3.5 w-3.5" />
+                      <span className="hidden md:inline">Search</span>
+                    </button>
+                    <button
+                      onClick={() => activeLive?.openHistory?.()}
+                      title="Command History & Reverse Search (Ctrl+Shift+R)"
+                      className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-emerald-300 transition"
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      <span className="hidden md:inline">History</span>
+                    </button>
+                    <button
+                      onClick={() => activeLive?.openClipboard?.()}
+                      title="Clipboard History (Ctrl+Shift+H / ⌘⇧H / ⌃⌥V)"
+                      className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+                    >
+                      <Clipboard className="h-3.5 w-3.5" />
+                      <span className="hidden md:inline">Clips</span>
+                    </button>
+                  </div>
+                )}
+                <div className="h-4 w-px bg-white/10 mx-0.5" />
+              </div>
+            )}
+            <button
+              title="Split vertical (⌘⇧D)"
+              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setSplitMenu((prev) => (prev?.pref === 'vertical' ? null : { pref: 'vertical', left: rect.left, top: rect.bottom + 6 }));
+              }}
+              className={cn(
+                'grid h-7 w-7 place-items-center rounded-lg transition border disabled:opacity-30',
+                splitMenu?.pref === 'vertical' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+              )}
+              style={
+                splitMenu?.pref === 'vertical'
+                  ? {
+                      backgroundColor: `${theme.accent}20`,
+                      borderColor: `${theme.accent}60`,
+                      color: theme.accent,
+                      boxShadow: `0 0 12px ${theme.accent}25`,
+                    }
+                  : undefined
+              }
+            >
+              <Columns2 className="h-3.5 w-3.5" style={{ color: splitMenu?.pref === 'vertical' ? theme.accent : undefined }} />
+            </button>
+            <button
+              title="Split horizontal (⌘⇧E)"
+              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setSplitMenu((prev) => (prev?.pref === 'horizontal' ? null : { pref: 'horizontal', left: rect.left, top: rect.bottom + 6 }));
+              }}
+              className={cn(
+                'grid h-7 w-7 place-items-center rounded-lg transition border disabled:opacity-30',
+                splitMenu?.pref === 'horizontal' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+              )}
+              style={
+                splitMenu?.pref === 'horizontal'
+                  ? {
+                      backgroundColor: `${theme.accent}20`,
+                      borderColor: `${theme.accent}60`,
+                      color: theme.accent,
+                      boxShadow: `0 0 12px ${theme.accent}25`,
+                    }
+                  : undefined
+              }
+            >
+              <Rows2 className="h-3.5 w-3.5" style={{ color: splitMenu?.pref === 'horizontal' ? theme.accent : undefined }} />
+            </button>
+            {splitMenu && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setSplitMenu(null)} />
+                <div
+                  className="fixed z-50 w-72 overflow-hidden rounded-xl border p-2 shadow-2xl backdrop-blur-xl ring-1 ring-white/10 text-slate-200"
+                  style={{
+                    top: splitMenu.top,
+                    left: Math.min(splitMenu.left, window.innerWidth - 300),
+                    backgroundColor: theme.xterm.background || '#0e131d',
+                    borderColor: `${theme.accent}30`,
+                    boxShadow: `0 16px 36px rgba(0,0,0,0.6), 0 0 20px ${theme.accent}15`,
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-0 h-20 opacity-20"
+                    style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
+                  />
+                  <div className="relative z-10 flex items-center justify-between px-2 pt-1 pb-2 border-b border-white/5">
+                    <span className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
+                      {splitMenu.pref === 'vertical' ? (
+                        <Columns2 className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                      ) : (
+                        <Rows2 className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                      )}
+                      Split {splitMenu.pref === 'vertical' ? 'Vertical' : 'Horizontal'}
+                    </span>
+                    <span className="text-[10px] text-slate-500 font-mono">Esc to close</span>
+                  </div>
+
+                  <div className="relative z-10 py-1 space-y-0.5 max-h-64 overflow-y-auto">
+                    {/* Option 1: Current host (Duplicate) */}
+                    {activePane && hostMap.get(activePane.hostId) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const h = hostMap.get(activePane.hostId);
+                          if (h) splitWith(h, splitMenu.pref);
+                          setSplitMenu(null);
+                        }}
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                      >
+                        <Zap className="h-4 w-4 shrink-0" style={{ color: theme.accent }} />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-white flex items-center gap-1.5">
+                            <span className="truncate">{hostMap.get(activePane.hostId)?.label}</span>
+                            <span
+                              className="text-[9px] rounded border px-1 py-0 font-mono shrink-0"
+                              style={{
+                                backgroundColor: `${theme.accent}18`,
+                                borderColor: `${theme.accent}35`,
+                                color: theme.accent,
+                              }}
+                            >
+                              Current
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-400 truncate">
+                            Duplicate session on this host
+                          </div>
+                        </div>
+                      </button>
+                    )}
+
+                    {/* Option 2: Local Terminal */}
+                    {(!activePane || !activePane.isLocal) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          splitWith(LOCAL_HOST, splitMenu.pref);
+                          setSplitMenu(null);
+                        }}
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                      >
+                        <TerminalIcon className="h-4 w-4 text-emerald-400 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-white">Local Terminal</div>
+                          <div className="text-[10px] text-slate-400">Open local shell split</div>
+                        </div>
+                      </button>
+                    )}
+
+                    {/* Other saved hosts */}
+                    {hosts.filter((h) => h.id !== activePane?.hostId).length > 0 && (
+                      <div className="pt-1 mt-1 border-t border-white/5">
+                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                          Other Saved Hosts
+                        </div>
+                        {hosts
+                          .filter((h) => h.id !== activePane?.hostId)
+                          .map((h) => (
+                            <button
+                              key={h.id}
+                              type="button"
+                              onClick={() => {
+                                splitWith(h, splitMenu.pref);
+                                setSplitMenu(null);
+                              }}
+                              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                            >
+                              <OsIcon os={h.os} color={h.color} size={16} />
+                              <div className="min-w-0 flex-1 truncate">
+                                <div className="font-medium text-white truncate">{h.label}</div>
+                                <div className="text-[10px] text-slate-400 font-mono truncate">
+                                  {h.username}@{h.hostname}
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
             <button title="Grid" disabled={!activeTab || (activeTab?.panes.length ?? 0) < 3} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 disabled:opacity-30"><Grid2x2 className="h-3.5 w-3.5" /></button>
             {activeTab && activeTab.panes.length > 1 && (
               <button
@@ -1407,10 +1716,7 @@ export default function App() {
               onClick={() => setPanel(null)}
             />
             <aside
-              className={cn(
-                "nx-mobile-panel fixed bottom-0 top-10 z-40 border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col",
-                panel === 'docker' ? 'w-[360px] sm:w-[420px]' : 'w-[340px]'
-              )}
+              className="nx-mobile-panel fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
               style={{
                 left: (zen || !showRail) ? 0 : 48,
                 background: theme.xterm.background || '#0e131d',
@@ -1449,16 +1755,6 @@ export default function App() {
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
-                  />
-                )}
-                {panel === 'docker' && (
-                  <DockerPanel
-                    hosts={hosts}
-                    activeHostId={dockerHostId || (terminalContext?.panes.find((p) => p.id === activePaneId)?.isLocal ? '__local__' : terminalContext?.panes.find((p) => p.id === activePaneId)?.hostId)}
-                    onOpenTerminalWithCommand={openTerminalWithCommand}
-                    toast={toast}
-                    theme={theme}
-                    onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                   />
                 )}
                 {panel === 'keychain' && (
@@ -1579,11 +1875,12 @@ export default function App() {
                         lineHeight={lineHeight}
                         active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
                         mobileHidden={t.activePaneId !== p.id}
-                        showHeader={isSplit}
-                        broadcast={broadcast && t.panes.length > 1}
+                        showHeader={isSplit && !mobile}
+                        isSplit={isSplit}
+                        broadcast={broadcast && isSplit}
                         onOpenDocker={() => {
                           setDockerHostId(p.isLocal ? '__local__' : h.id);
-                          setPanel('docker');
+                          setShowDockerModal(true);
                         }}
                         onFocus={() => focusPane(t.id, p.id)}
                         onClose={() => closePane(t.id, p.id)}
@@ -1709,7 +2006,7 @@ export default function App() {
           <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
           <button className="nx-settings-row" onClick={() => setShowTailscale(true)}><Network size={18} /> Tailscale sync & discovery</button>
           <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
-          <button className="nx-settings-row" onClick={() => setPanel('docker')}><Boxes size={18} /> Docker containers</button>
+          <button className="nx-settings-row" onClick={() => setShowDockerModal(true)}><Boxes size={18} /> Docker containers</button>
           <button className="nx-settings-row" onClick={() => setPanel('keychain')}><KeyRound size={18} /> Keychain</button>
           <button className="nx-settings-row" onClick={() => setPanel('tunnels')}><Network size={18} /> Port forwarding & tunnels</button>
           <button className="nx-settings-row" onClick={() => setPanel('known_hosts')}><ShieldCheck size={18} /> Known hosts</button>
@@ -2059,16 +2356,26 @@ export default function App() {
             style={{
               top: `${quickPos.top}px`,
               left: `${quickPos.left}px`,
+              backgroundColor: theme.xterm.background || '#0e131d',
+              borderColor: `${theme.accent}30`,
+              boxShadow: `0 16px 40px rgba(0,0,0,0.65), 0 0 24px ${theme.accent}15`,
             }}
-            className="absolute w-80 overflow-hidden rounded-xl border border-white/10 bg-[#0e131d]/95 p-2 shadow-2xl backdrop-blur-xl ring-1 ring-white/10"
+            className="absolute w-80 overflow-hidden rounded-xl border p-2 shadow-2xl backdrop-blur-xl ring-1 ring-white/10"
           >
-            <div className="flex items-center justify-between px-2 pt-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/5">
-              <span>Quick Connect</span>
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-24 opacity-20"
+              style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
+            />
+            <div className="relative z-10 flex items-center justify-between px-2 pt-1 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-white/5">
+              <span className="flex items-center gap-1.5" style={{ color: theme.accent }}>
+                <Zap className="h-3 w-3" />
+                Quick Connect
+              </span>
               <span className="font-mono text-[9px] text-slate-500">Esc to close</span>
             </div>
 
             {/* Filter / Connect Input */}
-            <div className="px-1 pt-2 pb-1.5">
+            <div className="relative z-10 px-1 pt-2 pb-1.5">
               <input
                 autoFocus
                 type="text"
@@ -2103,11 +2410,22 @@ export default function App() {
                   }
                 }}
                 placeholder="Search hosts or user@host…"
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none transition-colors"
+                style={{
+                  borderColor: quickFilter ? `${theme.accent}60` : undefined,
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = `${theme.accent}70`;
+                  e.currentTarget.style.boxShadow = `0 0 0 2px ${theme.accent}20`;
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = quickFilter ? `${theme.accent}60` : 'rgba(255,255,255,0.1)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
               />
             </div>
 
-            <div className="max-h-72 overflow-y-auto space-y-0.5 px-0.5">
+            <div className="relative z-10 max-h-72 overflow-y-auto space-y-0.5 px-0.5">
               {/* Local Terminal Option */}
               {(!quickFilter || 'local terminal'.includes(quickFilter.toLowerCase())) && (
                 <button
@@ -2117,7 +2435,13 @@ export default function App() {
                   }}
                   className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-white/10 group transition"
                 >
-                  <div className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-cyan-500/20 text-cyan-300">
+                  <div
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg transition"
+                    style={{
+                      backgroundColor: `${theme.accent}20`,
+                      color: theme.accent,
+                    }}
+                  >
                     <TerminalIcon className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -2173,9 +2497,14 @@ export default function App() {
                       },
                     });
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-left hover:bg-cyan-500/20 text-cyan-200 transition"
+                  className="flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition"
+                  style={{
+                    backgroundColor: `${theme.accent}15`,
+                    borderColor: `${theme.accent}40`,
+                    color: theme.accent,
+                  }}
                 >
-                  <Zap className="h-4 w-4 text-cyan-400 shrink-0" />
+                  <Zap className="h-4 w-4 shrink-0" style={{ color: theme.accent }} />
                   <div className="min-w-0 flex-1 truncate text-xs">
                     Quick setup & connect to <span className="font-semibold text-white">{quickFilter}</span>
                   </div>
@@ -2183,13 +2512,14 @@ export default function App() {
               )}
             </div>
 
-            <div className="mt-1.5 border-t border-white/5 pt-1.5 flex items-center justify-between">
+            <div className="relative z-10 mt-1.5 border-t border-white/5 pt-1.5 flex items-center justify-between">
               <button
                 onClick={() => {
                   setQuick(false);
                   setModal({ host: null });
                 }}
-                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-cyan-300 hover:bg-white/5 transition"
+                className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs hover:bg-white/5 transition"
+                style={{ color: theme.accent }}
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>New host…</span>
@@ -2250,6 +2580,16 @@ export default function App() {
             };
             openHost(tempHost);
           }}
+          toast={toast}
+          theme={theme}
+        />
+      )}
+      {showDockerModal && (
+        <DockerModal
+          hosts={hosts}
+          activeHostId={dockerHostId || (terminalContext?.panes.find((p) => p.id === activePaneId)?.isLocal ? '__local__' : terminalContext?.panes.find((p) => p.id === activePaneId)?.hostId)}
+          onOpenTerminalWithCommand={openTerminalWithCommand}
+          onClose={() => setShowDockerModal(false)}
           toast={toast}
           theme={theme}
         />

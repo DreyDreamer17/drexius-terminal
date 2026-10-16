@@ -874,7 +874,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               </button>
             </div>
 
-            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300 [scrollbar-width:none]">
+            <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
               <button
                 onClick={() => loadLocal('/')}
                 className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
@@ -1294,7 +1294,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                   </button>
                 </div>
 
-                <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300 [scrollbar-width:none]">
+                <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
                   <button
                     onClick={() => loadRemote('/')}
                     className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
