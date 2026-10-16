@@ -183,6 +183,7 @@ export const TerminalPane = memo(function TerminalPane({
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
+  const multilineBufferRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<PaneStatus>('connecting');
   const [cwd, setCwd] = useState('~');
@@ -293,16 +294,33 @@ export const TerminalPane = memo(function TerminalPane({
       const lineObj = buffer.getLine(lineIndex);
       if (!lineObj) return lineRef.current;
 
-      const upToCursor = lineObj.translateToString(false, 0, buffer.cursorX);
+      // Find the first line of the logical command (walk backwards while lines are marked wrapped)
+      let startY = lineIndex;
+      while (startY > 0 && buffer.getLine(startY)?.isWrapped) {
+        startY--;
+      }
+
+      // Reconstruct the full logical line from startY through lineIndex up to cursorX
+      let upToCursor = '';
+      for (let y = startY; y < lineIndex; y++) {
+        const row = buffer.getLine(y);
+        if (row) {
+          upToCursor += row.translateToString(true);
+        }
+      }
+      const currentRow = buffer.getLine(lineIndex);
+      if (currentRow) {
+        upToCursor += currentRow.translateToString(false, 0, buffer.cursorX);
+      }
 
       // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
-      const userHost = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s*)(.*)$/);
+      const userHost = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s+)(.*)$/);
       if (userHost && userHost[1] !== undefined) {
         return userHost[1];
       }
 
       // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
-      const bracketed = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s*)(.*)$/);
+      const bracketed = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s+)(.*)$/);
       if (bracketed && bracketed[1] !== undefined) {
         return bracketed[1];
       }
@@ -313,8 +331,14 @@ export const TerminalPane = memo(function TerminalPane({
         return glyph[1];
       }
 
-      // 4. Simple prompt: "$ ", "# ", "> ", "% " at prompt start
-      const simple = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/: ]*?[\$#%>]\s+)(.*)$/);
+      // 4. Secondary continuation prompt (PS2): "> command"
+      const ps2 = upToCursor.match(/^>\s+(.*)$/);
+      if (ps2 && ps2[1] !== undefined) {
+        return ps2[1];
+      }
+
+      // 5. Simple prompt: "$ ", "# ", "% " at prompt start (WITHOUT matching spaces in command body)
+      const simple = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/:*]*?[\$#%]\s+)(.*)$/);
       if (simple && simple[1] !== undefined) {
         return simple[1];
       }
@@ -803,6 +827,18 @@ export const TerminalPane = memo(function TerminalPane({
 
   /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
   const sendAccessoryKey = useCallback((data: string) => {
+    // If an autosuggestion is active and Tab or Right Arrow is pressed -> accept suggestion!
+    if (suggestionRef.current && (data === '\t' || data === '\x1b[C' || data === '\x1bOC')) {
+      acceptSuggestion();
+      return;
+    }
+
+    // Dismiss suggestion on navigation arrows or Escape
+    if (suggestionRef.current && (data === '\x1b' || /^\x1b(\[|O)[ABD]$/.test(data))) {
+      setSuggestion(null);
+      setGhostPos(null);
+    }
+
     const term = termRef.current;
     if (term?.modes.applicationCursorKeysMode && /^\x1b\[[ABCD]$/.test(data)) data = data.replace('[', 'O');
     if (data === '\x03') {
@@ -821,7 +857,7 @@ export const TerminalPane = memo(function TerminalPane({
     }
     term?.input(data, true);
     term?.focus();
-  }, [mobile]);
+  }, [mobile, acceptSuggestion]);
 
   // Latest callbacks for the registry entry (created once in the mount effect) — the phone's
   // keypad and history drawers live in App and reach the pane through these.
@@ -1247,14 +1283,12 @@ export const TerminalPane = memo(function TerminalPane({
 
     // Preload recent command history for instant autosuggestions
     bridge.listCommandHistory(200).then((items) => {
-      const raw = items.map((i) => i.command.trim()).filter(Boolean);
-      // Deduplicate and filter out incomplete mid-word truncated prefixes
+      const raw = items.map((i) => i.command.trim()).filter((c) => c.length >= 2);
+      const seen = new Set<string>();
       const cleaned: string[] = [];
       for (const cmd of raw) {
-        const hasFuller =
-          raw.some((other) => other.length > cmd.length && other.startsWith(cmd) && !other.slice(cmd.length).startsWith(' ')) ||
-          COMMON_SHELL_COMMANDS.some((other) => other.length > cmd.length && other.startsWith(cmd) && !other.slice(cmd.length).startsWith(' '));
-        if (!hasFuller && !cleaned.includes(cmd)) {
+        if (!seen.has(cmd)) {
+          seen.add(cmd);
           cleaned.push(cmd);
         }
       }
@@ -1412,12 +1446,29 @@ export const TerminalPane = memo(function TerminalPane({
         if (ch === '\r' || ch === '\n') {
           // Keystrokes are the truth. Only fall back to the screen if the line was
           // modified by Tab / history navigation and hasn't been re-synced yet.
-          const cmd = (dirtyRef.current ? getCurrentCommandLine() || lineRef.current : lineRef.current).trim();
+          const screenCmd = dirtyRef.current ? getCurrentCommandLine() : '';
+          const lineCmd = (screenCmd.trim() || lineRef.current).trim();
           if (resyncTimerRef.current !== null) {
             window.clearTimeout(resyncTimerRef.current);
             resyncTimerRef.current = null;
           }
           dirtyRef.current = false;
+
+          // Check if this line ends with a backslash continuation (\)
+          const isContinuation = /(^|[^\\])\\$/.test(lineCmd);
+          if (isContinuation) {
+            multilineBufferRef.current.push(lineCmd.slice(0, -1).trimEnd());
+            lineRef.current = '';
+            setSuggestion(null);
+            setGhostPos(null);
+            continue;
+          }
+
+          const cmd = multilineBufferRef.current.length > 0
+            ? [...multilineBufferRef.current, lineCmd].join(' ')
+            : lineCmd;
+          multilineBufferRef.current = [];
+
           // Lines typed at a password prompt are secrets: skip them everywhere, including in-memory history.
           const typedSecret = !!cmd && isPasswordPromptActive();
           if (cmd && !typedSecret) {
@@ -1433,8 +1484,12 @@ export const TerminalPane = memo(function TerminalPane({
             }).catch(() => {});
 
             const idx = historyCacheRef.current.indexOf(cmd);
-            if (idx !== -1) historyCacheRef.current.splice(idx, 1);
+            if (idx !== -1) {
+              historyCacheRef.current.splice(idx, 1);
+              historyLowerRef.current.splice(idx, 1);
+            }
             historyCacheRef.current.unshift(cmd);
+            historyLowerRef.current.unshift(cmd.toLowerCase());
           }
           lineRef.current = '';
           setSuggestion(null);
@@ -1445,6 +1500,7 @@ export const TerminalPane = memo(function TerminalPane({
           lineRef.current = lineRef.current.slice(0, -1);
           updateSuggestion(lineRef.current);
         } else if (ch === '\x03' || ch === '\x15' || ch === '\x0c') {
+          multilineBufferRef.current = [];
           lineRef.current = '';
           dirtyRef.current = false;
           setSuggestion(null);
@@ -1985,20 +2041,35 @@ export const TerminalPane = memo(function TerminalPane({
         {/* Real-time Inline Ghost Text Autosuggestion (Fish / Zsh / Copilot style) */}
         {suggestion && ghostPos && (
           <div
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              acceptSuggestion();
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              acceptSuggestion();
+            }}
             style={{
               position: 'absolute',
               left: `${ghostPos.x}px`,
               top: `${ghostPos.y}px`,
               height: `${ghostPos.cellHeight}px`,
               lineHeight: `${ghostPos.cellHeight}px`,
+              maxWidth: `calc(100% - ${ghostPos.x}px)`,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
               fontFamily:
                 '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
               fontSize: `${fontSize}px`,
-              pointerEvents: 'none',
+              pointerEvents: 'auto',
+              cursor: 'pointer',
               zIndex: 20,
               whiteSpace: 'pre',
             }}
-            className="select-none text-slate-400/50"
+            className="select-none text-slate-400/50 hover:text-cyan-400/90 active:text-cyan-300 transition-colors"
+            title="Tap to complete (or press Tab / →)"
           >
             {suggestion.suffix.replace(/ /g, '\u00A0')}
           </div>
@@ -2055,6 +2126,7 @@ export const TerminalPane = memo(function TerminalPane({
         );
       })()}
       {mobile && active && drawerInset <= 0 && mobileBar && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
+        hasSuggestion={!!suggestion}
         tools={{ onKeypad: mobileBar.onKeypad, onSearch: () => setShowSearch(v => !v), onHistory: mobileBar.onHistory, onAssistant: mobileBar.onAssistant, onSnippets: mobileBar.onSnippets }}
         onKey={sendAccessoryKey} />}
 

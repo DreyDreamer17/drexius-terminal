@@ -12,6 +12,7 @@ export function TerminalAccessory({
   onKey,
   theme,
   tools,
+  hasSuggestion,
 }: {
   modifiers: TerminalModifiers;
   onModifier: (key: keyof TerminalModifiers) => void;
@@ -19,6 +20,7 @@ export function TerminalAccessory({
   theme?: NexusTheme;
   /** Pane tools that used to live in the (removed) top bar; the drawers (keypad, AI, snippets, history) are owned by the app. */
   tools?: { onKeypad: () => void; onSearch: () => void; onHistory: () => void; onAssistant?: () => void; onSnippets?: () => void };
+  hasSuggestion?: boolean;
 }) {
   const touched = useRef(0);
   const toolbar = useRef<HTMLDivElement>(null);
@@ -127,7 +129,7 @@ export function TerminalAccessory({
         )}
 
         {button('esc', () => onKey('\x1b'), false, { ariaLabel: 'Escape' })}
-        {button('tab', () => onKey('\t'), false, { ariaLabel: 'Tab' })}
+        {button('tab', () => onKey('\t'), hasSuggestion, { ariaLabel: hasSuggestion ? 'Accept suggestion (Tab)' : 'Tab' })}
         {button('ctrl', () => onModifier('ctrl'), modifiers.ctrl, { ariaLabel: 'CTRL' })}
         {button('alt', () => onModifier('alt'), modifiers.alt, { ariaLabel: 'ALT' })}
 
