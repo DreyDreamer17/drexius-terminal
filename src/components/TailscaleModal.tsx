@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { TailscaleDevice, Vault, Host } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { OsIcon } from './OsIcon';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type NexusTheme } from '../lib/themes';
@@ -222,15 +223,22 @@ export function TailscaleModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+    <ResponsiveOverlay
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150"
+      onClose={onClose}
+      label="Tailscale sync"
+    >
       <div
-        className="relative flex flex-col w-full max-w-2xl max-h-[90vh] rounded-2xl border shadow-2xl overflow-hidden text-slate-200"
+        onMouseDown={(e) => e.stopPropagation()}
+        className="nx-sheet relative flex flex-col w-full max-w-2xl max-h-[90vh] max-md:max-h-[92dvh] rounded-2xl border shadow-2xl overflow-hidden overflow-x-hidden text-slate-200"
         style={{
           backgroundColor: bgColor,
           borderColor: `${accentColor}30`,
           '--nx-accent': accentColor,
         } as React.CSSProperties}
       >
+        <SheetHandle onClose={onClose} />
+
         {/* Ambient Top Glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-32 opacity-25"
@@ -238,10 +246,10 @@ export function TailscaleModal({
         />
 
         {/* Modal Header */}
-        <div className="relative flex items-center justify-between px-5 py-4 border-b border-white/10 shrink-0">
-          <div className="flex items-center gap-3">
+        <div className="relative flex items-center justify-between px-4 sm:px-5 py-3 sm:py-4 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
             <div
-              className="flex h-10 w-10 items-center justify-center rounded-xl border shadow-sm"
+              className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl border shadow-sm shrink-0"
               style={{
                 backgroundColor: `${accentColor}18`,
                 borderColor: `${accentColor}35`,
@@ -249,13 +257,13 @@ export function TailscaleModal({
                 boxShadow: `0 0 16px ${accentColor}20`,
               }}
             >
-              <Network className="h-5 w-5" />
+              <Network className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold tracking-wide text-white">Tailscale Sync & Auto-Discovery</h2>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-semibold tracking-wide text-white truncate">Tailscale Sync & Auto-Discovery</h2>
                 <span
-                  className="rounded-full px-2 py-0.5 text-[10px] font-semibold border"
+                  className="hidden xs:inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold border shrink-0"
                   style={{
                     backgroundColor: `${accentColor}18`,
                     borderColor: `${accentColor}35`,
@@ -265,21 +273,22 @@ export function TailscaleModal({
                   Mesh VPN
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-400 mt-0.5 truncate sm:whitespace-normal">
                 Import servers, cloud instances, and Tailscale SSH nodes into your vault
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+            className="grid h-8 w-8 sm:h-9 sm:w-9 place-items-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-400 hover:border-white/20 hover:bg-white/[0.08] hover:text-white transition shrink-0 ml-2"
+            title="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* Connection Source Tabs */}
-        <div className="flex items-center gap-2 px-5 pt-3 shrink-0">
+        <div className="grid grid-cols-2 gap-2 px-4 sm:px-5 pt-3 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -287,7 +296,7 @@ export function TailscaleModal({
               if (cliAvailable) refreshCli();
             }}
             className={cn(
-              'flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-medium border transition',
+              'flex items-center justify-center gap-2 rounded-xl px-2.5 sm:px-3 py-2 text-xs font-medium border transition',
               mode === 'cli'
                 ? ''
                 : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
@@ -302,17 +311,17 @@ export function TailscaleModal({
                 : undefined
             }
           >
-            <Terminal className="h-3.5 w-3.5" />
-            <span>Local Daemon (CLI)</span>
+            <Terminal className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Local Daemon (CLI)</span>
             {cliAvailable === true && (
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" title="Local daemon detected" />
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" title="Local daemon detected" />
             )}
           </button>
           <button
             type="button"
             onClick={() => setMode('api')}
             className={cn(
-              'flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-medium border transition',
+              'flex items-center justify-center gap-2 rounded-xl px-2.5 sm:px-3 py-2 text-xs font-medium border transition',
               mode === 'api'
                 ? ''
                 : 'border-white/5 bg-white/[0.02] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
@@ -327,18 +336,18 @@ export function TailscaleModal({
                 : undefined
             }
           >
-            <Key className="h-3.5 w-3.5" />
-            <span>Tailscale API Token</span>
+            <Key className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">Tailscale API Token</span>
           </button>
         </div>
 
         {/* Source Configuration Controls */}
-        <div className="px-5 pt-3 pb-2 shrink-0">
+        <div className="px-4 sm:px-5 pt-3 pb-2 shrink-0">
           {mode === 'cli' ? (
-            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5">
-              <div className="flex items-center gap-2 text-xs text-slate-300">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5">
+              <div className="flex items-center gap-2 text-xs text-slate-300 min-w-0">
                 <ShieldCheck className="h-4 w-4 text-emerald-400 shrink-0" />
-                <span>
+                <span className="truncate">
                   {cliAvailable
                     ? 'Connected to local Tailscale daemon (`tailscale status`)'
                     : 'Searching for local Tailscale daemon...'}
@@ -348,54 +357,56 @@ export function TailscaleModal({
                 type="button"
                 onClick={refreshCli}
                 disabled={loading}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition disabled:opacity-50"
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition disabled:opacity-50 shrink-0"
               >
                 <RefreshCw className={cn('h-3 w-3', loading && 'animate-spin')} />
                 <span>Rescan</span>
               </button>
             </div>
           ) : (
-            <div className="space-y-2 rounded-xl border border-white/10 bg-black/40 p-3">
-              <div className="flex gap-2">
+            <div className="space-y-2 rounded-xl border border-white/10 bg-black/40 p-3 overflow-hidden">
+              <div className="flex flex-col sm:flex-row gap-2 w-full min-w-0">
                 <input
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="tskey-api-k..."
-                  className="flex-1 rounded-lg border border-white/10 bg-black/50 px-3 py-1.5 text-xs font-mono text-slate-200 placeholder:text-slate-500 focus:border-white/30 focus:outline-none"
+                  placeholder="Tailscale API Token (tskey-api-k...)"
+                  className="w-full sm:flex-1 min-w-0 rounded-lg border border-white/10 bg-black/50 px-3 py-2 sm:py-1.5 text-xs font-mono text-slate-200 placeholder:text-slate-500 focus:border-white/30 focus:outline-none"
                 />
-                <input
-                  type="text"
-                  value={tailnet}
-                  onChange={(e) => setTailnet(e.target.value)}
-                  placeholder="Tailnet (optional, default: -)"
-                  className="w-36 rounded-lg border border-white/10 bg-black/50 px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:border-white/30 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={fetchFromApi}
-                  disabled={loading || !apiKey.trim()}
-                  className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
-                  style={{
-                    backgroundColor: accentColor,
-                    color: '#000000',
-                  }}
-                >
-                  {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  <span>Fetch</span>
-                </button>
+                <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
+                  <input
+                    type="text"
+                    value={tailnet}
+                    onChange={(e) => setTailnet(e.target.value)}
+                    placeholder="Tailnet (optional)"
+                    className="flex-1 min-w-0 w-0 sm:w-36 sm:flex-initial rounded-lg border border-white/10 bg-black/50 px-3 py-2 sm:py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:border-white/30 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={fetchFromApi}
+                    disabled={loading || !apiKey.trim()}
+                    className="flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 sm:py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50 shrink-0"
+                    style={{
+                      backgroundColor: accentColor,
+                      color: '#000000',
+                    }}
+                  >
+                    {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    <span>Fetch</span>
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-400">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px] text-slate-400">
                 <span>Stored encrypted in your SQLCipher vault.</span>
                 <a
                   href="https://login.tailscale.com/admin/settings/keys"
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center gap-1 hover:underline"
+                  className="flex items-center gap-1 hover:underline truncate"
                   style={{ color: accentColor }}
                 >
-                  <span>Generate token in Tailscale Admin</span>
-                  <ExternalLink className="h-2.5 w-2.5" />
+                  <span className="truncate">Generate token in Tailscale Admin</span>
+                  <ExternalLink className="h-2.5 w-2.5 shrink-0" />
                 </a>
               </div>
             </div>
@@ -404,7 +415,7 @@ export function TailscaleModal({
 
         {/* Error message banner */}
         {error && (
-          <div className="mx-5 my-1 flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300 shrink-0">
+          <div className="mx-4 sm:mx-5 my-1 flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300 shrink-0">
             <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
             <span className="truncate">{error}</span>
           </div>
@@ -412,8 +423,8 @@ export function TailscaleModal({
 
         {/* Search & Bulk selection bar */}
         {devices.length > 0 && (
-          <div className="flex items-center justify-between px-5 py-2 border-b border-white/5 shrink-0 text-xs">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 sm:px-5 py-2 border-b border-white/5 shrink-0 text-xs">
+            <div className="flex items-center justify-between sm:justify-start gap-3">
               <button
                 type="button"
                 onClick={selectAll}
@@ -431,7 +442,7 @@ export function TailscaleModal({
                 onClick={selectOnlyOnline}
                 className="text-slate-400 hover:text-emerald-400 transition"
               >
-                Select online only
+                Online only
               </button>
             </div>
             <input
@@ -439,13 +450,13 @@ export function TailscaleModal({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Filter nodes…"
-              className="w-40 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-white/30"
+              className="w-full sm:w-40 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1.5 sm:py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-white/30"
             />
           </div>
         )}
 
         {/* Devices List */}
-        <div className="flex-1 overflow-y-auto px-5 py-2 space-y-1.5 min-h-[160px]">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-2 space-y-1.5 min-h-[160px]">
           {loading && devices.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-slate-400 gap-2">
               <Loader2 className="h-6 w-6 animate-spin" style={{ color: accentColor }} />
@@ -481,14 +492,14 @@ export function TailscaleModal({
                       : undefined
                   }
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         toggleSelect(dev.id);
                       }}
-                      className="text-slate-400 hover:text-white"
+                      className="text-slate-400 hover:text-white shrink-0"
                     >
                       {selected ? (
                         <CheckSquare className="h-4 w-4" style={{ color: accentColor }} />
@@ -497,10 +508,12 @@ export function TailscaleModal({
                       )}
                     </button>
 
-                    <OsIcon os={dev.os || 'linux'} size={28} />
+                    <div className="shrink-0">
+                      <OsIcon os={dev.os || 'linux'} size={28} />
+                    </div>
 
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                         <span
                           className={cn(
                             'h-2 w-2 rounded-full shrink-0',
@@ -508,14 +521,14 @@ export function TailscaleModal({
                           )}
                           title={dev.online ? 'Online' : 'Offline'}
                         />
-                        <span className="font-medium text-xs text-white truncate">{dev.hostname}</span>
+                        <span className="font-medium text-xs text-white truncate max-w-[130px] sm:max-w-none">{dev.hostname}</span>
                         {dev.isSelf && (
-                          <span className="rounded bg-white/10 px-1.5 py-0.2 text-[9px] font-medium text-slate-300">
+                          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium text-slate-300">
                             This Device
                           </span>
                         )}
                         {dev.tailscaleSsh && (
-                          <span className="rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.2 text-[9px] font-medium text-amber-300">
+                          <span className="rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 text-[9px] font-medium text-amber-300">
                             Tailscale SSH
                           </span>
                         )}
@@ -545,7 +558,7 @@ export function TailscaleModal({
                           });
                           onClose();
                         }}
-                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.05] px-2 py-1 text-[10px] text-slate-300 hover:bg-white/[0.1] hover:text-white transition"
+                        className="sm:opacity-0 sm:group-hover:opacity-100 flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[11px] sm:text-[10px] text-slate-300 hover:bg-white/[0.1] hover:text-white transition"
                         title="Connect immediately without saving"
                       >
                         <span>Connect</span>
@@ -560,39 +573,40 @@ export function TailscaleModal({
         </div>
 
         {/* Import Settings Footer */}
-        <div className="flex flex-col gap-3 px-5 py-4 border-t border-white/10 bg-black/40 shrink-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1.5 text-slate-400">
-                <span>Default user:</span>
+        <div className="flex flex-col gap-3 px-4 sm:px-5 py-3 sm:py-4 border-t border-white/10 bg-black/40 shrink-0">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-3 w-full sm:w-auto">
+              <label className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-1.5 text-slate-400">
+                <span className="text-[11px] sm:text-xs">Default user:</span>
                 <input
                   type="text"
                   value={defaultUser}
                   onChange={(e) => setDefaultUser(e.target.value)}
                   placeholder="root"
-                  className="w-24 rounded-lg border border-white/10 bg-black/50 px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-white/30"
+                  className="w-full sm:w-24 rounded-lg border border-white/10 bg-black/50 px-2.5 py-1.5 sm:py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-white/30"
                 />
               </label>
 
-              <div className="flex items-center gap-1.5 text-slate-400">
-                <span>Target vault:</span>
-                <div className="w-36">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-1.5 text-slate-400">
+                <span className="text-[11px] sm:text-xs">Target vault:</span>
+                <div className="w-full sm:w-36">
                   <CustomSelect
                     value={targetVaultId}
                     onChange={(val) => setTargetVaultId(val)}
                     options={vaults.map((v) => ({ value: v.id, label: v.name }))}
                     theme={activeTheme}
                     accentColor={accentColor}
+                    dropUp
                   />
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2 w-full sm:w-auto">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-xl border border-white/10 px-3.5 py-1.5 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white transition"
+                className="flex items-center justify-center rounded-xl border border-white/10 px-3.5 py-2 sm:py-1.5 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white transition"
               >
                 Cancel
               </button>
@@ -600,20 +614,20 @@ export function TailscaleModal({
                 type="button"
                 onClick={handleImport}
                 disabled={importing || selectedIds.size === 0}
-                className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg"
+                className="flex items-center justify-center gap-2 rounded-xl px-4 sm:px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg truncate"
                 style={{
                   backgroundColor: accentColor,
                   color: '#000000',
                   boxShadow: `0 0 20px ${accentColor}35`,
                 }}
               >
-                {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                <span>Import {selectedIds.size} {selectedIds.size === 1 ? 'Node' : 'Nodes'}</span>
+                {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />}
+                <span className="truncate">Import {selectedIds.size} {selectedIds.size === 1 ? 'Node' : 'Nodes'}</span>
               </button>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </ResponsiveOverlay>
   );
 }

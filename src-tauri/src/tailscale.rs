@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::vault::{AuthMethod, HostInput, HostProfile, Vault};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "android"))]
 use std::collections::HashMap;
 use std::time::Duration;
 use tauri::State;
@@ -49,6 +50,7 @@ pub struct TailscaleCredentials {
 
 // ── CLI JSON Structs ─────────────────────────────────────────────────────────
 
+#[cfg(not(target_os = "android"))]
 #[derive(Deserialize)]
 struct CliStatus {
     #[serde(rename = "BackendState")]
@@ -59,6 +61,7 @@ struct CliStatus {
     peer: Option<HashMap<String, CliNode>>,
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Deserialize)]
 struct CliNode {
     #[serde(rename = "ID")]
@@ -81,6 +84,7 @@ struct CliNode {
     tags: Option<Vec<String>>,
 }
 
+#[cfg(not(target_os = "android"))]
 fn parse_cli_node(node: CliNode, is_self: bool) -> Option<TailscaleDevice> {
     let hostname = node.hostname.filter(|h| !h.is_empty())?;
     let ips = node.tailscale_ips.unwrap_or_default();
