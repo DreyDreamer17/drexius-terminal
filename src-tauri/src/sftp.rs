@@ -37,6 +37,7 @@ pub struct TransferProgress {
 struct SftpConn {
     _session: Session,
     sftp: Sftp,
+    _bg_guard: crate::ssh::BackgroundSessionGuard,
 }
 
 #[derive(Default)]
@@ -62,11 +63,15 @@ impl SftpManager {
         let (host, secret) = vault.host_with_secret(&host_id)?;
         let (session, _) = open_authenticated(&host, &secret, vault)?;
         let sftp = session.sftp()?;
-        let conn = Arc::new(Mutex::new(SftpConn { _session: session, sftp }));
         let mut conns = self.conns.lock();
         if let Some(existing) = conns.get(session_id) {
             return Ok(existing.clone());
         }
+        let conn = Arc::new(Mutex::new(SftpConn {
+            _session: session,
+            sftp,
+            _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
+        }));
         conns.insert(session_id.to_string(), conn.clone());
         Ok(conn)
     }

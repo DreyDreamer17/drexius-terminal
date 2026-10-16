@@ -51,6 +51,8 @@ enum PtyCmd {
     Close,
 }
 
+const MAX_LOCAL_SCROLLBACK_BYTES: usize = 256 * 1024;
+
 struct LocalSessionHandle {
     tx: SyncSender<PtyCmd>,
     /// Shared handle to the child process so `local_pty_close` can send
@@ -58,6 +60,12 @@ struct LocalSessionHandle {
     /// Guarantees the reader thread's `read()` call unblocks even when
     /// the shell is blocked on I/O and would otherwise ignore EOF.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    events: Arc<Mutex<IpcChannel<PtyEvent>>>,
+    scrollback: Arc<Mutex<Vec<u8>>>,
+    banner: String,
+    os: String,
+    cwd: String,
+    _bg_guard: crate::ssh::BackgroundSessionGuard,
 }
 
 #[derive(Default)]
@@ -132,11 +140,6 @@ pub fn local_pty_spawn(
     let session_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::sync_channel::<PtyCmd>(INPUT_QUEUE_CAP);
 
-    mgr.sessions.lock().insert(
-        session_id.clone(),
-        LocalSessionHandle { tx, child: child.clone() },
-    );
-
     let sid = session_id.clone();
     let os_name = if cfg!(target_os = "macos") {
         "macos"
@@ -145,26 +148,45 @@ pub fn local_pty_spawn(
     } else {
         "linux"
     };
+    let banner_str = format!("Local Shell ({shell_path})");
+    let cwd_str = work_dir.to_string_lossy().to_string();
+    let events_shared = Arc::new(Mutex::new(on_event.clone()));
+    let scrollback = Arc::new(Mutex::new(Vec::with_capacity(16 * 1024)));
+
+    mgr.sessions.lock().insert(
+        session_id.clone(),
+        LocalSessionHandle {
+            tx,
+            child: child.clone(),
+            events: events_shared.clone(),
+            scrollback: scrollback.clone(),
+            banner: banner_str.clone(),
+            os: os_name.into(),
+            cwd: cwd_str.clone(),
+            _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
+        },
+    );
 
     let _ = on_event.send(PtyEvent::Connected {
         session_id: session_id.clone(),
         fingerprint: "local".into(),
-        banner: Some(format!("Local Shell ({shell_path})")),
+        banner: Some(banner_str),
         os: Some(os_name.into()),
     });
 
     let _ = on_event.send(PtyEvent::Cwd {
-        path: work_dir.to_string_lossy().to_string(),
+        path: cwd_str,
     });
 
     let sid_thread = session_id.clone();
+    let events_for_thread = events_shared.clone();
     if let Err(e) = thread::Builder::new()
         .name(format!("local-pty-{}", &sid[..8]))
         .spawn(move || {
-            pty_io_loop(pair.master, rx, &on_event);
+            pty_io_loop(pair.master, rx, &events_for_thread, &scrollback);
             // Reap the child so exited shells don't linger as zombies.
             let _ = child.lock().wait();
-            let _ = on_event.send(PtyEvent::Disconnected {
+            let _ = events_for_thread.lock().send(PtyEvent::Disconnected {
                 reason: "shell process exited".into(),
                 resumable: false,
             });
@@ -178,6 +200,40 @@ pub fn local_pty_spawn(
     }
 
     Ok(session_id)
+}
+
+#[tauri::command]
+pub fn local_pty_attach(
+    session_id: String,
+    cols: u32,
+    rows: u32,
+    on_event: IpcChannel<PtyEvent>,
+    mgr: State<'_, LocalPtyManager>,
+) -> AppResult<bool> {
+    let guard = mgr.sessions.lock();
+    let Some(h) = guard.get(&session_id) else {
+        return Ok(false);
+    };
+    *h.events.lock() = on_event.clone();
+    let _ = on_event.send(PtyEvent::Connected {
+        session_id: session_id.clone(),
+        fingerprint: "local".into(),
+        banner: Some(h.banner.clone()),
+        os: Some(h.os.clone()),
+    });
+    let _ = on_event.send(PtyEvent::Cwd {
+        path: h.cwd.clone(),
+    });
+    let sb = h.scrollback.lock().clone();
+    if !sb.is_empty() {
+        let _ = on_event.send(PtyEvent::Output {
+            b64: B64.encode(&sb),
+        });
+    }
+    if cols > 0 && rows > 0 {
+        let _ = h.tx.try_send(PtyCmd::Resize(cols, rows));
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -210,7 +266,8 @@ pub fn local_pty_close(session_id: String, mgr: State<'_, LocalPtyManager>) -> A
 fn pty_io_loop(
     master: Box<dyn MasterPty + Send>,
     rx: Receiver<PtyCmd>,
-    events: &IpcChannel<PtyEvent>,
+    events: &Arc<Mutex<IpcChannel<PtyEvent>>>,
+    scrollback: &Arc<Mutex<Vec<u8>>>,
 ) {
     let mut reader = match master.try_clone_reader() {
         Ok(r) => r,
@@ -258,9 +315,15 @@ fn pty_io_loop(
             Ok(0) => break, // EOF, child process terminated
             Ok(n) => {
                 let chunk = &buf[..n];
-                if events.send(PtyEvent::Output { b64: B64.encode(chunk) }).is_err() {
-                    break;
+                {
+                    let mut sb = scrollback.lock();
+                    sb.extend_from_slice(chunk);
+                    if sb.len() > MAX_LOCAL_SCROLLBACK_BYTES {
+                        let excess = sb.len() - MAX_LOCAL_SCROLLBACK_BYTES;
+                        sb.drain(0..excess);
+                    }
                 }
+                let _ = events.lock().send(PtyEvent::Output { b64: B64.encode(chunk) });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));

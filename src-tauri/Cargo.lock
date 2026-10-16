@@ -2812,6 +2812,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2",
+ "socket2",
  "ssh2",
  "tauri",
  "tauri-build",

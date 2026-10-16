@@ -10,6 +10,7 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import { readText as tauriReadText, writeText as tauriWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { DemoShell, homeOf, vfs } from './demoShell';
 import type {
+  ActiveSshSession,
   ActiveTunnelInfo,
   AiProviderConfig,
   BridgeError,
@@ -635,6 +636,36 @@ export const bridge = {
     demoSessions.delete(sessionId);
   },
 
+  async attach(sessionId: string, cols: number, rows: number, onEvent: (e: SessionEvent) => void): Promise<boolean> {
+    if (isTauri) {
+      const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
+      channel.onmessage = (msg) => {
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
+        }
+      };
+      return invoke<boolean>('ssh_attach', { sessionId, cols, rows, onEvent: channel }).catch(() => false);
+    }
+    const s = demoSessions.get(sessionId);
+    if (!s) return false;
+    s.emit = onEvent;
+    onEvent({ type: 'connected', sessionId, fingerprint: 'demo', banner: null, os: s.host.os ?? null });
+    return true;
+  },
+
+  async listSshSessions(): Promise<ActiveSshSession[]> {
+    if (isTauri) return invoke<ActiveSshSession[]>('ssh_sessions').catch(() => []);
+    return Array.from(demoSessions.entries()).map(([sessionId, s]) => ({
+      sessionId,
+      hostId: s.host.id,
+      startedAt: Math.floor(Date.now() / 1000),
+    }));
+  },
+
   /** Sandbox-only: simulate a dropped link to exercise snapshot/resume. */
   simulateDrop(sessionId: string) {
     const s = demoSessions.get(sessionId);
@@ -1074,6 +1105,27 @@ export const bridge = {
       return;
     }
     demoSessions.delete(sessionId);
+  },
+
+  async attachLocalPty(sessionId: string, cols: number, rows: number, onEvent: (e: SessionEvent) => void): Promise<boolean> {
+    if (isTauri) {
+      const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
+      channel.onmessage = (msg) => {
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
+        }
+      };
+      return invoke<boolean>('local_pty_attach', { sessionId, cols, rows, onEvent: channel }).catch(() => false);
+    }
+    const s = demoSessions.get(sessionId);
+    if (!s) return false;
+    s.emit = onEvent;
+    onEvent({ type: 'connected', sessionId, fingerprint: 'local', banner: null, os: 'linux' });
+    return true;
   },
 
   // ── Multi-Vault Management ──

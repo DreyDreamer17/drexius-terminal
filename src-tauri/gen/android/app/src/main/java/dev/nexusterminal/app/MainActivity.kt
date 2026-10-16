@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -16,6 +17,10 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 class MainActivity : TauriActivity() {
   companion object {
     private const val STORAGE_PERMISSION_CODE = 1001
+    private const val NOTIFICATION_PERMISSION_CODE = 1002
+
+    @Volatile
+    var isActivityVisible: Boolean = false
 
     @JvmStatic
     var instance: MainActivity? = null
@@ -32,6 +37,28 @@ class MainActivity : TauriActivity() {
       val ctx = instance ?: return false
       return ctx.isStorageGranted()
     }
+
+    @JvmStatic
+    fun updateActiveSessionsStatic(count: Int) {
+      val ctx = instance?.applicationContext ?: return
+      SessionForegroundService.updateActiveSessions(ctx, count)
+    }
+  }
+
+  private var appWebView: WebView? = null
+
+  override fun onWebViewCreate(webView: WebView) {
+    super.onWebViewCreate(webView)
+    appWebView = webView
+    // Prevent Android from lowering the WebView renderer process priority to WAIVED
+    // when the user opens the multi-app overview (Recents), switches apps, or locks
+    // the screen. Without `waivedWhenNotVisible = false`, Android's lmkd can kill or
+    // freeze the WebView child process as soon as the Activity loses visibility.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      try {
+        webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+      } catch (_: Exception) {}
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,14 +66,72 @@ class MainActivity : TauriActivity() {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     instance = this
-    // Check and prompt on app launch/setup if storage permission has not been granted yet
-    promptStoragePermissions(force = false)
+    isActivityVisible = true
+    promptNotificationPermissionIfNeeded()
+    if (SessionForegroundService.getActiveSessionCount() > 0) {
+      SessionForegroundService.startAndBind(applicationContext, SessionForegroundService.getActiveSessionCount())
+    }
+  }
+
+  override fun onStart() {
+    super.onStart()
+    isActivityVisible = true
+    keepWebViewActive()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    isActivityVisible = true
+    keepWebViewActive()
+    SessionForegroundService.onActivityResumed(applicationContext)
+  }
+
+  override fun onPause() {
+    super.onPause()
+    // WryActivity.onPause() calls mWebView.onPause(), which suspends WebView JS
+    // timers and IPC callbacks when entering Recents (multi-app view) or locking
+    // the screen. Immediately resume WebView processing so live terminal sessions
+    // and UI state remain active.
+    keepWebViewActive()
+  }
+
+  override fun onStop() {
+    isActivityVisible = false
+    super.onStop()
+    keepWebViewActive()
+    SessionForegroundService.keepAliveForBackgroundTransition(applicationContext)
   }
 
   override fun onDestroy() {
+    appWebView = null
     super.onDestroy()
     if (instance == this) {
       instance = null
+    }
+  }
+
+  fun keepWebViewActive() {
+    try {
+      appWebView?.onResume()
+      appWebView?.resumeTimers()
+    } catch (_: Exception) {}
+  }
+
+  fun updateActiveSessions(count: Int) {
+    SessionForegroundService.updateActiveSessions(applicationContext, count)
+  }
+
+  private fun promptNotificationPermissionIfNeeded() {
+    if (Build.VERSION.SDK_INT >= 33) {
+      try {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+          ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            NOTIFICATION_PERMISSION_CODE
+          )
+        }
+      } catch (_: Exception) {}
     }
   }
 
@@ -65,6 +150,7 @@ class MainActivity : TauriActivity() {
   }
 
   fun promptStoragePermissions(force: Boolean = false) {
+    if (!force) return
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
       if (!Environment.isExternalStorageManager()) {
         try {

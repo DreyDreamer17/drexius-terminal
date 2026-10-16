@@ -1390,14 +1390,30 @@ pub fn check_storage_permission() -> AppResult<bool> {
         let ctx = ndk_context::android_context();
         if !ctx.vm().is_null() && !ctx.context().is_null() {
             if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
-            if let Ok(mut env) = vm.attach_current_thread() {
-                let activity = unsafe { jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject) };
-                if let Ok(val) = env.call_method(&activity, "isStorageGranted", "()Z", &[]) {
-                    if let Ok(b) = val.z() {
-                        return Ok(b);
+                if let Ok(mut env) = vm.attach_current_thread() {
+                    let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+                        jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+                    });
+                    if let Some(cls) = crate::ssh::load_android_app_class(
+                        &mut env,
+                        &*app_ctx,
+                        "dev.nexusterminal.app.MainActivity",
+                    ) {
+                        if let Ok(val) = env.call_static_method(
+                            &cls,
+                            "isStoragePermissionGranted",
+                            "()Z",
+                            &[],
+                        ) {
+                            if let Ok(b) = val.z() {
+                                return Ok(b);
+                            }
+                        }
+                    }
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
                     }
                 }
-            }
             }
         }
         return Ok(false);
@@ -1415,11 +1431,27 @@ pub fn request_storage_permission() -> AppResult<bool> {
         let ctx = ndk_context::android_context();
         if !ctx.vm().is_null() && !ctx.context().is_null() {
             if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
-            if let Ok(mut env) = vm.attach_current_thread() {
-                let activity = unsafe { jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject) };
-                let _ = env.call_method(&activity, "requestStoragePermissions", "()V", &[]);
-                return Ok(true);
-            }
+                if let Ok(mut env) = vm.attach_current_thread() {
+                    let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+                        jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+                    });
+                    if let Some(cls) = crate::ssh::load_android_app_class(
+                        &mut env,
+                        &*app_ctx,
+                        "dev.nexusterminal.app.MainActivity",
+                    ) {
+                        let _ = env.call_static_method(
+                            &cls,
+                            "requestStoragePermissionsStatic",
+                            "()V",
+                            &[],
+                        );
+                    }
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
+                    }
+                    return Ok(true);
+                }
             }
         }
     }

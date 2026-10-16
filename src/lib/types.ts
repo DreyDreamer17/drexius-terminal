@@ -179,6 +179,14 @@ export interface Pane {
   customShell?: string;
   /** Serial connection parameters — only valid when kind === 'serial'. */
   serialOptions?: SerialOpenOptions;
+  /** Live backend session ID for reattaching across WebView/component remounts. */
+  sessionId?: string | null;
+}
+
+export interface ActiveSshSession {
+  sessionId: string;
+  hostId: string;
+  startedAt: number;
 }
 
 export type Layout = 'single' | 'vertical' | 'horizontal' | 'grid';

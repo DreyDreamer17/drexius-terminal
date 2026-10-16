@@ -145,12 +145,14 @@ pub fn run() {
             vault::snippet_delete,
             // ssh
             ssh::ssh_connect,
+            ssh::ssh_attach,
             ssh::ssh_write,
             ssh::ssh_resize,
             ssh::ssh_disconnect,
             ssh::ssh_sessions,
             // local pty
             local_pty::local_pty_spawn,
+            local_pty::local_pty_attach,
             local_pty::local_pty_write,
             local_pty::local_pty_resize,
             local_pty::local_pty_close,

@@ -121,10 +121,29 @@ function ThemeSwatch({ t, large = false }: { t: NexusTheme; large?: boolean }) {
   );
 }
 
+const WORKSPACE_STORAGE_KEY = 'nx.workspace.state.v1';
+
+function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mobilePage: MobilePage } | null {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.tabs)) return null;
+    return {
+      tabs: parsed.tabs as Tab[],
+      activeTabId: typeof parsed.activeTabId === 'string' ? parsed.activeTabId : null,
+      mobilePage: typeof parsed.mobilePage === 'string' ? (parsed.mobilePage as MobilePage) : 'terminals',
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const mobile = useMobile();
   useMobileViewport();
-  const [mobilePage, setMobilePage] = useState<MobilePage>('terminals');
+  const persistedWorkspace = useMemo(() => readPersistedWorkspace(), []);
+  const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
   // Phone settings pickers (auto-lock, theme, quick unlock, recovery key, storage permissions)
   const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'quickunlock' | 'recovery_key' | 'storage_perms' | null>(null);
   const [deviceLockEnabled, setDeviceLockEnabled] = useState(() => bridge.osKeychainEnabled());
@@ -133,7 +152,7 @@ export default function App() {
   const [downloadedRecoveryPath, setDownloadedRecoveryPath] = useState<string | null>(null);
   const [quickUnlockPw, setQuickUnlockPw] = useState('');
   const [quickUnlockBusy, setQuickUnlockBusy] = useState(false);
-  const [quickUnlockErr, setQuickUnlockErr] = useState<string | null>(null);
+  const [quickUnlockErr, setQuickUnlockErr] = useState(null as string | null);
   const [storageGranted, setStorageGranted] = useState<boolean | null>(null);
   const [requestingPerm, setRequestingPerm] = useState(false);
 
@@ -147,6 +166,7 @@ export default function App() {
 
   const [sessionSheet, setSessionSheet] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
+  const [vaultChecked, setVaultChecked] = useState(!isTauri);
 
   const [unlocked, setUnlocked] = useState(false);
   // The vault can be unlocked while this UI is not. Android recreates the
@@ -157,14 +177,24 @@ export default function App() {
   // unlocked vault. Manual and idle locks both call `bridge.lock()`, which
   // clears the key, so this can never undo a deliberate lock.
   useEffect(() => {
-    if (unlocked || !isTauri) return;
+    if (unlocked || !isTauri) {
+      setVaultChecked(true);
+      return;
+    }
     let active = true;
     bridge
       .vaultStatus()
       .then((s) => {
-        if (active && s.unlocked) setUnlocked(true);
+        if (!active) return;
+        if (s.unlocked) {
+          setUnlocked(true);
+          setShowSplash(false);
+        }
+        setVaultChecked(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (active) setVaultChecked(true);
+      });
     return () => {
       active = false;
     };
@@ -211,10 +241,105 @@ export default function App() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [tabs, setTabs] = useState<Tab[]>(() => persistedWorkspace?.tabs ?? []);
+  const [activeTabId, setActiveTabId] = useState<string | null>(() => persistedWorkspace?.activeTabId ?? null);
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
   const [showAI, setShowAI] = useState(false);
+
+  // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
+  // Android Activity recreations restore the exact open terminal tabs.
+  useEffect(() => {
+    if (!unlocked) return;
+    try {
+      localStorage.setItem(
+        WORKSPACE_STORAGE_KEY,
+        JSON.stringify({ tabs, activeTabId, mobilePage })
+      );
+    } catch {}
+  }, [unlocked, tabs, activeTabId, mobilePage]);
+
+  // Reconcile open tabs with live Rust SSH sessions (e.g. if WebView reloaded
+  // while Rust kept sessions alive via SessionForegroundService).
+  useEffect(() => {
+    if (!unlocked || !isTauri || hosts.length === 0) return;
+    let cancelled = false;
+    bridge.listSshSessions().then((liveSessions) => {
+      if (cancelled || liveSessions.length === 0) return;
+      setTabs((prevTabs) => {
+        let changed = false;
+        const claimedSessionIds = new Set<string>();
+        const nextTabs = prevTabs.map((tab) => {
+          if (tab.kind === 'sftp') return tab;
+          let tabChanged = false;
+          const nextPanes = tab.panes.map((pane) => {
+            const storedSid =
+              pane.sessionId ||
+              (() => {
+                try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+              })();
+            if (storedSid && liveSessions.some((s) => s.sessionId === storedSid)) {
+              claimedSessionIds.add(storedSid);
+              if (pane.sessionId !== storedSid) {
+                tabChanged = true;
+                changed = true;
+                return { ...pane, sessionId: storedSid };
+              }
+            }
+            return pane;
+          });
+          return tabChanged ? { ...tab, panes: nextPanes } : tab;
+        });
+
+        const extraTabs: Tab[] = [];
+        for (const sess of liveSessions) {
+          if (claimedSessionIds.has(sess.sessionId)) continue;
+          let matchedExistingPane = false;
+          for (let ti = 0; ti < nextTabs.length; ti++) {
+            const t = nextTabs[ti];
+            if (t.kind === 'sftp') continue;
+            const pi = t.panes.findIndex((p) => !p.isLocal && p.hostId === sess.hostId && !p.sessionId);
+            if (pi !== -1) {
+              const pane = t.panes[pi];
+              try { localStorage.setItem('nx.pane.sid.' + pane.id, sess.sessionId); } catch {}
+              const updatedPanes = [...t.panes];
+              updatedPanes[pi] = { ...pane, sessionId: sess.sessionId };
+              nextTabs[ti] = { ...t, panes: updatedPanes };
+              claimedSessionIds.add(sess.sessionId);
+              matchedExistingPane = true;
+              changed = true;
+              break;
+            }
+          }
+          if (!matchedExistingPane) {
+            const h = hosts.find((x) => x.id === sess.hostId);
+            if (h) {
+              const paneId = uid();
+              try { localStorage.setItem('nx.pane.sid.' + paneId, sess.sessionId); } catch {}
+              const pane: Pane = { id: paneId, hostId: h.id, resume: true, sessionId: sess.sessionId };
+              const tab: Tab = {
+                id: uid(),
+                title: h.label,
+                color: h.color,
+                panes: [pane],
+                layout: 'single',
+                activePaneId: pane.id,
+              };
+              extraTabs.push(tab);
+              claimedSessionIds.add(sess.sessionId);
+              changed = true;
+            }
+          }
+        }
+        if (!changed) return prevTabs;
+        const merged = [...nextTabs, ...extraTabs];
+        setActiveTabId((curr) => curr ?? merged[merged.length - 1]?.id ?? null);
+        return merged;
+      });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [unlocked, hosts]);
   // Phone terminal screen: AI / snippets slide up over the terminal as drawers (one at a time).
   // Phone terminal screen: which tool is drawn up over the terminal. The AI opens as a full overlay;
   // the tools that are used *with* the terminal in view (snippets, keypad, history) open at half.
@@ -498,11 +623,31 @@ export default function App() {
     if (h) splitWith(h, pref);
   };
 
+  const cleanupPaneSession = useCallback((p: Pane) => {
+    bridge.sftpClose(p.id).catch(() => {});
+    const sid =
+      registry.get(p.id)?.sessionId ||
+      p.sessionId ||
+      (() => {
+        try { return localStorage.getItem('nx.pane.sid.' + p.id); } catch { return null; }
+      })();
+    try { localStorage.removeItem('nx.pane.sid.' + p.id); } catch {}
+    if (!sid) return;
+    if (p.kind === 'serial') {
+      bridge.closeSerial(sid).catch(() => {});
+    } else if (p.isLocal) {
+      bridge.closeLocalPty(sid).catch(() => {});
+    } else {
+      bridge.disconnect(sid).catch(() => {});
+    }
+  }, []);
+
   const closePane = useCallback((tabId: string, paneId: string) => {
-    bridge.sftpClose(paneId).catch(() => {});
     setTabs((ts) => {
       return ts.map((t) => {
         if (t.id !== tabId) return t;
+        const closing = t.panes.find((p) => p.id === paneId);
+        if (closing) cleanupPaneSession(closing);
         const panes = t.panes.filter((p) => p.id !== paneId);
         return {
           ...t,
@@ -513,7 +658,7 @@ export default function App() {
         };
       }).filter((t) => t.panes.length);
     });
-  }, [hostMap]);
+  }, [hostMap, cleanupPaneSession]);
 
   const closeTab = useCallback((id: string) => {
     setTabs((ts) => {
@@ -523,13 +668,13 @@ export default function App() {
         if (target.kind === 'sftp' && target.sftpSessionId) {
           bridge.sftpClose(target.sftpSessionId).catch(() => {});
         }
-        target.panes.forEach((p) => bridge.sftpClose(p.id).catch(() => {}));
+        target.panes.forEach((p) => cleanupPaneSession(p));
       }
       const remaining = ts.filter((t) => t.id !== id);
       setActiveTabId((curr) => (curr === id ? remaining[Math.max(0, i - 1)]?.id ?? null : curr));
       return remaining;
     });
-  }, []);
+  }, [cleanupPaneSession]);
 
   const openSftpTab = useCallback((hostId?: string) => {
     setMobilePage('sftp');
@@ -710,7 +855,19 @@ export default function App() {
   const saveSnippet = async (s: Snippet) => { await bridge.saveSnippet(s); refresh(); toast('Snippet saved'); };
   const deleteSnippet = async (id: string) => { await bridge.deleteSnippet(id); refresh(); };
 
-  const lock = async () => { setTabs([]); setActiveTabId(null); await bridge.lock(); setUnlocked(false); };
+  const lock = async () => {
+    tabs.forEach((t) => {
+      if (t.kind === 'sftp' && t.sftpSessionId) {
+        bridge.sftpClose(t.sftpSessionId).catch(() => {});
+      }
+      t.panes.forEach((p) => cleanupPaneSession(p));
+    });
+    try { localStorage.removeItem(WORKSPACE_STORAGE_KEY); } catch {}
+    setTabs([]);
+    setActiveTabId(null);
+    await bridge.lock();
+    setUnlocked(false);
+  };
 
   // M6: auto-lock after a period with no user input (mouse, touch, scroll or key press in the app).
   // Only the vault is locked: root key cleared, tabs and SSH sessions left running, and the same
@@ -795,8 +952,8 @@ export default function App() {
 
   return (
     <>
-    {showSplash && <LaunchSplash onFinished={() => setShowSplash(false)} />}
-    {!unlocked && (
+    {vaultChecked && showSplash && !unlocked && <LaunchSplash onFinished={() => setShowSplash(false)} />}
+    {vaultChecked && !unlocked && (
       <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
         <LockScreen onUnlocked={() => setUnlocked(true)}
           onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
@@ -1305,7 +1462,7 @@ export default function App() {
               onSshConfig={() => setShowSshConfig(true)}
             />
           )}
-          {tabs.map((t) => {
+          {workspaceReady && tabs.map((t) => {
             if (t.kind === 'sftp') {
               return (
                 <div

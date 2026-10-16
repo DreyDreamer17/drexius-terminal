@@ -112,6 +112,7 @@ struct RunningTunnel {
     bound_remote_port: u16,
     /// Ownership token — see [`remove_tunnel_if_owner`].
     token: u64,
+    _bg_guard: crate::ssh::BackgroundSessionGuard,
 }
 
 pub struct TunnelManager {
@@ -285,6 +286,7 @@ fn spawn_local_worker(
         local_port,
         bound_remote_port: 0,
         token,
+        _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
     };
 
     mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
@@ -374,6 +376,7 @@ fn spawn_remote_worker(
         local_port: cfg.local_port,
         bound_remote_port: bound_port,
         token,
+        _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
     };
     mgr.running.lock().insert(tunnel_id.clone(), running_tunnel);
 

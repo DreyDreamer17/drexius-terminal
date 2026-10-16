@@ -40,7 +40,7 @@ import { registry } from '../lib/sessions';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import type { NexusTheme } from '../lib/themes';
-import type { Host, Pane, PaneStatus } from '../lib/types';
+import type { Host, Pane, PaneStatus, SessionEvent } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 
@@ -170,6 +170,7 @@ export const TerminalPane = memo(function TerminalPane({
   const updateRef = useRef<(patch: Parameters<typeof registry.patch>[1]) => void>(() => {});
   const onChangeRef = useRef(onChange);
   const pendingSize = useRef<{ cols: number; rows: number } | null>(null);
+  const lastSentSize = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
   const resizeScheduled = useRef(false);
 
   // Command & Clipboard history + Autosuggestion states
@@ -216,6 +217,7 @@ export const TerminalPane = memo(function TerminalPane({
   }, [onData, update, onChange]);
 
   const scheduleResize = useCallback((cols: number, rows: number) => {
+    if (cols <= 0 || rows <= 0) return;
     pendingSize.current = { cols, rows };
     if (resizeScheduled.current) return;
 
@@ -225,6 +227,13 @@ export const TerminalPane = memo(function TerminalPane({
       const size = pendingSize.current;
       const sid = sessionRef.current;
       if (size && sid && !isSerial) {
+        if (
+          size.cols === lastSentSize.current.cols &&
+          size.rows === lastSentSize.current.rows
+        ) {
+          return;
+        }
+        lastSentSize.current = { cols: size.cols, rows: size.rows };
         if (isLocal) {
           void bridge.resizeLocalPty(sid, size.cols, size.rows).catch(() => {});
         } else {
@@ -575,34 +584,65 @@ export const TerminalPane = memo(function TerminalPane({
 
       // Local PTY shell connection
       if (isLocal) {
+        const initCols = term.cols || 80;
+        const initRows = term.rows || 24;
+        let suppressLocalBanner = false;
+        const onLocalEvent = (ev: SessionEvent) => {
+          if (dead()) return;
+          switch (ev.type) {
+            case 'output':
+              smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+              break;
+            case 'cwd':
+              setCwd(ev.path);
+              update({ cwd: ev.path });
+              break;
+            case 'connected':
+              if (!suppressLocalBanner) {
+                term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
+              }
+              break;
+            case 'disconnected':
+              sessionRef.current = null;
+              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
+              setStatus('disconnected');
+              update({ status: 'disconnected', sessionId: null });
+              break;
+          }
+        };
+
+        const existingLocalSid =
+          sessionRef.current ||
+          pane.sessionId ||
+          (() => {
+            try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+          })();
+        if (existingLocalSid) {
+          suppressLocalBanner = true;
+          const attached = await bridge.attachLocalPty(existingLocalSid, initCols, initRows, onLocalEvent);
+          suppressLocalBanner = false;
+          if (attached) {
+            if (dead()) return;
+            sessionRef.current = existingLocalSid;
+            try { localStorage.setItem('nx.pane.sid.' + pane.id, existingLocalSid); } catch {}
+            retryRef.current = 0;
+            setStatus('connected');
+            update({ status: 'connected', sessionId: existingLocalSid });
+            return;
+          }
+          try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+        }
+
         term.write(`\r\n\x1b[90m→ Spawning ${pane.customShell ? 'custom session' : 'local PTY shell'}…\x1b[0m\r\n`);
         try {
-          const sid = await bridge.spawnLocalPty(term.cols, term.rows, pane.customShell, undefined, (ev) => {
-            if (dead()) return;
-            switch (ev.type) {
-              case 'output':
-                smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
-                break;
-              case 'cwd':
-                setCwd(ev.path);
-                update({ cwd: ev.path });
-                break;
-              case 'connected':
-                term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
-                break;
-              case 'disconnected':
-                sessionRef.current = null;
-                term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
-                setStatus('disconnected');
-                update({ status: 'disconnected', sessionId: null });
-                break;
-            }
-          });
+          const sid = await bridge.spawnLocalPty(initCols, initRows, pane.customShell, undefined, onLocalEvent);
           if (dead()) {
             bridge.closeLocalPty(sid);
             return;
           }
           sessionRef.current = sid;
+          try { localStorage.setItem('nx.pane.sid.' + pane.id, sid); } catch {}
           retryRef.current = 0;
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
@@ -629,13 +669,11 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       // Remote SSH connection
-      term.write(
-        `\r\n\x1b[90m${resume ? '⟲ Resuming' : '→ Connecting to'} \x1b[36m${host.username}@${host.hostname}:${
-          host.port
-        }\x1b[90m via ${host.keychainId ? 'keychain identity' : host.authMethod === 'key' ? 'public key' : host.authMethod}…\x1b[0m\r\n`
-      );
       try {
-        const sid = await bridge.connect(host.id, term.cols, term.rows, resume, (ev) => {
+        const initCols = term.cols || 80;
+        const initRows = term.rows || 24;
+        let suppressConnectBanner = false;
+        const onSshEvent = (ev: SessionEvent) => {
           if (dead()) return;
           switch (ev.type) {
             case 'output':
@@ -647,9 +685,11 @@ export const TerminalPane = memo(function TerminalPane({
               if (sessionRef.current) bridge.recordSnapshot(host.id, sessionRef.current, { cwd: ev.path });
               break;
             case 'connected': {
-              term.write(
-                `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
-              );
+              if (!suppressConnectBanner) {
+                term.write(
+                  `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
+                );
+              }
               const detected = ev.os ?? parseOsFromBanner(ev.banner);
               if (detected && detected !== host.os) {
                 bridge.saveHost({ ...host, os: detected }).then(() => onChange()).catch(() => {});
@@ -658,6 +698,8 @@ export const TerminalPane = memo(function TerminalPane({
             }
             case 'disconnected':
               sessionRef.current = null;
+              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              lastSentSize.current = { cols: 0, rows: 0 };
               term.write(`\r\n\x1b[31m✖ ${ev.reason}\x1b[0m\r\n`);
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });
@@ -667,16 +709,49 @@ export const TerminalPane = memo(function TerminalPane({
               }
               break;
           }
-        });
+        };
+
+        const existingSshSid =
+          sessionRef.current ||
+          pane.sessionId ||
+          (() => {
+            try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+          })();
+        if (existingSshSid) {
+          suppressConnectBanner = true;
+          const attached = await bridge.attach(existingSshSid, initCols, initRows, onSshEvent);
+          suppressConnectBanner = false;
+          if (attached) {
+            if (dead()) return;
+            sessionRef.current = existingSshSid;
+            try { localStorage.setItem('nx.pane.sid.' + pane.id, existingSshSid); } catch {}
+            lastSentSize.current = { cols: initCols, rows: initRows };
+            retryRef.current = 0;
+            setStatus('connected');
+            update({ status: 'connected', sessionId: existingSshSid });
+            return;
+          }
+          try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+        }
+
+        term.write(
+          `\r\n\x1b[90m${resume ? '⟲ Resuming' : '→ Connecting to'} \x1b[36m${host.username}@${host.hostname}:${
+            host.port
+          }\x1b[90m via ${host.keychainId ? 'keychain identity' : host.authMethod === 'key' ? 'public key' : host.authMethod}…\x1b[0m\r\n`
+        );
+        const sid = await bridge.connect(host.id, initCols, initRows, resume, onSshEvent);
         if (dead()) {
           bridge.disconnect(sid);
           return;
         }
         sessionRef.current = sid;
+        try { localStorage.setItem('nx.pane.sid.' + pane.id, sid); } catch {}
+        lastSentSize.current = { cols: initCols, rows: initRows };
         retryRef.current = 0;
         setStatus('connected');
         update({ status: 'connected', sessionId: sid });
-        if (term.cols && term.rows) {
+        if (term.cols && term.rows && (term.cols !== initCols || term.rows !== initRows)) {
+          lastSentSize.current = { cols: term.cols, rows: term.rows };
           bridge.resize(sid, term.cols, term.rows);
         }
         if (host.startupCommand && host.startupCommand.trim()) {
@@ -697,13 +772,6 @@ export const TerminalPane = memo(function TerminalPane({
         } else {
           const msg = isBridgeError(e) ? e.message : String(e);
           setError(msg);
-          // A *resume* attempt failing is not yet a user-facing error: the link
-          // was already down, so keep the "auto-resume in Ns" bar alive and try
-          // again with backoff. Previously the countdown was cleared on entry to
-          // connect() and never re-armed here, so one mistimed retry ended the
-          // chain — and right after a phone unlock is exactly when a retry is
-          // most likely to mistime (radio/DNS still coming back). A
-          // user-initiated connect still fails loudly with the dialog below.
           if (resume && retryRef.current < MAX_RESUME_ATTEMPTS) {
             retryRef.current += 1;
             const wait = Math.min(30, 3 * 2 ** (retryRef.current - 1));
@@ -721,7 +789,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     },
-    [host, isLocal, update, onChange]
+    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange]
   );
 
   const mobile = useMobile();
@@ -1428,10 +1496,11 @@ export const TerminalPane = memo(function TerminalPane({
       insert: (c, execute) => insertRef.current(c, execute),
     });
 
-    const ro = new ResizeObserver(() => {
+    const fitAndScheduleResize = () => {
+      if (document.visibilityState === 'hidden') return;
       if (!elRef.current?.clientWidth || !elRef.current.clientHeight) return;
       try {
-        if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
+        fit.fit();
         updateGhostPos();
         if (term.cols && term.rows) {
           scheduleResize(term.cols, term.rows);
@@ -1439,13 +1508,35 @@ export const TerminalPane = memo(function TerminalPane({
       } catch {
         /* not visible */
       }
-    });
+    };
+
+    const ro = new ResizeObserver(fitAndScheduleResize);
     ro.observe(elRef.current!);
+    const handleVisibilityFit = () => {
+      if (document.visibilityState === 'visible') {
+        fitAndScheduleResize();
+        if (!isLocal && !isSerial && sessionRef.current) {
+          const currentSid = sessionRef.current;
+          bridge.listSshSessions().then((sessions) => {
+            if (sessionRef.current === currentSid && !sessions.some((s) => s.sessionId === currentSid)) {
+              sessionRef.current = null;
+              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              lastSentSize.current = { cols: 0, rows: 0 };
+              setStatus('disconnected');
+              update({ status: 'disconnected', sessionId: null });
+              connect(true);
+            }
+          }).catch(() => {});
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityFit);
 
     connect(!!pane.resume);
 
     return () => {
       genRef.current += 1;
+      document.removeEventListener('visibilitychange', handleVisibilityFit);
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener, true);
       helperTextarea?.removeEventListener('compositionstart', handleCompositionStart as EventListener, true);
@@ -1459,10 +1550,11 @@ export const TerminalPane = memo(function TerminalPane({
       dCursor.dispose();
       dRender.dispose();
       dScroll.dispose();
-      if (sessionRef.current) {
-        if (isSerial) bridge.closeSerial(sessionRef.current);
-        else if (isLocal) bridge.closeLocalPty(sessionRef.current);
-        else bridge.disconnect(sessionRef.current);
+      // Only close serial ports on component unmount; SSH and local PTY sessions
+      // stay alive in the Rust backend across WebView/layout remounts and are
+      // explicitly closed when the user closes the pane/tab or locks the vault.
+      if (isSerial && sessionRef.current) {
+        bridge.closeSerial(sessionRef.current);
       }
       sessionRef.current = null;
       registry.delete(pane.id);
@@ -1483,8 +1575,16 @@ export const TerminalPane = memo(function TerminalPane({
     if (!mobile || !active) return;
     let timer = 0;
     const fit = () => {
+      if (document.visibilityState === 'hidden') return;
       clearTimeout(timer);
-      timer = window.setTimeout(() => { try { if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit(); } catch { /* hidden */ } }, 100);
+      timer = window.setTimeout(() => {
+        if (document.visibilityState === 'hidden') return;
+        try {
+          if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
+        } catch {
+          /* hidden */
+        }
+      }, 100);
     };
     fit();
     window.visualViewport?.addEventListener('resize', fit);

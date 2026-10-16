@@ -26,14 +26,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{ipc::Channel as IpcChannel, AppHandle, Manager, State};
 
-/// Shell hook injected at login: emits OSC-7 (`ESC ] 7 ; file://host/cwd BEL`)
+/// Shell hook prefix injected at login: emits OSC-7 (`ESC ] 7 ; file://host/cwd BEL`)
 /// on every prompt so we can snapshot the working directory. Idempotent and
-/// prefixed with a space so it stays out of shell history (HISTCONTROL=ignorespace).
-const OSC7_HOOK: &str = concat!(
+/// prefixed with a space so it stays out of shell history (`HISTCONTROL=ignorespace`).
+/// Does NOT run `clear` so existing terminal scrollback is never wiped.
+const OSC7_HOOK_PREFIX: &str = concat!(
     " __nx_osc7(){ printf '\\033]7;file://%s%s\\007' \"${HOSTNAME:-$(hostname)}\" \"$PWD\"; };",
     " case \"$PROMPT_COMMAND\" in *__nx_osc7*) ;; *) PROMPT_COMMAND=\"__nx_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\";; esac;",
-    " [ -n \"$ZSH_VERSION\" ] && precmd_functions+=(__nx_osc7); clear\n"
+    " [ -n \"$ZSH_VERSION\" ] && precmd_functions+=(__nx_osc7);"
 );
+
+/// Maximum per-session scrollback retained in Rust memory (256 KiB) so a WebView
+/// reload or Android Activity recreation can re-attach without losing output.
+const MAX_SCROLLBACK_BYTES: usize = 256 * 1024;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -81,6 +86,98 @@ struct SessionHandle {
     tx: SyncSender<Cmd>,
     info: SessionInfo,
     stop: Arc<AtomicBool>,
+    events: Arc<Mutex<IpcChannel<SshEvent>>>,
+    scrollback: Arc<Mutex<Vec<u8>>>,
+    cwd: Arc<Mutex<String>>,
+    fingerprint: String,
+    banner: Option<String>,
+    os: Option<String>,
+    _bg_guard: BackgroundSessionGuard,
+}
+
+static ACTIVE_BG_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(target_os = "android")]
+pub fn load_android_app_class<'a>(
+    env: &mut jni::JNIEnv<'a>,
+    app_ctx: &jni::objects::JObject<'a>,
+    class_dot_name: &str,
+) -> Option<jni::objects::JClass<'a>> {
+    let class_loader = env
+        .call_method(app_ctx, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let class_name = env.new_string(class_dot_name).ok()?;
+    let cls_obj = env
+        .call_method(
+            &class_loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[(&class_name).into()],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    Some(jni::objects::JClass::from(cls_obj))
+}
+
+fn notify_android_session_count(count: usize) {
+    #[cfg(target_os = "android")]
+    {
+        let ctx = ndk_context::android_context();
+        if !ctx.vm().is_null() && !ctx.context().is_null() {
+            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
+                if let Ok(mut env) = vm.attach_current_thread() {
+                    let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+                        jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+                    });
+                    if let Some(cls) = load_android_app_class(
+                        &mut env,
+                        &*app_ctx,
+                        "dev.nexusterminal.app.SessionForegroundService",
+                    ) {
+                        let _ = env.call_static_method(
+                            &cls,
+                            "updateActiveSessions",
+                            "(Landroid/content/Context;I)V",
+                            &[
+                                (&*app_ctx).into(),
+                                jni::objects::JValue::Int(count as i32),
+                            ],
+                        );
+                    }
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = count;
+    }
+}
+
+/// RAII guard that keeps the Android Foreground Service, `PARTIAL_WAKE_LOCK`, and
+/// `WifiLock` active while at least one SSH, SFTP, Local PTY, or Tunnel session is alive.
+pub struct BackgroundSessionGuard(());
+
+impl BackgroundSessionGuard {
+    pub fn acquire() -> Self {
+        let count = ACTIVE_BG_SESSIONS.fetch_add(1, Ordering::SeqCst) + 1;
+        notify_android_session_count(count);
+        Self(())
+    }
+}
+
+impl Drop for BackgroundSessionGuard {
+    fn drop(&mut self) {
+        let prev = ACTIVE_BG_SESSIONS.fetch_sub(1, Ordering::SeqCst);
+        let count = prev.saturating_sub(1);
+        notify_android_session_count(count);
+    }
 }
 
 #[derive(Default)]
@@ -190,6 +287,27 @@ fn detect_remote_os(sess: &Session, banner: Option<&str>) -> Option<String> {
 
 const MAX_JUMP_DEPTH: usize = 8;
 
+/// Enable `TCP_NODELAY` and OS-level `SO_KEEPALIVE` (45s idle, 15s interval, 10 retries)
+/// so the kernel TCP stack maintains NAT state and survives mobile radio transitions
+/// without relying on libssh2's non-blocking user-space keepalive_send.
+pub fn configure_tcp_stream(tcp: &TcpStream) -> std::io::Result<()> {
+    tcp.set_nodelay(true)?;
+    let sock = socket2::SockRef::from(tcp);
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(45))
+        .with_interval(Duration::from_secs(15));
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd"
+    ))]
+    let ka = ka.with_retries(10);
+    let _ = sock.set_tcp_keepalive(&ka);
+    Ok(())
+}
+
 /// TCP connect → handshake → host-key verification (TOFU) → authentication.
 /// Returns a *blocking* authenticated session.
 pub fn open_authenticated(
@@ -271,7 +389,7 @@ fn open_authenticated_inner(
         // Connect local TcpStream to the forwarded loopback port
         match TcpStream::connect_timeout(&local_addr, Duration::from_secs(10)) {
             Ok(s) => {
-                s.set_nodelay(true)?;
+                configure_tcp_stream(&s)?;
                 s
             }
             Err(e) => {
@@ -289,7 +407,7 @@ fn open_authenticated_inner(
 
         let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
             .map_err(|e| AppError::Network(format!("{addr}: {e}")))?;
-        tcp.set_nodelay(true)?;
+        configure_tcp_stream(&tcp)?;
         tcp
     };
 
@@ -478,11 +596,20 @@ pub fn ssh_connect(
         let _ = vault.set_host_os(&host.id, os_id);
     }
 
+    let initial_size = (req.cols, req.rows);
     let mut channel = sess.channel_session()?;
     channel.request_pty("xterm-256color", None, Some((req.cols, req.rows, 0, 0)))?;
     channel.handle_extended_data(ExtendedData::Merge)?; // stderr → same stream
     channel.shell()?;
-    sess.set_keepalive(true, 15);
+    // CRITICAL: Disable libssh2's user-space keepalive_send (`keepalive.c:74`).
+    // In libssh2, `libssh2_keepalive_send` passes a stack-allocated `keepalive_data[]` buffer
+    // to `_libssh2_transport_send`. If the non-blocking socket returns EAGAIN, libssh2 saves
+    // the dangling stack pointer in `session->packet.odata` (`transport.c:1296`) and ignores
+    // EAGAIN, causing all subsequent writes (`send_existing` at `transport.c:919`) to fail
+    // with "Address is different, returning EAGAIN".
+    // Dead-peer detection and NAT keepalive are handled at the kernel TCP layer via
+    // `configure_tcp_stream` (`SO_KEEPALIVE`).
+    sess.set_keepalive(false, 0);
     sess.set_blocking(false);
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -490,20 +617,42 @@ pub fn ssh_connect(
     let stop = Arc::new(AtomicBool::new(false));
 
     // Login bootstrap: OSC-7 hook + optional resume of snapshotted cwd.
-    let mut init = String::from(OSC7_HOOK);
+    // Never run `clear` here (`clear` sends ESC[3J which wipes the user's scrollback!).
+    let mut init = String::from(OSC7_HOOK_PREFIX);
+    let mut initial_cwd = String::from("~");
     if req.resume {
         if let Some(snap) = snaps.get(&host.id).or_else(|| vault.load_snapshot(&host.id).ok().flatten()) {
-            init.push_str(&format!(" cd {} 2>/dev/null; clear\n", cd_path_quote(&snap.cwd)));
+            initial_cwd = snap.cwd.clone();
+            init.push_str(&format!(" cd {} 2>/dev/null;", cd_path_quote(&snap.cwd)));
         }
     }
+    init.push_str(" __nx_boot_done=1\n");
     let _ = tx.try_send(Cmd::Write(init.into_bytes()));
+
+    let events_shared = Arc::new(Mutex::new(on_event.clone()));
+    let scrollback = Arc::new(Mutex::new(Vec::with_capacity(16 * 1024)));
+    let cwd_shared = Arc::new(Mutex::new(initial_cwd));
 
     let info = SessionInfo {
         session_id: session_id.clone(),
         host_id: host.id.clone(),
         started_at: chrono::Utc::now().timestamp(),
     };
-    mgr.sessions.lock().insert(session_id.clone(), SessionHandle { tx, info, stop: stop.clone() });
+    mgr.sessions.lock().insert(
+        session_id.clone(),
+        SessionHandle {
+            tx,
+            info,
+            stop: stop.clone(),
+            events: events_shared.clone(),
+            scrollback: scrollback.clone(),
+            cwd: cwd_shared.clone(),
+            fingerprint: fingerprint.clone(),
+            banner: banner.clone(),
+            os: os.clone(),
+            _bg_guard: BackgroundSessionGuard::acquire(),
+        },
+    );
 
     let _ = vault.log_start(&session_id, Some(&host.id), &host.label, &host.username, &host.hostname);
 
@@ -518,12 +667,25 @@ pub fn ssh_connect(
     let snaps = snaps.inner().clone();
     let host_id = host.id.clone();
     let stop_thread = stop.clone();
+    let events_for_thread = events_shared.clone();
     if let Err(e) = thread::Builder::new()
         .name(format!("ssh-io-{}", &sid[..8]))
         .spawn(move || {
-            let (reason, resumable) = io_loop(sess, channel, rx, &on_event, &snaps, &host_id, &sid, stop_thread);
+            let (reason, resumable) = io_loop(
+                sess,
+                channel,
+                rx,
+                &events_for_thread,
+                &scrollback,
+                &cwd_shared,
+                &snaps,
+                &host_id,
+                &sid,
+                stop_thread,
+                initial_size,
+            );
             let _ = app.state::<Vault>().log_end(&sid, &reason);
-            let _ = on_event.send(SshEvent::Disconnected { reason, resumable });
+            let _ = events_for_thread.lock().send(SshEvent::Disconnected { reason, resumable });
             app.state::<SshManager>().sessions.lock().remove(&sid);
             app.state::<crate::sftp::SftpManager>().close(&sid);
         })
@@ -534,6 +696,47 @@ pub fn ssh_connect(
     }
 
     Ok(session_id)
+}
+
+/// Re-attach a remounted `TerminalPane` (e.g. after an Android Activity/WebView
+/// recreation or tab switch) to an already-running SSH session in `SshManager`.
+/// Swaps in the new `on_event` channel and replays the retained scrollback buffer.
+#[tauri::command]
+pub fn ssh_attach(
+    session_id: String,
+    cols: u32,
+    rows: u32,
+    on_event: IpcChannel<SshEvent>,
+    mgr: State<'_, SshManager>,
+) -> AppResult<bool> {
+    let guard = mgr.sessions.lock();
+    let Some(h) = guard.get(&session_id) else {
+        return Ok(false);
+    };
+    if h.stop.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    *h.events.lock() = on_event.clone();
+    let _ = on_event.send(SshEvent::Connected {
+        session_id: session_id.clone(),
+        fingerprint: h.fingerprint.clone(),
+        banner: h.banner.clone(),
+        os: h.os.clone(),
+    });
+    let cwd = h.cwd.lock().clone();
+    if !cwd.is_empty() {
+        let _ = on_event.send(SshEvent::Cwd { path: cwd });
+    }
+    let sb = h.scrollback.lock().clone();
+    if !sb.is_empty() {
+        let _ = on_event.send(SshEvent::Output {
+            b64: B64.encode(&sb),
+        });
+    }
+    if cols > 0 && rows > 0 {
+        let _ = h.tx.try_send(Cmd::Resize(cols, rows));
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -587,20 +790,131 @@ fn write_all_nb(ch: &mut Channel, mut data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Complete a non-blocking PTY resize request, retrying on `LIBSSH2_ERROR_EAGAIN` (-37).
+///
+/// In libssh2 (`channel.c:1066` / `transport.c:1296`), `_libssh2_channel_request_pty_size`
+/// stores `channel->reqPTY_state = libssh2_NB_state_created` and `session->packet.odata =
+/// channel->reqPTY_packet` if `_libssh2_transport_send` returns `EAGAIN`. Ignoring `EAGAIN`
+/// leaves `session->packet.total_num > 0` pointing at `reqPTY_packet`, causing subsequent
+/// writes (`send_existing` at `transport.c:919`) to fail with "Address is different" (`EAGAIN`).
+fn request_pty_size_nb(ch: &mut Channel, cols: u32, rows: u32) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match ch.request_pty_size(cols, rows, None, None) {
+            Ok(()) => return Ok(()),
+            Err(e) if ssh2_would_block(&e) => {
+                if Instant::now() > deadline {
+                    return Err(ErrorKind::TimedOut.into());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(std::io::Error::new(ErrorKind::Other, e.to_string())),
+        }
+    }
+}
+
+/// Strips the echoed `__nx_osc7(){ ... __nx_boot_done=1` login bootstrap line from early
+/// PTY output so we don't need to execute `clear` (which would send `ESC[3J` and wipe
+/// the terminal scrollback buffer).
+#[derive(Default)]
+struct BootstrapEchoFilter {
+    done: bool,
+    suppressing: bool,
+    carry: Vec<u8>,
+}
+
+impl BootstrapEchoFilter {
+    fn filter(&mut self, input: &[u8]) -> Vec<u8> {
+        if self.done {
+            return input.to_vec();
+        }
+        self.carry.extend_from_slice(input);
+        let mut out = Vec::with_capacity(self.carry.len());
+
+        loop {
+            if !self.suppressing {
+                if let Some(pos) = find_subslice(&self.carry, b"__nx_osc7(){") {
+                    // Also drop a single leading space if present right before `__nx_osc7(){`
+                    let keep_end = if pos > 0 && self.carry[pos - 1] == b' ' {
+                        pos - 1
+                    } else {
+                        pos
+                    };
+                    out.extend_from_slice(&self.carry[..keep_end]);
+                    self.carry.drain(..pos);
+                    self.suppressing = true;
+                } else {
+                    // Keep a small tail in case `__nx_osc7(){` straddles two read chunks
+                    if self.carry.len() > 16 {
+                        let flush_len = self.carry.len() - 16;
+                        out.extend_from_slice(&self.carry[..flush_len]);
+                        self.carry.drain(..flush_len);
+                    }
+                    break;
+                }
+            }
+
+            if self.suppressing {
+                if let Some(end_pos) = find_subslice(&self.carry, b"__nx_boot_done=1") {
+                    let mut drain_to = end_pos + b"__nx_boot_done=1".len();
+                    while drain_to < self.carry.len()
+                        && (self.carry[drain_to] == b'\r' || self.carry[drain_to] == b'\n')
+                    {
+                        drain_to += 1;
+                    }
+                    self.carry.drain(..drain_to);
+                    self.suppressing = false;
+                    self.done = true;
+                    out.extend_from_slice(&self.carry);
+                    self.carry.clear();
+                    break;
+                } else {
+                    // Wait for the end marker (cap carry to avoid unbounded growth)
+                    if self.carry.len() > 4096 {
+                        self.carry.clear();
+                        self.suppressing = false;
+                        self.done = true;
+                    }
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    fn flush_remaining(&mut self) -> Vec<u8> {
+        self.done = true;
+        self.suppressing = false;
+        std::mem::take(&mut self.carry)
+    }
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 fn io_loop(
-    sess: Session,
+    _sess: Session,
     mut ch: Channel,
     rx: Receiver<Cmd>,
-    events: &IpcChannel<SshEvent>,
+    events: &Arc<Mutex<IpcChannel<SshEvent>>>,
+    scrollback: &Arc<Mutex<Vec<u8>>>,
+    cwd_state: &Arc<Mutex<String>>,
     snaps: &SnapshotStore,
     host_id: &str,
     session_id: &str,
     stop: Arc<AtomicBool>,
+    initial_size: (u32, u32),
 ) -> (String, bool) {
     let mut buf = vec![0u8; 64 * 1024];
     let mut osc = Osc7Parser::default();
+    let mut boot_filter = BootstrapEchoFilter::default();
+    let boot_deadline = Instant::now() + Duration::from_secs(6);
     let mut line = String::new();
-    let mut next_keepalive = Instant::now() + Duration::from_secs(15);
+    let mut last_size = initial_size;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -609,7 +923,25 @@ fn io_loop(
             return ("closed by user".into(), false);
         }
 
+        if !boot_filter.done && Instant::now() > boot_deadline {
+            let rem = boot_filter.flush_remaining();
+            if !rem.is_empty() {
+                {
+                    let mut sb = scrollback.lock();
+                    sb.extend_from_slice(&rem);
+                    if sb.len() > MAX_SCROLLBACK_BYTES {
+                        let excess = sb.len() - MAX_SCROLLBACK_BYTES;
+                        sb.drain(0..excess);
+                    }
+                }
+                let _ = events.lock().send(SshEvent::Output {
+                    b64: B64.encode(&rem),
+                });
+            }
+        }
+
         let mut idle = true;
+        let mut pending_resize: Option<(u32, u32)> = None;
 
         // 1. Drain UI commands (capped per tick to prevent starvation).
         for _ in 0..32 {
@@ -622,7 +954,9 @@ fn io_loop(
                     }
                 }
                 Ok(Cmd::Resize(c, r)) => {
-                    let _ = ch.request_pty_size(c, r, None, None);
+                    if c > 0 && r > 0 {
+                        pending_resize = Some((c, r));
+                    }
                 }
                 Ok(Cmd::Close) | Err(TryRecvError::Disconnected) => {
                     let _ = ch.send_eof();
@@ -630,6 +964,16 @@ fn io_loop(
                     return ("closed by user".into(), false);
                 }
                 Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        if let Some((c, r)) = pending_resize {
+            if (c, r) != last_size {
+                idle = false;
+                if let Err(e) = request_pty_size_nb(&mut ch, c, r) {
+                    return (format!("resize failed: {e}"), true);
+                }
+                last_size = (c, r);
             }
         }
 
@@ -646,25 +990,29 @@ fn io_loop(
                 let chunk = &buf[..n];
                 if let Some(cwd) = osc.feed(chunk) {
                     snaps.record_cwd(host_id, session_id, &cwd);
-                    let _ = events.send(SshEvent::Cwd { path: cwd });
+                    *cwd_state.lock() = cwd.clone();
+                    let _ = events.lock().send(SshEvent::Cwd { path: cwd });
                 }
-                if events.send(SshEvent::Output { b64: B64.encode(chunk) }).is_err() {
-                    // Frontend went away (window closed / reload) — tear down.
-                    let _ = ch.close();
-                    return ("frontend detached".into(), true);
+                let cleaned = boot_filter.filter(chunk);
+                if !cleaned.is_empty() {
+                    {
+                        let mut sb = scrollback.lock();
+                        sb.extend_from_slice(&cleaned);
+                        if sb.len() > MAX_SCROLLBACK_BYTES {
+                            let excess = sb.len() - MAX_SCROLLBACK_BYTES;
+                            sb.drain(0..excess);
+                        }
+                    }
+                    // Best-effort delivery to the currently attached WebView channel.
+                    // Never close the SSH channel if the WebView is temporarily detached
+                    // or recreating — the session stays alive in Rust and re-attaches via `ssh_attach`.
+                    let _ = events.lock().send(SshEvent::Output {
+                        b64: B64.encode(&cleaned),
+                    });
                 }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {}
             Err(e) => return (format!("connection lost: {e}"), true),
-        }
-
-        // 3. Keep-alive → detects silently dropped links (Wi-Fi switch, NAT timeout).
-        if Instant::now() >= next_keepalive {
-            match sess.keepalive_send() {
-                Ok(secs) => next_keepalive = Instant::now() + Duration::from_secs(secs.max(5) as u64),
-                Err(e) if e.code() == ssh2::ErrorCode::Session(-37) => {} // EAGAIN
-                Err(e) => return (format!("keep-alive failed: {e}"), true),
-            }
         }
 
         if idle {
