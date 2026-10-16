@@ -484,11 +484,11 @@ Generated: ${new Date().toISOString()}
 
         <form
           onSubmit={submit}
-          className="nx-rise relative w-full overflow-hidden max-md:border-0 max-md:bg-transparent max-md:shadow-none max-md:p-0 md:rounded-3xl md:border md:border-white/10 md:bg-white/[0.03] md:p-8 md:shadow-2xl md:backdrop-blur-xl"
+          className="nx-rise relative w-full max-md:overflow-visible overflow-hidden max-md:border-0 max-md:bg-transparent max-md:shadow-none max-md:p-0 md:rounded-3xl md:border md:border-white/10 md:bg-white/[0.03] md:p-8 md:shadow-2xl md:backdrop-blur-xl"
         >
-          {/* Top ambient radial glow */}
+          {/* Top ambient radial glow (desktop card only) */}
           <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-44 opacity-25"
+            className="pointer-events-none absolute inset-x-0 top-0 h-44 opacity-25 max-md:hidden"
             style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
           />
 
