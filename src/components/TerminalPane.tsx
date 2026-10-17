@@ -1541,6 +1541,18 @@ export const TerminalPane = memo(function TerminalPane({
       onDataRef.current?.(data);
     });
 
+    const dBinary = term.onBinary((data) => {
+      const sid = sessionRef.current;
+      if (!sid) return;
+      if (isSerial) {
+        bridge.writeSerial(sid, data).catch((err) => console.error('Serial write failed:', err));
+      } else if (isLocal) {
+        bridge.writeLocalPty(sid, data).catch((err) => console.error('Local PTY write failed:', err));
+      } else {
+        bridge.write(sid, data).catch((err) => console.error('SSH write failed:', err));
+      }
+    });
+
     // Copy on selection mouseup (Termius convenience & Clipboard history)
     // Copies once on mouse release to prevent thrashing clipboard & flooding DB on every drag event (fixes H8)
     const handleMouseUpCopy = () => {
@@ -1632,6 +1644,7 @@ export const TerminalPane = memo(function TerminalPane({
       dCursor.dispose();
       dRender.dispose();
       dScroll.dispose();
+      dBinary.dispose();
       // Only close serial ports on component unmount; SSH and local PTY sessions
       // stay alive in the Rust backend across WebView/layout remounts and are
       // explicitly closed when the user closes the pane/tab or locks the vault.

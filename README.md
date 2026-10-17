@@ -43,7 +43,7 @@ Pre-built binaries for **v0.1.0-beta.1 (Public Beta)**:
 
 | Platform | Format | Architecture | Direct Download | Notes |
 |:---|:---|:---|:---|:---|
-| **Android** | `.apk` | Universal (ARM64, ARMv7, x86_64) | [**Download APK**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-universal.apk) *(17.4 MB)* | Install directly on phone or tablet |
+| **Android** | `.apk` | Universal (ARM64, ARMv7, x86_64) | [**Download APK**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-universal.apk) *(62.7 MB)* | Install directly on phone or tablet |
 | **Windows** | `.exe` (Setup) | x86_64 | [**Download Setup.exe**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64-setup.exe) *(5.56 MB)* | Standard installer ([.msi](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64_en-US.msi) *(7.23 MB)*) |
 | **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) | [**Download DMG (Apple Silicon)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_aarch64.dmg) *(8.21 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_aarch64.app.tar.gz)) |
 | **macOS** | `.dmg` | Intel (x86_64) | [**Download DMG (Intel)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64.dmg) *(8.20 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_x64.app.tar.gz)) |
