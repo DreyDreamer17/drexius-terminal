@@ -279,3 +279,26 @@ later (`GPL-3.0-or-later`)**. See [LICENSE](./LICENSE) for full details.
 artwork are proprietary trademarks of the author and are **not** licensed under the GPLv3.
 You may not distribute modified or unmodified builds of this software using the Drexius
 name, branding, or official logos without explicit written permission.
+
+---
+
+## Acknowledgements
+
+Drexius Terminal is built on the shoulders of incredible open-source projects:
+
+- **[OpenCode](https://github.com/opencode-ai/opencode)** (MIT) — Embedded AI coding assistant and agentic primitives.
+- **[xterm.js](https://xtermjs.org/)** (MIT) — High-performance terminal rendering engine.
+- **[Tauri](https://tauri.app/)** (MIT / Apache-2.0) — Lightweight, secure native desktop and mobile application framework.
+- **[SQLCipher](https://www.zetetic.net/sqlcipher/)** (BSD) — Transparent AES-256 encrypted database engine.
+- **[Tailscale](https://tailscale.com)** — Secure mesh networking and node discovery integration.
+
+*Tailscale is a registered trademark of Tailscale Inc. All other product names and trademarks are property of their respective owners.*
+
+---
+
+<div align="center">
+
+⭐ **Enjoying Drexius Terminal?** Give us a star on [GitHub](https://github.com/DreyDreamer17/drexius-terminal) — it helps the project grow!
+
+</div>
+
