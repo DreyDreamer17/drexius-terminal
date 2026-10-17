@@ -10,12 +10,20 @@ Terminals, SSH & SFTP, serial ports, tunnels, an encrypted SQLCipher vault, and 
 multi-provider AI copilot — on your desktop, on your phone, and entirely under your control.
 
 [![Tests](https://img.shields.io/badge/tests-passing-3DDC84?logo=rust&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal)
+[![Release](https://img.shields.io/badge/release-v0.1.0--beta.1-238636?logo=github&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](./LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
 ![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-007ACC?logo=linux&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-Supported-3DDC84?logo=android&logoColor=white)
+
+<p align="center">
+  <a href="#downloads"><b>📥 Direct Downloads</b></a> &nbsp;•&nbsp;
+  <a href="#try-it-in-60-seconds">⚡ Browser Preview</a> &nbsp;•&nbsp;
+  <a href="#screenshots">📸 Screenshots</a> &nbsp;•&nbsp;
+  <a href="#documentation">📖 Documentation</a>
+</p>
 
 </div>
 
@@ -26,6 +34,22 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 <p align="center"><sub>
   Every screenshot below is the real application, captured from the browser-preview build.
 </sub></p>
+
+---
+
+## Downloads
+
+Pre-built binaries for **v0.1.0-beta.1 (Public Beta)**:
+
+| Platform | Format | Architecture | Direct Download | Notes |
+|:---|:---|:---|:---|:---|
+| **Android** | `.apk` | Universal (ARM64, ARMv7, x86_64) | [**Download APK**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-universal.apk) *(17.4 MB)* | Install directly on phone or tablet |
+| **Linux** | `.AppImage` | x86_64 | [**Download AppImage**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.AppImage) *(107 MB)* | Standalone executable (`chmod +x`) |
+| **Linux** | `.deb` | amd64 | [**Download .deb**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-amd64.deb) *(7.6 MB)* | Debian, Ubuntu, Linux Mint |
+| **Linux** | `.rpm` | x86_64 | [**Download .rpm**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.rpm) *(7.6 MB)* | Fedora, RHEL, openSUSE |
+| **Windows & macOS** | Native packages | x86_64 / ARM64 | *In progress (coming in the next beta update)* | [Build from source](#building-from-source) available |
+
+> Checksums and release notes are available on the [GitHub Releases](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1) page. Verify integrity with [SHA256SUMS.txt](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/SHA256SUMS.txt).
 
 ---
 
