@@ -156,10 +156,33 @@ async function captureDesktop(browser) {
     await page.waitForTimeout(1200);
   });
 
-  // 6. terminal
+  // 6. terminal with multi-pane split
   await step('terminal', async () => {
     await page.getByRole('button', { name: /Open Local Terminal/i }).click();
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
+
+    // Command in first pane
+    await page.keyboard.type('neofetch');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+
+    // Split vertical to demonstrate multi-pane layout
+    const splitBtn = page.locator('[title^="Split vertical"]').first();
+    if ((await splitBtn.count()) > 0) {
+      await splitBtn.click();
+      await page.waitForTimeout(800);
+      const opt = page.locator('.fixed.z-50 button').first();
+      if ((await opt.count()) > 0) {
+        await opt.click();
+        await page.waitForTimeout(3000);
+      }
+    }
+
+    // Command in second pane
+    await page.keyboard.type('docker ps');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1500);
+
     await shot(page, 'terminal');
   });
 
