@@ -125,7 +125,7 @@ fn notify_android_session_count(count: usize) {
                     if let Some(cls) = load_android_app_class(
                         &mut env,
                         &*app_ctx,
-                        "dev.drexius.app.SessionForegroundService",
+                        "dev.drexius.terminal.SessionForegroundService",
                     ) {
                         let _ = env.call_static_method(
                             &cls,

@@ -1,4 +1,4 @@
-package dev.drexius.app
+package dev.drexius.terminal
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -44,7 +44,7 @@ class SessionForegroundService : Service() {
     const val CHANNEL_ID = "drexius_active_sessions"
     const val NOTIFICATION_ID = 48201
     const val EXTRA_SESSION_COUNT = "extra_session_count"
-    const val ACTION_STOP = "dev.drexius.app.STOP_SESSION_SERVICE"
+    const val ACTION_STOP = "dev.drexius.terminal.STOP_SESSION_SERVICE"
     private const val BACKGROUND_STOP_GRACE_MS = 120_000L
     private const val FOREGROUND_STOP_DEBOUNCE_MS = 3_000L
 
@@ -72,7 +72,7 @@ class SessionForegroundService : Service() {
 
     /**
      * Entrypoint invoked directly from Rust via JNI using `ndk_context`'s Application
-     * `Context` (`context.getClassLoader().loadClass("dev.drexius.app.SessionForegroundService")`).
+     * `Context` (`context.getClassLoader().loadClass("dev.drexius.terminal.SessionForegroundService")`).
      */
     @JvmStatic
     fun updateActiveSessions(context: Context, count: Int) {

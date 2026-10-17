@@ -1,4 +1,4 @@
-package dev.drexius.app
+package dev.drexius.terminal
 
 import android.Manifest
 import android.content.Intent

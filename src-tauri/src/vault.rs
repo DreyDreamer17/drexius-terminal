@@ -22,7 +22,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 /// Service name used when talking to the OS keychain (macOS Keychain, Windows
 /// Credential Manager, Linux Secret Service via dbus). Grouped under the
 /// DrexiusTerminal app identifier so entries are easy to audit/clean up.
-const KEYCHAIN_SERVICE: &str = "dev.drexius.app";
+const KEYCHAIN_SERVICE: &str = "dev.drexius.terminal";
 /// Username under which the master password is stored. We use a fixed,
 /// well-known entry so we can query "is there a stored password?" quickly.
 const KEYCHAIN_USER: &str = "vault-master-password";
@@ -1244,7 +1244,7 @@ pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> Ap
     if let Err(err) = std::fs::write(&target, &content) {
         #[cfg(target_os = "android")]
         {
-            let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.drexius.app/files/Download");
+            let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.drexius.terminal/files/Download");
             let _ = std::fs::create_dir_all(&fallback);
             let fallback_target = fallback.join(&fname);
             if std::fs::write(&fallback_target, &content).is_ok() {
@@ -1397,7 +1397,7 @@ pub fn check_storage_permission() -> AppResult<bool> {
                     if let Some(cls) = crate::ssh::load_android_app_class(
                         &mut env,
                         &*app_ctx,
-                        "dev.drexius.app.MainActivity",
+                        "dev.drexius.terminal.MainActivity",
                     ) {
                         if let Ok(val) = env.call_static_method(
                             &cls,
@@ -1438,7 +1438,7 @@ pub fn request_storage_permission() -> AppResult<bool> {
                     if let Some(cls) = crate::ssh::load_android_app_class(
                         &mut env,
                         &*app_ctx,
-                        "dev.drexius.app.MainActivity",
+                        "dev.drexius.terminal.MainActivity",
                     ) {
                         let _ = env.call_static_method(
                             &cls,

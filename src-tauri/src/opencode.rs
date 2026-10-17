@@ -535,8 +535,8 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "/*/.netrc": "deny",
             "/*/.git-credentials": "deny",
             "/*/*/drexius.vault*": "deny",
-            "/*/dev.drexius.app/*": "deny",
-            "~/.local/share/dev.drexius.app/*": "deny"
+            "/*/dev.drexius.terminal/*": "deny",
+            "~/.local/share/dev.drexius.terminal/*": "deny"
         },
         "bash": {
             "*": "__BASH_FALLBACK__",

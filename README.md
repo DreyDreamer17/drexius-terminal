@@ -97,6 +97,6 @@ For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.m
 
 **Drexius Terminal** source code is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [LICENSE](./LICENSE) for full details.
 
-**Trademarks & Branding:** The name "Drexius Terminal", the "Drexius" mark, the `dev.drexius.app` application identifier, and official Drexius Terminal logos and artwork are proprietary trademarks of the author and are **not** licensed under the GPLv3. You may not distribute modified or unmodified builds of this software using the Drexius name, branding, or official logos without explicit written permission.
+**Trademarks & Branding:** The name "Drexius Terminal", the "Drexius" mark, the `dev.drexius.terminal` application identifier, and official Drexius Terminal logos and artwork are proprietary trademarks of the author and are **not** licensed under the GPLv3. You may not distribute modified or unmodified builds of this software using the Drexius name, branding, or official logos without explicit written permission.
 
 

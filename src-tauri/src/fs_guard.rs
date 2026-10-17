@@ -49,7 +49,7 @@ fn is_sensitive_path(p: &Path) -> bool {
                 return true;
             }
             // The Tauri application data directory (stores the vault).
-            if name == "dev.drexius.app" {
+            if name == "dev.drexius.terminal" {
                 return true;
             }
         }
@@ -71,8 +71,8 @@ fn approved_roots() -> Vec<PathBuf> {
     {
         roots.push(PathBuf::from("/storage"));
         roots.push(PathBuf::from("/sdcard"));
-        roots.push(PathBuf::from("/data/user/0/dev.drexius.app"));
-        roots.push(PathBuf::from("/data/data/dev.drexius.app"));
+        roots.push(PathBuf::from("/data/user/0/dev.drexius.terminal"));
+        roots.push(PathBuf::from("/data/data/dev.drexius.terminal"));
     }
     if std::path::Path::new("/storage/emulated/0").exists() {
         roots.push(PathBuf::from("/storage"));
