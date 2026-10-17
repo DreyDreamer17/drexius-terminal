@@ -46,7 +46,9 @@ drexiusterminal/
         ├── ssh_config.rs               # SSH config preview/import
         ├── fs_guard.rs                 # Filesystem access guardrails
         ├── serial.rs                   # Hardware serial port connections (UART) via serialport
-        └── opencode.rs                 # OpenCode runner: isolated scratch workspace, streaming, security filters
+        ├── opencode.rs                 # OpenCode runner: isolated scratch workspace, streaming, security filters
+        ├── tailscale.rs                # Tailscale tailnet discovery (CLI or REST API) → import hosts
+        └── docker.rs                   # Container listing / lifecycle / logs, locally or over SSH
 ```
 
 ## 1. Trust boundaries
@@ -196,9 +198,36 @@ ai_client::ai_stream_proxy
 * **OpenCode CLI (`opencode.rs`):** runs a local or remote `opencode` binary; remote execution uses an SSH exec channel streaming JSON events and falls back to local execution if OpenCode is unavailable on the host. Local runs use `~/DrexiusTerminal/ai-workspace`. Tool permissions are deny-by-default: read-only and autonomous modes differ in which actions they allow/ask for; sensitive paths and dangerous shell patterns are denied. This is policy-based filtering, not a sandbox or a guarantee against every shell escape.
 * **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
+## 7. Tailscale & Docker
+
+* **Tailscale (`tailscale.rs`):** discovers the tailnet two ways. `tailscale_detect_cli` shells out
+  to the local `tailscale status --json` (5 s timeout, absent on Android, where it returns `None`),
+  and `tailscale_fetch_api` calls the Tailscale REST API with an API Access Token. Devices can then
+  be imported as host profiles with `tailscale_import`, which skips any host whose label or
+  hostname already exists in the target vault.
+
+  The API token is stored in the encrypted vault (`ai_settings`) and is **returned to the WebView
+  in the clear** by `tailscale_get_credentials`, because the panel needs it to prefill the field and
+  to refresh the device list. That is consistent with §1 — the token was typed into the WebView in
+  the first place — but it is not the masking treatment `ai_configs_list` applies to provider keys.
+  In browser demo mode the token is kept in `localStorage` in plain text, which the demo sandbox
+  already documents as not being a security boundary.
+* **Docker (`docker.rs`):** lists containers (`docker ps -a --no-trunc --format '{{json .}}'`) and
+  runs lifecycle actions (`start`/`stop`/`restart`/`pause`/`unpause`, allowlisted) plus
+  `docker logs --tail N`. The target is either the local machine — `sh -c`, via the local terminal
+  path — or a saved SSH host, in which case the command runs over an SSH exec channel using the
+  vault's stored credentials.
+
+  Commands are assembled by string interpolation, so the container id is reduced to
+  `[A-Za-z0-9_-]` and the action is checked against the allowlist before it reaches the shell.
+  The remote path inherits the host-key TOFU of §2, because it authenticates through
+  `ssh::open_authenticated`.
+
 **Build/config notes and known limitations**
 
-* The npm package name is still `react-vite-tailwind` (a project scaffold label), not the desktop product name. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
+* The npm package name and license now match the product (`drexius-terminal`, `GPL-3.0-or-later`) in both `package.json` and `package-lock.json`; the lockfile previously still carried the `react-vite-tailwind` scaffold metadata. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
 * On Windows, local PTYs launch `%COMSPEC%` when set (normally `cmd.exe`), falling back to `powershell.exe` only if that variable is absent. Do not assume PowerShell is the default.
 * The AI relay verifies configured provider origins before attaching pooled credentials. Requests without a matching provider carry no pooled keys. The WebView CSP is broader (see §1).
+* The AI relay's public-destination policy pins the connection to the addresses it validated, so a name cannot be re-resolved to a private address between the check and the connect. The pin covers the direct connector and SOCKS5 proxies that resolve locally (`socks5://`); a proxy that resolves the name itself (an HTTP proxy, or `socks5h://`) does the lookup on the far side, where the client cannot constrain it.
+* The master-password policy is asymmetric on purpose: *choosing* a password (creating a vault, or setting one through recovery) requires 8+ characters, while *unlocking* an existing vault keeps a 4-character floor so a vault created under an older, weaker build can never be locked out by an upgrade. The lock screen enforces the same split.
 * Secret redaction is pattern-based and can miss unusual formats. Self-hosted relay sync is not a replacement for independent backups (see §4).

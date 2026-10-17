@@ -27,6 +27,24 @@ const KEYCHAIN_SERVICE: &str = "dev.drexius.terminal";
 /// well-known entry so we can query "is there a stored password?" quickly.
 const KEYCHAIN_USER: &str = "vault-master-password";
 
+/// Minimum length accepted when *unlocking* an existing vault.
+///
+/// This is deliberately permissive: it must stay low enough that a vault
+/// created by an older build (which only required four characters) can never
+/// be locked out of by an upgrade. It is a sanity floor, not a security
+/// control.
+const MIN_UNLOCK_PASSWORD_CHARS: usize = 4;
+
+/// Minimum length accepted when *choosing* a new master password — that is,
+/// when creating a brand-new vault or when setting a new password through
+/// recovery/rekey.
+///
+/// The lock screen already enforces this for new vaults ("Use at least 8
+/// characters (12+ recommended)"); mirroring it here means the rule cannot
+/// be bypassed by calling the IPC command directly. Argon2id makes each
+/// guess expensive, but it does nothing for a four-character password.
+const MIN_NEW_PASSWORD_CHARS: usize = 8;
+
 fn keychain_entry() -> AppResult<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
         .map_err(|e| AppError::Other(format!("OS keychain unavailable: {e}")))
@@ -735,6 +753,16 @@ impl Vault {
     }
 
     pub fn unlock(&self, master_password: &str) -> AppResult<Option<String>> {
+        // Choosing the master password for a *new* vault is a different act
+        // from unlocking an existing one, and only the former gets the strong
+        // length policy. The vault database not existing is exactly the
+        // distinction the lock screen draws (`initialized === false`), so an
+        // existing vault can never be locked out by this check.
+        if !self.path.exists() && master_password.chars().count() < MIN_NEW_PASSWORD_CHARS {
+            return Err(AppError::Other(format!(
+                "Master password must be at least {MIN_NEW_PASSWORD_CHARS} characters"
+            )));
+        }
         let salt = match std::fs::read(self.salt_path()) {
             Ok(s) if s.len() == 16 => s,
             Ok(s) => return Err(AppError::Crypto(format!("vault salt file is corrupt ({} bytes, expected 16)", s.len()))),
@@ -826,6 +854,14 @@ impl Vault {
     }
 
     pub fn recover_and_rekey(&self, recovery_code: &str, new_password: &str) -> AppResult<String> {
+        // Defense in depth: the `vault_recover` command checks this too, but
+        // the method is the real gate — it is where the new password is
+        // actually turned into a key.
+        if new_password.chars().count() < MIN_NEW_PASSWORD_CHARS {
+            return Err(AppError::Other(format!(
+                "New master password must be at least {MIN_NEW_PASSWORD_CHARS} characters"
+            )));
+        }
         let db_key = self.decrypt_recovery_envelope(recovery_code)?;
         let journal = self.read_rekey_journal();
 
@@ -1141,8 +1177,14 @@ pub fn vault_status(vault: State<'_, Vault>) -> VaultStatus {
 
 #[tauri::command]
 pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> AppResult<Option<String>> {
-    if master_password.len() < 4 {
-        return Err(AppError::Other("Master password must be at least 4 characters".into()));
+    // Unlocking an existing vault keeps the permissive floor so an older
+    // four-character vault can never be bricked. The stronger policy for
+    // *choosing* a password lives in `Vault::unlock`, which knows whether
+    // this call creates the vault or opens it.
+    if master_password.chars().count() < MIN_UNLOCK_PASSWORD_CHARS {
+        return Err(AppError::Other(format!(
+            "Master password must be at least {MIN_UNLOCK_PASSWORD_CHARS} characters"
+        )));
     }
     let pw = Zeroizing::new(master_password);
     tauri::async_runtime::spawn_blocking(move || {
@@ -1159,8 +1201,10 @@ pub async fn vault_recover(
     new_password: String,
     app: tauri::AppHandle,
 ) -> AppResult<String> {
-    if new_password.len() < 4 {
-        return Err(AppError::Other("New master password must be at least 4 characters".into()));
+    if new_password.chars().count() < MIN_NEW_PASSWORD_CHARS {
+        return Err(AppError::Other(format!(
+            "New master password must be at least {MIN_NEW_PASSWORD_CHARS} characters"
+        )));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let vault = app.state::<Vault>();
@@ -1316,8 +1360,12 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
     if !vault.is_unlocked() {
         return Err(AppError::VaultLocked);
     }
-    if master_password.len() < 4 {
-        return Err(AppError::Other("Master password must be at least 4 characters".into()));
+    // This stores a password that already exists (it is the one that unlocked
+    // the vault), so the permissive floor applies — not the new-password policy.
+    if master_password.chars().count() < MIN_UNLOCK_PASSWORD_CHARS {
+        return Err(AppError::Other(format!(
+            "Master password must be at least {MIN_UNLOCK_PASSWORD_CHARS} characters"
+        )));
     }
     let pw = Zeroizing::new(master_password);
 
@@ -3442,6 +3490,7 @@ pub fn ai_active_provider_set(provider_id: String, vault: tauri::State<'_, Vault
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_recovery_code_generation_and_normalization() {
@@ -3502,6 +3551,80 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(vault.recovery_path());
+    }
+
+    /// The master-password policy must distinguish *choosing* a password from
+    /// *unlocking* with one.
+    ///
+    /// A brand-new vault demands a real password, but an existing vault has to
+    /// keep accepting whatever it was created with — otherwise upgrading the
+    /// app could permanently lock a user out of a vault that was created under
+    /// an older, weaker policy. The lock screen draws exactly this line
+    /// (`initialized === false`); the backend has to draw it too.
+    #[test]
+    fn new_vaults_demand_a_longer_password_than_existing_ones() {
+        let unique = format!("test_policy_{}.vault", rand::random::<u64>());
+        let db_path = std::env::temp_dir().join(unique);
+        let vault = Vault::new(db_path.clone());
+
+        // Not initialized yet: choosing the password requires the strong policy.
+        let err = vault.unlock("short").expect_err("a new vault must reject a short password");
+        assert!(
+            err.to_string().contains("at least 8 characters"),
+            "expected the new-password policy error, got: {err}"
+        );
+
+        // Now pretend an existing vault is there: a database file plus a
+        // 16-byte salt, so the only thing that can fail from here on is the
+        // password itself. The permissive floor must apply, so the failure has
+        // to be "wrong password", not "too short".
+        std::fs::write(&db_path, b"not-a-real-vault").expect("seed vault file");
+        std::fs::write(vault.salt_path(), [7u8; 16]).expect("seed salt file");
+        let err = vault
+            .unlock("four")
+            .expect_err("a wrong password must not unlock the vault");
+        assert!(
+            !err.to_string().contains("at least 8 characters"),
+            "an existing vault must not be judged by the new-password policy, got: {err}"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(vault.salt_path());
+        let _ = std::fs::remove_file(db_path.with_extension("vault-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("vault-shm"));
+    }
+
+    /// Every file the vault writes must be refused by the filesystem policy.
+    ///
+    /// The vault database, its salt, recovery envelope, device-lock credential,
+    /// rekey journal and pre-rekey snapshot all live under the app data
+    /// directory, which sits inside the user's home directory — an *approved*
+    /// root for the generic `local_fs_*` commands. The sensitive-name denylist
+    /// in `fs_guard` is therefore the only thing standing between a
+    /// compromised WebView and the vault's own state files.
+    ///
+    /// This test derives the paths from the vault's own helpers, so a sidecar
+    /// added later cannot be forgotten here without failing CI.
+    #[test]
+    fn every_vault_sidecar_is_blocked_by_the_filesystem_policy() {
+        let vault = Vault::new(PathBuf::from("/tmp/drexius.vault"));
+        let sidecars = vec![
+            ("vault database", vault.path.clone()),
+            ("salt", vault.salt_path()),
+            ("recovery envelope", vault.recovery_path()),
+            ("device lock", vault.device_lock_path()),
+            ("rekey journal", vault.rekey_journal_path()),
+            ("pre-rekey snapshot", vault.pre_rekey_backup_path()),
+            ("wal", vault.path.with_extension("vault-wal")),
+            ("shm", vault.path.with_extension("vault-shm")),
+        ];
+        for (label, path) in sidecars {
+            assert!(
+                crate::fs_guard::is_sensitive_path(&path),
+                "the {label} ({}) must not be reachable through the local-FS commands",
+                path.display()
+            );
+        }
     }
 }
 

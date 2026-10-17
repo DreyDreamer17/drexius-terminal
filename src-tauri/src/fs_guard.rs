@@ -32,20 +32,46 @@ const SENSITIVE_NAMES: &[&str] = &[
     ".netrc",
 ];
 
+/// Exact file names of the vault's sidecar files, living next to the vault
+/// database inside the app data directory.
+///
+/// The vault database itself and its SQLite `-wal`/`-shm` companions are
+/// covered by the `drexius.vault` prefix rule in `is_sensitive_path`; these
+/// are the remaining sidecars, which the prefix rule does not reach:
+///
+///   * `drexius.salt`       — Argon2id salt for the master key
+///   * `drexius.recovery`   — XChaCha20-Poly1305 recovery envelope
+///   * `drexius.device_lock`— device-local quick-unlock credential
+///   * `drexius.rekey`      — rekey intent journal (new key sealed under the old one)
+///   * `drexius.pre-rekey`  — byte copy of the pre-rekey database
+///
+/// The last two matter most: the journal holds the *next* master key (sealed
+/// under the current one) and the snapshot is a second, full copy of the
+/// encrypted vault. Both live under the user's home directory, which is an
+/// approved root, so without this list the generic `local_fs_*` commands could
+/// read them.
+///
+/// `vault.rs` has a unit test that asserts every sidecar the vault can create
+/// is denied here, so adding a new sidecar without listing it fails CI.
+pub(crate) const VAULT_SIDECAR_NAMES: &[&str] = &[
+    "drexius.salt",
+    "drexius.recovery",
+    "drexius.device_lock",
+    "drexius.rekey",
+    "drexius.pre-rekey",
+];
+
 /// True when any path component names a credential store or app-state file.
-fn is_sensitive_path(p: &Path) -> bool {
+pub(crate) fn is_sensitive_path(p: &Path) -> bool {
     for comp in p.components() {
         if let Component::Normal(s) = comp {
             let name = s.to_string_lossy().to_ascii_lowercase();
             if SENSITIVE_NAMES.iter().any(|d| name == *d) {
                 return true;
             }
-            // The vault database, its salt file, recovery envelope and device lock credential.
-            if name.starts_with("drexius.vault")
-                || name.starts_with("drexius.salt")
-                || name.starts_with("drexius.recovery")
-                || name.starts_with("drexius.device_lock")
-            {
+            // The vault database (and its `-wal`/`-shm` companions) plus every
+            // sidecar file listed in `VAULT_SIDECAR_NAMES`.
+            if name.starts_with("drexius.vault") || VAULT_SIDECAR_NAMES.contains(&name.as_str()) {
                 return true;
             }
             // The Tauri application data directory (stores the vault).

@@ -16,6 +16,9 @@ DrexiusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, 
   - **Local PTY**: Native local shells powered by `portable-pty` with automatic child process reaping.
   - **Serial UART**: Hardware serial communication via `serialport` with customizable baud rates and flow control.
   - **Port Forwarding**: Local, Remote (reverse), and Dynamic (SOCKS5) tunnels.
+- **Infrastructure Integrations**:
+  - **Tailscale**: Discover tailnet devices from the local `tailscale` CLI or the Tailscale REST API, and import them as host profiles in one step.
+  - **Docker**: List containers, run lifecycle actions, and read logs on the local machine or on any saved SSH host.
 - **Security & Encrypted Vault**:
   - **SQLCipher AES-256 Store**: PBKDF2 bypassed in favor of high-memory **Argon2id** key derivation.
   - **OS Keychain Integration**: Optional master password storage via macOS Keychain, Windows Credential Manager, or Linux Secret Service (`keyring`).
@@ -35,7 +38,8 @@ The desktop app stores vault data in SQLCipher and handles SSH connections and A
 
 1. **Host verification**: Unknown host keys require explicit approval; changed keys are rejected.
 2. **AI proxy relay (desktop)**: Configured API keys and proxy credentials are stored in SQLCipher and injected by Rust. Browser demo mode uses JavaScript-held demo credentials.
-3. **CSP**: The desktop `connect-src` currently permits any HTTPS origin and localhost, not just approved provider origins. The Rust AI relay applies its own origin checks before attaching pooled credentials; CSP alone is not a network allowlist.
+3. **Master password**: Choosing a password (creating a vault, or setting a new one through recovery) requires 8+ characters, enforced in the backend as well as the lock screen. Unlocking an existing vault keeps a lower floor on purpose, so a vault created by an older build can never be locked out by an upgrade.
+4. **CSP**: The desktop `connect-src` currently permits any HTTPS origin and localhost, not just approved provider origins. The Rust AI relay applies its own origin checks before attaching pooled credentials; CSP alone is not a network allowlist.
 
 For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.md).
 

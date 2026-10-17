@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::State;
@@ -282,6 +282,10 @@ struct Route {
     proxy_strategy: String,
     /// Whether to inject a pooled key into the upstream request.
     inject: bool,
+    /// Address the request is pinned to, for destinations that had to be
+    /// checked against the public-only policy. `None` means the destination is
+    /// the provider's own configured endpoint, which is allowed to be private.
+    pin: Option<PinnedHost>,
 }
 
 fn is_auth_header(k: &str) -> bool {
@@ -342,16 +346,44 @@ fn ip_is_non_public(ip: IpAddr) -> bool {
     }
 }
 
+/// A destination host together with the addresses it was validated against.
+///
+/// The addresses are pinned into the HTTP client so the connection is made to
+/// exactly the address the policy check approved. Without the pin, the name
+/// would be resolved twice — once for the check and once for the connect —
+/// which leaves a DNS-rebinding window: an attacker-controlled resolver can
+/// answer with a public address during the check and with `127.0.0.1` or a
+/// cloud-metadata address when the request is actually made.
+#[derive(Clone, Debug)]
+struct PinnedHost {
+    /// The host exactly as reqwest's connector will look it up: lower-cased,
+    /// matching `ClientBuilder::resolve_to_addrs`, which lower-cases the
+    /// override key.
+    host: String,
+    /// The validated addresses, each with port 0. reqwest substitutes the
+    /// URL's port (or the scheme default) for a zero port, so the pin stays
+    /// correct for any URL shape.
+    addrs: Vec<SocketAddr>,
+}
+
 /// Destination policy for relay requests that do NOT carry credentials: they may
 /// only go to public hosts — never localhost, LAN/private ranges, or cloud
 /// metadata endpoints. Named destinations are checked before DNS, resolved
 /// addresses after (so a public name resolving to 127.0.0.1 is refused too).
-fn ensure_public_target(target: &reqwest::Url) -> Result<(), String> {
+///
+/// Returns the validated addresses so the caller can pin the connection to
+/// them and close the DNS-rebinding window described on [`PinnedHost`].
+fn ensure_public_target(target: &reqwest::Url) -> Result<PinnedHost, String> {
     let host = match target.host_str() {
         Some(h) if !h.is_empty() => h.to_ascii_lowercase(),
         _ => return Err("Blocked URL: no host".into()),
     };
-    let ip_literal = host.parse::<IpAddr>();
+    // `Url::host_str` keeps the brackets around an IPv6 literal ("[::1]").
+    // Strip them so the address is recognised as a literal — and therefore
+    // checked against the private-range policy — instead of falling through to
+    // a DNS lookup that would fail for the wrong reason.
+    let host_trimmed = host.trim_start_matches('[').trim_end_matches(']');
+    let ip_literal = host_trimmed.parse::<IpAddr>();
 
     if ip_literal.is_err() {
         // Name-based escapes: `localhost` is special-cased by every resolver,
@@ -384,7 +416,11 @@ fn ensure_public_target(target: &reqwest::Url) -> Result<(), String> {
             "Blocked destination '{host}': the AI relay only reaches public addresses"
         ));
     }
-    Ok(())
+    Ok(PinnedHost {
+        host,
+        // Port 0 → reqwest applies the URL's port, or the scheme default.
+        addrs: addrs.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect(),
+    })
 }
 
 fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
@@ -397,6 +433,7 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
         key_strategy: "p2c".into(),
         proxy_strategy: "p2c".into(),
         inject: false,
+        pin: None,
     };
 
     let cfg = if provider_id.is_empty() {
@@ -441,8 +478,9 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
                 }
                 // Key-less probes may follow unsaved baseUrl edits, but only out
                 // to public destinations (no localhost / LAN / metadata via the
-                // relay).
-                ensure_public_target(&target)?;
+                // relay). The validated addresses are pinned into the client so
+                // the name cannot be re-resolved to a private address.
+                route.pin = Some(ensure_public_target(&target)?);
             }
         }
         if wants_injection {
@@ -471,7 +509,7 @@ fn resolve_route(req: &AiProxyRequest, vault: &Vault) -> Result<Route, String> {
         if req.method.to_uppercase() != "GET" {
             return Err("Anonymous relay requests are GET-only.".into());
         }
-        ensure_public_target(&target)?;
+        route.pin = Some(ensure_public_target(&target)?);
     }
     route.inject = wants_injection;
 
@@ -512,13 +550,29 @@ fn validate_request(request: &AiProxyRequest) -> Result<(), String> {
 
 /// `timeout_secs = None` means no total deadline (used for streaming, where a long
 /// generation must not be cut off; stalls are caught by `STREAM_IDLE_TIMEOUT` instead).
-fn build_client(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
+fn build_client(
+    proxy_url: Option<&str>,
+    timeout_secs: Option<u64>,
+    pin: Option<&PinnedHost>,
+) -> Result<reqwest::Client, String> {
     // Never follow redirects: a provider redirect could otherwise carry pooled keys to another host.
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none());
     if let Some(t) = timeout_secs {
         builder = builder.timeout(Duration::from_secs(t));
+    }
+    if let Some(p) = pin {
+        // Pin the host to the addresses the destination policy approved. Without
+        // this the name is resolved a second time when the connection is made,
+        // and a hostile resolver can answer differently the second time.
+        //
+        // The override applies to the direct connector and to SOCKS5 proxies
+        // that resolve locally (`socks5://`). A proxy that resolves the name
+        // itself (an HTTP proxy, or `socks5h://`) does the lookup on the far
+        // side, where this client cannot constrain it — the request then
+        // leaves the machine before the address is ever known here.
+        builder = builder.resolve_to_addrs(&p.host, &p.addrs);
     }
 
     if let Some(proxy_str) = proxy_url {
@@ -534,14 +588,27 @@ fn build_client(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<re
 }
 
 /// Cache client instances by (proxy, timeout) to preserve HTTP connection pools and TLS session caches.
-fn client_for(proxy_url: Option<&str>, timeout_secs: Option<u64>) -> Result<reqwest::Client, String> {
+///
+/// A pinned client is deliberately *not* cached: the cache key does not
+/// include the pinned host, so a cached client would be handed to a different
+/// destination with the wrong address override attached. Pinned clients are
+/// also short-lived by design — a long-lived one would keep using a stale
+/// address for a provider whose DNS legitimately rotates.
+fn client_for(
+    proxy_url: Option<&str>,
+    timeout_secs: Option<u64>,
+    pin: Option<&PinnedHost>,
+) -> Result<reqwest::Client, String> {
+    if pin.is_some() {
+        return build_client(proxy_url, timeout_secs, pin);
+    }
     static CLIENT_CACHE: OnceLock<Mutex<HashMap<(Option<String>, Option<u64>), reqwest::Client>>> = OnceLock::new();
     let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = (proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string), timeout_secs);
     if let Some(c) = cache.lock().get(&key) {
         return Ok(c.clone());
     }
-    let c = build_client(proxy_url, timeout_secs)?;
+    let c = build_client(proxy_url, timeout_secs, None)?;
     cache.lock().insert(key, c.clone());
     Ok(c)
 }
@@ -642,7 +709,7 @@ async fn send_with_failover(
             }
         };
 
-        let client = match client_for(proxy.as_deref(), timeout_secs) {
+        let client = match client_for(proxy.as_deref(), timeout_secs, route.pin.as_ref()) {
             Ok(c) => c,
             Err(e) => {
                 if let Some(p) = &proxy {
@@ -829,4 +896,91 @@ pub async fn ai_fetch_proxy(
     let body = resp.text().await.unwrap_or_default();
 
     Ok(AiProxyResponse { status, body })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    /// Addresses the AI relay must never be talked into reaching.
+    #[test]
+    fn non_public_addresses_are_recognised() {
+        let blocked = [
+            "127.0.0.1",      // loopback
+            "0.0.0.0",        // unspecified
+            "10.0.0.1",       // RFC1918
+            "172.16.0.1",     // RFC1918
+            "192.168.1.1",    // RFC1918
+            "169.254.169.254",// link-local (cloud metadata)
+            "100.64.0.1",     // CGNAT
+            "192.0.0.1",      // IETF protocol assignments
+            "198.18.0.1",     // benchmarking
+            "224.0.0.1",      // multicast
+            "255.255.255.255",// broadcast
+            "::1",            // IPv6 loopback
+            "fc00::1",        // IPv6 unique-local
+            "fe80::1",        // IPv6 link-local
+            "fec0::1",        // IPv6 site-local
+            "::ffff:127.0.0.1", // IPv4-mapped loopback
+        ];
+        for ip in blocked {
+            let addr: IpAddr = ip.parse().expect("test address parses");
+            assert!(
+                ip_is_non_public(addr),
+                "{ip} must be treated as non-public"
+            );
+        }
+    }
+
+    /// Ordinary public addresses must stay reachable — the policy is there to
+    /// stop the relay reaching *into* the network, not to break the internet.
+    #[test]
+    fn public_addresses_are_allowed() {
+        for ip in ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"] {
+            let addr: IpAddr = ip.parse().expect("test address parses");
+            assert!(!ip_is_non_public(addr), "{ip} must be treated as public");
+        }
+    }
+
+    /// The destination policy refuses loopback, LAN and cloud-metadata
+    /// destinations, and the internal names that resolve to them.
+    ///
+    /// Every case here is decided without a DNS lookup, so the test stays
+    /// offline and deterministic.
+    #[test]
+    fn destination_policy_refuses_internal_targets() {
+        for url in [
+            "http://127.0.0.1:8080/",
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+            "http://localhost/",
+            "http://foo.localhost/",
+            "http://printer.local/",
+            "http://service.internal/",
+            "http://metadata/",
+            "http://instance-data/",
+        ] {
+            let parsed = reqwest::Url::parse(url).expect("test url parses");
+            assert!(
+                ensure_public_target(&parsed).is_err(),
+                "{url} must be refused by the destination policy"
+            );
+        }
+    }
+
+    /// A public destination is accepted, and the addresses it resolves to are
+    /// handed back so the caller can pin the connection to them.
+    #[test]
+    fn destination_policy_accepts_public_targets_and_returns_a_pin() {
+        let parsed = reqwest::Url::parse("https://8.8.8.8/v1/models").expect("test url parses");
+        let pin = ensure_public_target(&parsed).expect("public target must be allowed");
+        assert_eq!(pin.host, "8.8.8.8");
+        assert_eq!(pin.addrs.len(), 1);
+        assert_eq!(pin.addrs[0].ip(), "8.8.8.8".parse::<IpAddr>().unwrap());
+        // Port 0 tells reqwest to apply the URL's port (or the scheme default).
+        assert_eq!(pin.addrs[0].port(), 0);
+    }
 }
