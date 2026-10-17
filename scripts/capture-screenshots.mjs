@@ -122,11 +122,9 @@ async function captureDesktop(browser) {
   note('desktop (1440x900)');
   const { context, page, errors } = await newPage(browser, { viewport: DESKTOP });
 
-  // 1. splash
+  // 1. load app & wait for splash to transition to lock screen
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1300);
-  await shot(page, 'splash');
-  await page.waitForTimeout(3200);
+  await page.waitForTimeout(4500);
 
   // 2. lock screen / create vault
   await shot(page, 'lock-screen');

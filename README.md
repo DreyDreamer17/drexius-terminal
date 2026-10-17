@@ -46,10 +46,6 @@ npm run dev
 Open <http://localhost:5173>, create a vault with any password, and you are in. Nothing
 leaves your machine.
 
-<p align="center">
-  <img src="docs/images/splash.png" alt="DrexiusTerminal splash screen" width="560">
-</p>
-
 > The browser preview is a **demo**, not a security boundary: it encrypts the demo vault with
 > WebCrypto AES-256-GCM in `localStorage` and runs SSH sessions in a local sandbox. Build the
 > Tauri app for real connections, the OS keychain, and the SQLCipher vault.
