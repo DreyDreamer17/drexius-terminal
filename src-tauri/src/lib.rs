@@ -1,4 +1,4 @@
-//! NexusTerminal Rust core — wires state + IPC commands into the Tauri runtime.
+//! DrexiusTerminal Rust core — wires state + IPC commands into the Tauri runtime.
 
 mod error;
 mod fs_guard;
@@ -37,7 +37,7 @@ pub fn run() {
                 .expect("no app data dir available");
             std::fs::create_dir_all(&data_dir)?;
 
-            let vault = vault::Vault::new(data_dir.join("nexus.vault"));
+            let vault = vault::Vault::new(data_dir.join("drexius.vault"));
             let snapshots = snapshot::SnapshotStore::default();
 
             app.manage(vault);
@@ -217,5 +217,5 @@ pub fn run() {
             docker::docker_container_logs,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running NexusTerminal");
+        .expect("error while running DrexiusTerminal");
 }

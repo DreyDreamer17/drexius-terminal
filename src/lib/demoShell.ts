@@ -1,6 +1,6 @@
 /**
  * Browser-preview sandbox: a small POSIX-ish shell over a virtual filesystem.
- * Used ONLY when NexusTerminal runs outside the Tauri runtime (no raw sockets
+ * Used ONLY when DrexiusTerminal runs outside the Tauri runtime (no raw sockets
  * in a browser). It speaks the same event protocol as the Rust backend —
  * including OSC-7 cwd reporting — so every UI feature is exercised identically.
  */
@@ -24,8 +24,8 @@ function buildFs(host: Host): FNode {
   const home = user === 'root' ? null : user;
   const homeDir = dir({
     '.bashrc': file('# ~/.bashrc\nexport PS1="\\u@\\h:\\w\\$ "\nalias ll="ls -la"\n'),
-    '.ssh': dir({ authorized_keys: file('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINexusDemoKey nexus@laptop\n', 0o600) }),
-    'README.md': file(`# Welcome to ${host.label}\n\nThis is the NexusTerminal browser sandbox.\nInstall the desktop build for real SSH connections.\n`),
+    '.ssh': dir({ authorized_keys: file('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDrexiusDemoKey drexius@laptop\n', 0o600) }),
+    'README.md': file(`# Welcome to ${host.label}\n\nThis is the DrexiusTerminal browser sandbox.\nInstall the desktop build for real SSH connections.\n`),
     projects: dir({
       api: dir({
         'docker-compose.yml': file('services:\n  api:\n    image: ghcr.io/acme/api:1.8.2\n    ports: ["8080:8080"]\n    restart: unless-stopped\n  redis:\n    image: redis:7-alpine\n'),
@@ -167,7 +167,7 @@ export class DemoShell {
   start(resumeCwd?: string) {
     const lastLogin = new Date(Date.now() - 3600_000 * 7).toUTCString();
     this.out(`${C.bold}Welcome to Ubuntu 24.04.1 LTS${C.reset} (GNU/Linux 6.8.0-49-generic x86_64)\n\n`);
-    this.out(`${C.gray} * Sandbox mode — this is the NexusTerminal browser preview.\n * Desktop (Tauri) builds open real SSH sessions via libssh2.\n * Try: ${C.cyan}ls -la${C.gray}, ${C.cyan}tail /var/log/nginx/error.log${C.gray}, ${C.cyan}neofetch${C.gray}, ${C.cyan}help${C.reset}\n\n`);
+    this.out(`${C.gray} * Sandbox mode — this is the DrexiusTerminal browser preview.\n * Desktop (Tauri) builds open real SSH sessions via libssh2.\n * Try: ${C.cyan}ls -la${C.gray}, ${C.cyan}tail /var/log/nginx/error.log${C.gray}, ${C.cyan}neofetch${C.gray}, ${C.cyan}help${C.reset}\n\n`);
     this.out(`Last login: ${lastLogin} from 10.0.0.12\n`);
     if (resumeCwd) {
       const node = lookup(this.root, resumeCwd);
@@ -374,7 +374,7 @@ export class DemoShell {
       case 'systemctl': return ok(`${C.red}●${C.reset} ${pos[1] ?? 'api'}.service - ACME API\n     Loaded: loaded (/etc/systemd/system/api.service; enabled)\n     Active: ${C.red}${C.bold}failed${C.reset} (Result: exit-code) since ${new Date().toUTCString()}\n    Process: 4021 ExecStart=/opt/api/server (code=exited, status=1/FAILURE)\n\nJan 14 09:11:58 host server[4021]: panic: dial tcp db:5432: connect: connection refused`);
       case 'neofetch': {
         const art = [`${C.red}            .-/+oossssoo+/-.`, `        \`:+ssssssssssssssssss+:\``, `      -+ssssssssssssssssssyyssss+-`, `    .ossssssssssssssssss${C.reset}dMMMNy${C.red}sssso.`, `   /sssssssssss${C.reset}hdmmNNmmyNMMMMh${C.red}ssssss/`, `  +sssssssss${C.reset}hmydMMMMMMMNddddy${C.red}ssssssss+`, ` /ssssssss${C.reset}hNMMMyhhyyyyhmNMMMNh${C.red}ssssssss/`, `.ssssssss${C.reset}dMMMNh${C.red}ssssssssss${C.reset}hNMMMd${C.red}ssssssss.`];
-        const info = [`${C.bold}${C.cyan}${this.host.username}@${this.hostname}${C.reset}`, '-----------------', `${C.cyan}OS${C.reset}: Ubuntu 24.04.1 LTS x86_64`, `${C.cyan}Kernel${C.reset}: 6.8.0-49-generic`, `${C.cyan}Shell${C.reset}: bash 5.2.21`, `${C.cyan}Terminal${C.reset}: NexusTerminal`, `${C.cyan}CPU${C.reset}: AMD EPYC 7763 (4) @ 2.44GHz`, `${C.cyan}Memory${C.reset}: 2934MiB / 7872MiB`];
+        const info = [`${C.bold}${C.cyan}${this.host.username}@${this.hostname}${C.reset}`, '-----------------', `${C.cyan}OS${C.reset}: Ubuntu 24.04.1 LTS x86_64`, `${C.cyan}Kernel${C.reset}: 6.8.0-49-generic`, `${C.cyan}Shell${C.reset}: bash 5.2.21`, `${C.cyan}Terminal${C.reset}: DrexiusTerminal`, `${C.cyan}CPU${C.reset}: AMD EPYC 7763 (4) @ 2.44GHz`, `${C.cyan}Memory${C.reset}: 2934MiB / 7872MiB`];
         return ok(art.map((a, i) => a + '   ' + (info[i] ?? '')).join('\n') + C.reset);
       }
       case 'sudo': return this.exec(rest.join(' '), stdin);

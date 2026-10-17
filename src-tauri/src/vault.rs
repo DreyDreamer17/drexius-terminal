@@ -21,8 +21,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Service name used when talking to the OS keychain (macOS Keychain, Windows
 /// Credential Manager, Linux Secret Service via dbus). Grouped under the
-/// NexusTerminal app identifier so entries are easy to audit/clean up.
-const KEYCHAIN_SERVICE: &str = "dev.nexusterminal.app";
+/// DrexiusTerminal app identifier so entries are easy to audit/clean up.
+const KEYCHAIN_SERVICE: &str = "dev.drexius.app";
 /// Username under which the master password is stored. We use a fixed,
 /// well-known entry so we can query "is there a stored password?" quickly.
 const KEYCHAIN_USER: &str = "vault-master-password";
@@ -412,7 +412,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> AppResult<()> {
 
 fn normalize_recovery_code(code: &str) -> String {
     let clean = code.trim().replace('-', "").replace(' ', "").to_uppercase();
-    if let Some(stripped) = clean.strip_prefix("NX") {
+    if let Some(stripped) = clean.strip_prefix("DRX").or_else(|| clean.strip_prefix("NX")) {
         stripped.to_string()
     } else {
         clean
@@ -424,7 +424,7 @@ fn generate_recovery_code() -> (String, String) {
     rand::thread_rng().fill_bytes(&mut raw);
     let hex_raw = hex::encode(raw).to_uppercase();
     let formatted = format!(
-        "NX-{}-{}-{}-{}-{}-{}-{}-{}",
+        "DRX-{}-{}-{}-{}-{}-{}-{}-{}",
         &hex_raw[0..4],
         &hex_raw[4..8],
         &hex_raw[8..12],
@@ -457,18 +457,18 @@ impl Vault {
     }
 
     fn device_lock_key(&self) -> AppResult<[u8; 32]> {
-        let salt = std::fs::read(self.salt_path()).unwrap_or_else(|_| b"nexus-terminal-default-salt".to_vec());
+        let salt = std::fs::read(self.salt_path()).unwrap_or_else(|_| b"drexius-terminal-default-salt".to_vec());
         let mut ikm = Vec::new();
-        ikm.extend_from_slice(b"nexus-device-lock-master-v1-");
+        ikm.extend_from_slice(b"drexius-device-lock-master-v1-");
         ikm.extend_from_slice(&salt);
         #[cfg(target_os = "android")]
         ikm.extend_from_slice(b"-android-sandbox-uid");
         #[cfg(not(target_os = "android"))]
         ikm.extend_from_slice(b"-desktop-local-fallback");
 
-        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"nx-device-lock-salt-2025"), &ikm);
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"drx-device-lock-salt-2025"), &ikm);
         let mut okm = [0u8; 32];
-        hk.expand(b"nx-device-lock-encryption-key", &mut okm)
+        hk.expand(b"drx-device-lock-encryption-key", &mut okm)
             .map_err(|e| AppError::Crypto(e.to_string()))?;
         Ok(okm)
     }
@@ -741,9 +741,9 @@ impl Vault {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if self.path.exists() {
                     return Err(AppError::Crypto(
-                        "Vault database exists but its salt file (nexus.salt) is missing. \
+                        "Vault database exists but its salt file (drexius.salt) is missing. \
                          Refusing to generate a new salt to prevent permanent data loss. \
-                         Please restore nexus.salt or delete the vault database to reset.".into()
+                         Please restore drexius.salt or delete the vault database to reset.".into()
                     ));
                 }
                 let mut s = vec![0u8; 16];
@@ -1185,7 +1185,7 @@ pub async fn vault_reset(app: tauri::AppHandle, vault: State<'_, Vault>) -> AppR
                  snippets and tunnels on this device. It cannot be undone. \
                  No password is required — that is the documented escape hatch.",
             )
-            .title("Reset NexusTerminal vault?")
+            .title("Reset DrexiusTerminal vault?")
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancelCustom(
                 "Erase everything".into(),
@@ -1210,7 +1210,7 @@ pub fn vault_get_recovery_key(vault: State<'_, Vault>) -> AppResult<String> {
 #[tauri::command]
 pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> AppResult<String> {
     let fname = filename.unwrap_or_else(|| {
-        format!("nexus-emergency-kit-{}.txt", chrono::Utc::now().timestamp())
+        format!("drexius-emergency-kit-{}.txt", chrono::Utc::now().timestamp())
     });
 
     #[cfg(target_os = "android")]
@@ -1244,7 +1244,7 @@ pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> Ap
     if let Err(err) = std::fs::write(&target, &content) {
         #[cfg(target_os = "android")]
         {
-            let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.nexusterminal.app/files/Download");
+            let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.drexius.app/files/Download");
             let _ = std::fs::create_dir_all(&fallback);
             let fallback_target = fallback.join(&fname);
             if std::fs::write(&fallback_target, &content).is_ok() {
@@ -1397,7 +1397,7 @@ pub fn check_storage_permission() -> AppResult<bool> {
                     if let Some(cls) = crate::ssh::load_android_app_class(
                         &mut env,
                         &*app_ctx,
-                        "dev.nexusterminal.app.MainActivity",
+                        "dev.drexius.app.MainActivity",
                     ) {
                         if let Ok(val) = env.call_static_method(
                             &cls,
@@ -1438,7 +1438,7 @@ pub fn request_storage_permission() -> AppResult<bool> {
                     if let Some(cls) = crate::ssh::load_android_app_class(
                         &mut env,
                         &*app_ctx,
-                        "dev.nexusterminal.app.MainActivity",
+                        "dev.drexius.app.MainActivity",
                     ) {
                         let _ = env.call_static_method(
                             &cls,
@@ -2104,7 +2104,7 @@ fn keychain_generate_key_sync(
     let pub_path = key_dir.join("id_key.pub");
 
     let pass = passphrase.unwrap_or_default();
-    let cmt = comment.unwrap_or_else(|| "nexus-generated-key".into());
+    let cmt = comment.unwrap_or_else(|| "drexius-generated-key".into());
 
     let mut cmd = std::process::Command::new("ssh-keygen");
     cmd.arg("-t").arg(algo);
@@ -2924,7 +2924,7 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     })
 }
 
-// ── Zero-Knowledge Team Sharing (Encrypted .nxvault Bundles) ──
+// ── Zero-Knowledge Team Sharing (Encrypted .drxvault Bundles) ──
 
 #[tauri::command]
 pub async fn team_vault_export(
@@ -3047,7 +3047,7 @@ pub async fn team_vault_export(
 
         Ok(EncryptedTeamVaultBundle {
             version: 1,
-            format: "nexus-team-vault".into(),
+            format: "drexius-team-vault".into(),
             vault_name: payload.vault.name,
             salt: hex::encode(salt),
             nonce: hex::encode(nonce_bytes),
@@ -3446,11 +3446,12 @@ mod tests {
     #[test]
     fn test_recovery_code_generation_and_normalization() {
         let (formatted, normalized) = generate_recovery_code();
-        assert!(formatted.starts_with("NX-"));
+        assert!(formatted.starts_with("DRX-"));
         assert_eq!(normalized.len(), 32);
         assert_eq!(normalize_recovery_code(&formatted), normalized);
+        assert_eq!(normalize_recovery_code("drx-1234-abcd-5678-ef01"), "1234ABCD5678EF01");
+        assert_eq!(normalize_recovery_code("  drx 1234 abcd "), "1234ABCD");
         assert_eq!(normalize_recovery_code("nx-1234-abcd-5678-ef01"), "1234ABCD5678EF01");
-        assert_eq!(normalize_recovery_code("  nx 1234 abcd "), "1234ABCD");
         assert_eq!(normalize_recovery_code("1234ABCD5678EF01"), "1234ABCD5678EF01");
     }
 
@@ -3497,7 +3498,7 @@ mod tests {
         assert_eq!(*decrypted, db_key);
 
         // Wrong code fails
-        assert!(vault.decrypt_recovery_envelope("NX-0000-0000-0000-0000-0000-0000-0000-0000").is_err());
+        assert!(vault.decrypt_recovery_envelope("DRX-0000-0000-0000-0000-0000-0000-0000-0000").is_err());
 
         // Cleanup
         let _ = std::fs::remove_file(vault.recovery_path());

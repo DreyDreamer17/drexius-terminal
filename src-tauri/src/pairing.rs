@@ -1,6 +1,6 @@
 //! Direct Device-to-Device Pairing & LAN Sync (X25519 ECDH + HKDF + XChaCha20-Poly1305)
 //!
-//! Enables zero-cloud, direct device-to-device pairing between two NexusTerminal instances
+//! Enables zero-cloud, direct device-to-device pairing between two DrexiusTerminal instances
 //! over local Wi-Fi or LAN. Device A shows a QR code + 6-digit PIN and runs an ephemeral listener.
 //! Device B connects with the PIN, executes an authenticated X25519 key exchange,
 //! and clones the vault database directly device-to-device.
@@ -214,7 +214,7 @@ pub fn get_device_name() -> String {
         .unwrap_or_else(|_| {
             std::fs::read_to_string("/etc/hostname")
                 .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "NexusDevice".to_string())
+                .unwrap_or_else(|_| "DrexiusDevice".to_string())
         });
     let os = std::env::consts::OS;
     format!("{} ({})", host, os)
@@ -226,9 +226,9 @@ fn derive_pairing_keys(pin: &str, shared: &[u8; 32]) -> AppResult<([u8; 32], [u8
     let hk = Hkdf::<Sha256>::new(Some(pin.as_bytes()), shared);
     let mut auth_key = [0u8; 32];
     let mut session_key = [0u8; 32];
-    hk.expand(b"nexus/pair/v2/auth", &mut auth_key)
+    hk.expand(b"drexius/pair/v2/auth", &mut auth_key)
         .map_err(|e| AppError::Crypto(e.to_string()))?;
-    hk.expand(b"nexus/pair/v2/session", &mut session_key)
+    hk.expand(b"drexius/pair/v2/session", &mut session_key)
         .map_err(|e| AppError::Crypto(e.to_string()))?;
     Ok((auth_key, session_key))
 }
@@ -236,7 +236,7 @@ fn derive_pairing_keys(pin: &str, shared: &[u8; 32]) -> AppResult<([u8; 32], [u8
 /// MAC over the handshake transcript, keyed by the auth key. The client uses it to prove PIN knowledge.
 fn client_proof_mac(auth_key: &[u8; 32], client_pk: &[u8], server_pk: &[u8]) -> AppResult<HmacSha256> {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(auth_key).map_err(|e| AppError::Crypto(e.to_string()))?;
-    mac.update(b"nexus/pair/v2/client-proof");
+    mac.update(b"drexius/pair/v2/client-proof");
     mac.update(client_pk);
     mac.update(server_pk);
     Ok(mac)
@@ -713,7 +713,7 @@ pub async fn pairing_start_host(
     let server_pk_hex = hex::encode(server_public.as_bytes());
 
     let qr_payload = format!(
-        "nxpair://{}:{}?pin={}&pk={}&name={}",
+        "drxpair://{}:{}?pin={}&pk={}&name={}",
         local_ip,
         port,
         pin_str,

@@ -86,15 +86,30 @@ export function markMarkup(id: string) {
 
 export function wordmarkMarkup(id: string, color = 'currentColor') {
   return `
-    <defs><linearGradient id="${id}-x" x1="155" y1="7" x2="212" y2="57" gradientUnits="userSpaceOnUse"><stop stop-color="#a8fff8"/><stop offset=".45" stop-color="#00d9ef"/><stop offset="1" stop-color="#6e9dff"/></linearGradient></defs>
-    <g fill="${color}">
-      <path d="M4 56V8H14L56 45V8H66V56H56L14 19V56Z"/>
-      <path d="M90 8H143V17H100V28H138V36H100V47H143V56H90Z"/>
-      <path d="M240 8H250V39Q250 47 259 47H280Q289 47 289 39V8H299V40Q299 56 282 56H257Q240 56 240 40Z"/>
-      <path d="M379 8V17H339Q331 17 331 23Q331 29 339 29H361Q381 29 381 43Q381 56 362 56H322V47H361Q371 47 371 42Q371 37 362 37H339Q321 37 321 23Q321 8 339 8Z"/>
-      <path d="M202 8H215L195 29L188 22Z"/>
+    <defs>
+      <linearGradient id="${id}-x" x1="218" y1="7" x2="275" y2="57" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#a8fff8"/>
+        <stop offset=".45" stop-color="#00d9ef"/>
+        <stop offset="1" stop-color="#6e9dff"/>
+      </linearGradient>
+      <filter id="${id}-xglow" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+        <feGaussianBlur stdDeviation="3.5"/>
+      </filter>
+    </defs>
+    <g fill="url(#${id}-x)" filter="url(#${id}-xglow)" opacity="0.48">
+      <path d="M220 8H233L277 56H263Z"/>
+      <path d="M241 32L248 40L233 56H219Z"/>
     </g>
-    <g fill="url(#${id}-x)"><path d="M160 8H173L217 56H203Z"/><path d="M181 32L188 40L173 56H159Z"/></g>
+    <g fill="${color}">
+      <path d="M12 56V8H44Q64 8 64 24V40Q64 56 44 56ZM22 17V47H44Q54 47 54 39V25Q54 17 44 17Z"/>
+      <path d="M82 56V8H112Q134 8 134 21.5Q134 34 118 35L136 56H122L106 35H92V56H82ZM92 17V27H110Q124 27 124 22Q124 17 110 17Z"/>
+      <path d="M152 8H205V17H162V28H200V36H162V47H205V56H152Z"/>
+      <path d="M291 8H301V56H291Z"/>
+      <path d="M317 8H327V39Q327 47 336 47H357Q366 47 366 39V8H376V40Q376 56 359 56H334Q317 56 317 40Z"/>
+      <path d="M452 8V17H412Q404 17 404 23Q404 29 412 29H434Q454 29 454 43Q454 56 435 56H395V47H434Q444 47 444 42Q444 37 435 37H412Q394 37 394 23Q394 8 412 8Z"/>
+      <path d="M262 8H275L255 29L248 22Z"/>
+    </g>
+    <g fill="url(#${id}-x)"><path d="M220 8H233L277 56H263Z"/><path d="M241 32L248 40L233 56H219Z"/></g>
   `;
 }
 
@@ -133,7 +148,7 @@ export function splashSvg(appearance: Appearance, width: number, height: number)
       ${networkDots.map(([x, y], index) => `<circle cx="${x}" cy="${y}" r="1.7" fill="${index % 2 ? '#6340f3' : '#00b5f0'}" stroke="none"/>`).join('')}
     </g>
     <svg x="62" y="${markY}" width="276" height="251" viewBox="0 0 330 300">${markMarkup('export-mark')}</svg>
-    <svg x="57" y="${wordY}" width="286" height="47.5" viewBox="0 0 385 64">${wordmarkMarkup('export-word', theme.foreground)}</svg>
+    <svg x="60" y="${wordY}" width="280" height="38.5" viewBox="0 0 466 64">${wordmarkMarkup('export-word', theme.foreground)}</svg>
     <text x="200" y="${wordY + 80}" text-anchor="middle" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="12" letter-spacing="1.1">Secure connections. Anywhere.</text>
     <rect x="80" y="${loaderY}" width="240" height="2.8" rx="1.4" fill="${theme.network}" opacity=".25"/>
     <rect x="80" y="${loaderY}" width="180" height="2.8" rx="1.4" fill="url(#progress)"/>

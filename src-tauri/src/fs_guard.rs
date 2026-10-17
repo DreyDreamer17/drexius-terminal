@@ -8,7 +8,7 @@
 //!      system temp dir (plus drive roots on Windows). Paths are canonicalized
 //!      before the check, so symlinks cannot escape the roots.
 //!   2. **Sensitive denylist** — well-known credential stores are refused even
-//!      inside those roots (`.ssh`, `.gnupg`, `.aws`, … and NexusTerminal's own
+//!      inside those roots (`.ssh`, `.gnupg`, `.aws`, … and DrexiusTerminal's own
 //!      vault data).
 //!
 //! Dialog-mediated flows (SFTP upload/download pickers) only apply the
@@ -41,11 +41,15 @@ fn is_sensitive_path(p: &Path) -> bool {
                 return true;
             }
             // The vault database, its salt file, recovery envelope and device lock credential.
-            if name.starts_with("nexus.vault") || name.starts_with("nexus.device_lock") {
+            if name.starts_with("drexius.vault")
+                || name.starts_with("drexius.salt")
+                || name.starts_with("drexius.recovery")
+                || name.starts_with("drexius.device_lock")
+            {
                 return true;
             }
             // The Tauri application data directory (stores the vault).
-            if name == "dev.nexusterminal.app" {
+            if name == "dev.drexius.app" {
                 return true;
             }
         }
@@ -67,8 +71,8 @@ fn approved_roots() -> Vec<PathBuf> {
     {
         roots.push(PathBuf::from("/storage"));
         roots.push(PathBuf::from("/sdcard"));
-        roots.push(PathBuf::from("/data/user/0/dev.nexusterminal.app"));
-        roots.push(PathBuf::from("/data/data/dev.nexusterminal.app"));
+        roots.push(PathBuf::from("/data/user/0/dev.drexius.app"));
+        roots.push(PathBuf::from("/data/data/dev.drexius.app"));
     }
     if std::path::Path::new("/storage/emulated/0").exists() {
         roots.push(PathBuf::from("/storage"));
@@ -154,7 +158,7 @@ pub fn ensure_local_path_allowed(raw: &str) -> AppResult<PathBuf> {
     if is_sensitive_path(&full) {
         return Err(AppError::Other(
             "Access to credential stores (SSH keys, GnuPG, cloud credentials) \
-             and NexusTerminal data is blocked here"
+             and DrexiusTerminal data is blocked here"
                 .into(),
         ));
     }
@@ -184,7 +188,7 @@ pub fn ensure_local_path_not_sensitive(raw: &str) -> AppResult<PathBuf> {
     if is_sensitive_path(&full) {
         return Err(AppError::Other(
             "Access to credential stores (SSH keys, GnuPG, cloud credentials) \
-             and NexusTerminal data is blocked here"
+             and DrexiusTerminal data is blocked here"
                 .into(),
         ));
     }

@@ -153,7 +153,7 @@ async function doPersistDemo() {
     try {
       const iv = (crypto.getRandomValues ? crypto.getRandomValues(new Uint8Array(12)) : new Uint8Array(12));
       const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, demoKey, new TextEncoder().encode(JSON.stringify(demo))));
-      localStorage.setItem('nx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
+      localStorage.setItem('drx.vault', JSON.stringify({ v: 1, iv: toB64(iv), ct: toB64(ct) }));
       return;
     } catch {
       /* fallback below */
@@ -161,7 +161,7 @@ async function doPersistDemo() {
   }
   // Insecure HTTP preview context fallback (mobile browser testing over LAN IP)
   const plain = toB64(new TextEncoder().encode(JSON.stringify(demo)));
-  localStorage.setItem('nx.vault', JSON.stringify({ v: 1, plain }));
+  localStorage.setItem('drx.vault', JSON.stringify({ v: 1, plain }));
 }
 
 async function persistDemo() {
@@ -274,19 +274,19 @@ export const bridge = {
   // ── Vault ──
   async vaultStatus(): Promise<{ initialized: boolean; unlocked: boolean }> {
     if (isTauri) return invoke('vault_status');
-    return { initialized: !!localStorage.getItem('nx.vault'), unlocked: !!demo };
+    return { initialized: !!localStorage.getItem('drx.vault'), unlocked: !!demo };
   },
 
   async unlock(masterPassword: string): Promise<string | null> {
     if (isTauri) return invoke('vault_unlock', { masterPassword });
-    let saltB64 = localStorage.getItem('nx.salt');
+    let saltB64 = localStorage.getItem('drx.salt');
     if (!saltB64) {
       const salt = (typeof crypto !== 'undefined' && crypto.getRandomValues) ? crypto.getRandomValues(new Uint8Array(16)) : new Uint8Array(16);
       saltB64 = toB64(salt);
-      localStorage.setItem('nx.salt', saltB64);
+      localStorage.setItem('drx.salt', saltB64);
     }
     const key = await deriveDemoKey(masterPassword, fromB64(saltB64));
-    const stored = localStorage.getItem('nx.vault');
+    const stored = localStorage.getItem('drx.vault');
     let isNew = false;
     if (stored) {
       try {
@@ -317,14 +317,14 @@ export const bridge = {
     }
     demoKey = key;
     await persistDemo();
-    return isNew ? 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD' : null;
+    return isNew ? 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD' : null;
   },
 
   async vaultRecover(recoveryCode: string, newPassword: string): Promise<string> {
     if (isTauri) return invoke('vault_recover', { recoveryCode, newPassword });
     await this.resetDemoVault();
     await this.unlock(newPassword);
-    return 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
+    return 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
   },
 
   async vaultReset(): Promise<void> {
@@ -332,19 +332,19 @@ export const bridge = {
       await invoke('vault_reset');
     }
     await this.resetDemoVault();
-    localStorage.removeItem('nx.os_keychain');
+    localStorage.removeItem('drx.os_keychain');
   },
 
   async vaultGetRecoveryKey(): Promise<string> {
     if (isTauri) return invoke('vault_get_recovery_key');
-    return 'NX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
+    return 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
   },
 
   async vaultSaveEmergencyKit(content: string, filename?: string): Promise<string> {
     if (isTauri) {
       return invoke<string>('vault_save_emergency_kit', { content, filename });
     }
-    const fname = filename ?? `nexus-emergency-kit-${Date.now()}.txt`;
+    const fname = filename ?? `drexius-emergency-kit-${Date.now()}.txt`;
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -356,8 +356,8 @@ export const bridge = {
   },
 
   async resetDemoVault() {
-    localStorage.removeItem('nx.vault');
-    localStorage.removeItem('nx.salt');
+    localStorage.removeItem('drx.vault');
+    localStorage.removeItem('drx.salt');
     demo = null;
     demoKey = null;
   },
@@ -383,7 +383,7 @@ export const bridge = {
   // is also where an unexpected prompt is explainable.
   osKeychainEnabled(): boolean {
     if (!isTauri) return false;
-    try { return localStorage.getItem('nx.os_keychain') === '1'; } catch { return false; }
+    try { return localStorage.getItem('drx.os_keychain') === '1'; } catch { return false; }
   },
 
   async osKeychainStatus(probeKeyring = false): Promise<boolean> {
@@ -404,7 +404,7 @@ export const bridge = {
     if (!isTauri) return false;
     try {
       await invoke('os_keychain_store', { masterPassword });
-      try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+      try { localStorage.setItem('drx.os_keychain', '1'); } catch {}
       return true;
     } catch (e) {
       console.warn('osKeychainStore failed:', e);
@@ -415,7 +415,7 @@ export const bridge = {
   async osKeychainDelete(): Promise<void> {
     if (!isTauri) return;
     try { await invoke('os_keychain_delete'); } catch { /* non-fatal */ }
-    try { localStorage.removeItem('nx.os_keychain'); } catch {}
+    try { localStorage.removeItem('drx.os_keychain'); } catch {}
   },
 
   async checkStoragePermission(): Promise<boolean> {
@@ -583,15 +583,15 @@ export const bridge = {
       return { apiKey: res?.api_key || null, tailnet: res?.tailnet || null };
     }
     return {
-      apiKey: localStorage.getItem('nx.tailscale.apikey'),
-      tailnet: localStorage.getItem('nx.tailscale.tailnet'),
+      apiKey: localStorage.getItem('drx.tailscale.apikey'),
+      tailnet: localStorage.getItem('drx.tailscale.tailnet'),
     };
   },
 
   async saveTailscaleCredentials(apiKey: string, tailnet?: string | null): Promise<void> {
     if (isTauri) return invoke('tailscale_save_credentials', { apiKey, tailnet: tailnet || null });
-    localStorage.setItem('nx.tailscale.apikey', apiKey);
-    if (tailnet) localStorage.setItem('nx.tailscale.tailnet', tailnet);
+    localStorage.setItem('drx.tailscale.apikey', apiKey);
+    if (tailnet) localStorage.setItem('drx.tailscale.tailnet', tailnet);
   },
 
   // ── Docker Containers ──
@@ -931,7 +931,7 @@ export const bridge = {
 
   async localFsReadText(path: string): Promise<string> {
     if (isTauri) return invoke('local_fs_read_text', { path });
-    return '# Demo local file\nprint("Hello, NexusTerminal!")\n';
+    return '# Demo local file\nprint("Hello, Drexius!")\n';
   },
 
   async localFsWriteText(path: string, content: string): Promise<void> {
@@ -1024,7 +1024,7 @@ export const bridge = {
     await persistDemo();
     return {
       item,
-      publicKey: `ssh-${req.algorithm} AAAAC3NzaC1lZDI1NTE5AAAAI${tag} ${req.comment || 'demo@nexus'}`,
+      publicKey: `ssh-${req.algorithm} AAAAC3NzaC1lZDI1NTE5AAAAI${tag} ${req.comment || 'demo@drexius'}`,
       fingerprint: `SHA256:${tag.repeat(4)}`,
       algorithm,
     };
@@ -1320,7 +1320,7 @@ export const bridge = {
     const v = (st.vaults ?? []).find((x: Vault) => x.id === vaultId) ?? { id: vaultId, name: 'Team Vault', kind: 'team', createdAt: Date.now() };
     return {
       version: 1,
-      format: 'nexus-team-vault',
+      format: 'drexius-team-vault',
       vaultName: v.name,
       salt: '00112233445566778899aabbccddeeff',
       nonce: '00112233445566778899aabbccddeeff0011223344556677',
@@ -1341,8 +1341,8 @@ export const bridge = {
       pin,
       ip: '192.168.1.100',
       port: 48291,
-      deviceName: 'Nexus Web Sandbox',
-      qrPayload: `nxpair://192.168.1.100:48291?pin=${pin}&pk=demo&name=Nexus%20Sandbox`,
+      deviceName: 'Drexius Web Sandbox',
+      qrPayload: `drxpair://192.168.1.100:48291?pin=${pin}&pk=demo&name=Drexius%20Sandbox`,
     };
   },
 
@@ -1371,7 +1371,7 @@ export const bridge = {
 
   async pairingListDevices(): Promise<PairedDevice[]> {
     if (isTauri) return invoke('pairing_list_devices');
-    const stored = localStorage.getItem('nx.paired.devices');
+    const stored = localStorage.getItem('drx.paired.devices');
     return stored ? JSON.parse(stored) : [
       { id: 'dev-1', deviceName: 'MacBook Pro 16"', deviceType: 'laptop', ipAddress: '192.168.1.45', pairedAt: Date.now() - 86400000 * 3, lastSync: Date.now() - 3600000, deviceId: 'dev-1', revokedAt: null },
     ];
@@ -1380,13 +1380,13 @@ export const bridge = {
   async pairingRevokeDevice(id: string): Promise<void> {
     if (isTauri) return invoke('pairing_revoke_device', { id });
     const list = await this.pairingListDevices();
-    localStorage.setItem('nx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: Math.floor(Date.now() / 1000) } : d))));
+    localStorage.setItem('drx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: Math.floor(Date.now() / 1000) } : d))));
   },
 
   async pairingAllowDevice(id: string): Promise<void> {
     if (isTauri) return invoke('pairing_allow_device', { id });
     const list = await this.pairingListDevices();
-    localStorage.setItem('nx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: null } : d))));
+    localStorage.setItem('drx.paired.devices', JSON.stringify(list.map((d) => (d.id === id ? { ...d, revokedAt: null } : d))));
   },
 
   async pairingGetLocalInfo(): Promise<LocalDeviceInfo> {
@@ -1651,9 +1651,9 @@ export const bridge = {
       starred: false,
     };
     try {
-      const list = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      const list = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       list.unshift(memItem);
-      localStorage.setItem('nx.cmd_history', JSON.stringify(list.slice(0, 300)));
+      localStorage.setItem('drx.cmd_history', JSON.stringify(list.slice(0, 300)));
     } catch {}
     return memItem;
   },
@@ -1663,7 +1663,7 @@ export const bridge = {
       return invoke('command_history_list', { limit, search: search ?? null });
     }
     try {
-      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       if (search) {
         const q = search.toLowerCase();
         list = list.filter((i) => i.command.toLowerCase().includes(q) || i.hostLabel.toLowerCase().includes(q));
@@ -1677,11 +1677,11 @@ export const bridge = {
   async toggleStarCommandHistory(id: string): Promise<boolean> {
     if (isTauri) return invoke('command_history_toggle_star', { id });
     try {
-      const list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      const list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       const item = list.find((i) => i.id === id);
       if (item) {
         item.starred = !item.starred;
-        localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+        localStorage.setItem('drx.cmd_history', JSON.stringify(list));
         return item.starred;
       }
     } catch {}
@@ -1691,18 +1691,18 @@ export const bridge = {
   async deleteCommandHistory(id: string): Promise<void> {
     if (isTauri) return invoke('command_history_delete', { id });
     try {
-      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       list = list.filter((i) => i.id !== id);
-      localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+      localStorage.setItem('drx.cmd_history', JSON.stringify(list));
     } catch {}
   },
 
   async clearCommandHistory(): Promise<void> {
     if (isTauri) return invoke('command_history_clear');
     try {
-      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('nx.cmd_history') || '[]');
+      let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       list = list.filter((i) => i.starred);
-      localStorage.setItem('nx.cmd_history', JSON.stringify(list));
+      localStorage.setItem('drx.cmd_history', JSON.stringify(list));
     } catch {}
   },
 
@@ -1721,10 +1721,10 @@ export const bridge = {
       pinned: false,
     };
     try {
-      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('drx.clip_history') || '[]');
       list = list.filter((c) => c.content !== content);
       list.unshift(memItem);
-      localStorage.setItem('nx.clip_history', JSON.stringify(list.slice(0, 100)));
+      localStorage.setItem('drx.clip_history', JSON.stringify(list.slice(0, 100)));
     } catch {}
     return memItem;
   },
@@ -1734,7 +1734,7 @@ export const bridge = {
       return invoke('clipboard_history_list', { limit, search: search ?? null });
     }
     try {
-      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('drx.clip_history') || '[]');
       if (search) {
         const q = search.toLowerCase();
         list = list.filter((c) => c.content.toLowerCase().includes(q));
@@ -1748,11 +1748,11 @@ export const bridge = {
   async togglePinClipboard(id: string): Promise<boolean> {
     if (isTauri) return invoke('clipboard_history_toggle_pin', { id });
     try {
-      const list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      const list: ClipboardItem[] = JSON.parse(localStorage.getItem('drx.clip_history') || '[]');
       const item = list.find((i) => i.id === id);
       if (item) {
         item.pinned = !item.pinned;
-        localStorage.setItem('nx.clip_history', JSON.stringify(list));
+        localStorage.setItem('drx.clip_history', JSON.stringify(list));
         return item.pinned;
       }
     } catch {}
@@ -1762,18 +1762,18 @@ export const bridge = {
   async deleteClipboardHistory(id: string): Promise<void> {
     if (isTauri) return invoke('clipboard_history_delete', { id });
     try {
-      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('drx.clip_history') || '[]');
       list = list.filter((i) => i.id !== id);
-      localStorage.setItem('nx.clip_history', JSON.stringify(list));
+      localStorage.setItem('drx.clip_history', JSON.stringify(list));
     } catch {}
   },
 
   async clearClipboardHistory(): Promise<void> {
     if (isTauri) return invoke('clipboard_history_clear');
     try {
-      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('nx.clip_history') || '[]');
+      let list: ClipboardItem[] = JSON.parse(localStorage.getItem('drx.clip_history') || '[]');
       list = list.filter((i) => i.pinned);
-      localStorage.setItem('nx.clip_history', JSON.stringify(list));
+      localStorage.setItem('drx.clip_history', JSON.stringify(list));
     } catch {}
   },
 

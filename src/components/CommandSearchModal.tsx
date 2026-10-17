@@ -14,7 +14,7 @@ import {
 import type { CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
@@ -23,7 +23,7 @@ interface Props {
   onSelect: (command: string, executeImmediately?: boolean) => void;
   onSaveSnippet?: (command: string) => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
   /** Render only the browser (header, search, list) for a host that provides the sheet — the phone drawer. */
   embedded?: boolean;
 }
@@ -47,7 +47,7 @@ export function CommandSearchModal({
   theme,
   embedded = false,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
 

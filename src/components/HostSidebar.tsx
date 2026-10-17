@@ -23,7 +23,7 @@ import {
   Network,
 } from 'lucide-react';
 import type { Host, Vault } from '../lib/types';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { OsIcon } from './OsIcon';
 import { cn } from '../utils/cn';
@@ -46,7 +46,7 @@ interface Props {
   onOpenTailscale?: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
   onClose?: () => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 const authIcon = { key: KeyRound, password: Lock, agent: Fingerprint };
@@ -102,7 +102,7 @@ export function HostSidebar({
   const [actionHost, setActionHost] = useState<Host | null>(null);
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
 
@@ -143,7 +143,7 @@ export function HostSidebar({
 
   // Team steps calculation
   const hasTeamHosts = vaultFilteredHosts.length > 0;
-  const isExported = localStorage.getItem(`nx.vault.exported.${activeVault?.id}`) === '1';
+  const isExported = localStorage.getItem(`drx.vault.exported.${activeVault?.id}`) === '1';
   const teamStepsDone = 1 + (hasTeamHosts ? 1 : 0) + (isExported ? 1 : 0);
 
   const handleUniversalConnect = () => {

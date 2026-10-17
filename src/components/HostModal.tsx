@@ -7,7 +7,7 @@ import { OS_OPTIONS } from '../lib/os';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 import { CustomSelect } from './CustomSelect';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 
 const COLORS = ['#22d3ee', '#a78bfa', '#f43f5e', '#f59e0b', '#4ade80', '#60a5fa', '#f472b6', '#94a3b8'];
 
@@ -41,9 +41,9 @@ export function HostModal({
   defaultVaultId?: string;
   onClose: () => void;
   onSave: (h: Host, s?: HostSecret, alreadySaved?: boolean) => void | Promise<void>;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
 

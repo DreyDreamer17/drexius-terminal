@@ -28,9 +28,9 @@ interface ParsedPairingLink {
   serverPublicKey: string;
 }
 
-/** Parses an nxpair:// link: host, port, 6-digit PIN, and the host's pinned X25519 public key (hex). */
+/** Parses a drxpair:// (or legacy nxpair://) link: host, port, 6-digit PIN, and the host's pinned X25519 public key (hex). */
 function parsePairingLink(link: string): ParsedPairingLink {
-  const m = link.trim().match(/^nxpair:\/\/([^:/?#\s]+):(\d{1,5})\?(\S+)$/);
+  const m = link.trim().match(/^(?:drxpair|nxpair):\/\/([^:/?#\s]+):(\d{1,5})\?(\S+)$/);
   if (!m) throw new Error('That is not a valid pairing link. Copy it from the host device.');
   const params = new URLSearchParams(m[3]);
   const pin = (params.get('pin') || '').replace(/\D/g, '');
@@ -39,7 +39,7 @@ function parsePairingLink(link: string): ParsedPairingLink {
   if (!/^[0-9a-fA-F]{64}$/.test(pk)) throw new Error('The pairing link does not contain a valid host key.');
   return { host: m[1], port: parseInt(m[2], 10), pin, serverPublicKey: pk.toLowerCase() };
 }
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
@@ -47,7 +47,7 @@ interface Props {
   onRefresh: () => Promise<void>;
   toast: (msg: string) => void;
   initialTab?: 'share' | 'join' | 'devices';
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function DevicePairingModal({
@@ -57,7 +57,7 @@ export function DevicePairingModal({
   initialTab = 'share',
   theme,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
 
@@ -536,7 +536,7 @@ export function DevicePairingModal({
                 required
                 value={joinLink}
                 onChange={(e) => setJoinLink(e.target.value)}
-                placeholder="nxpair://192.168.1.105:48291?pin=…&pk=…"
+                placeholder="drxpair://192.168.1.105:48291?pin=…&pk=…"
                 autoComplete="off"
                 spellCheck={false}
                 className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none"

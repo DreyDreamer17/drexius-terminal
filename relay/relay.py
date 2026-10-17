@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal single-group Nexus sync relay. Stores opaque ciphertext only.
+"""Minimal single-group Drexius sync relay. Stores opaque ciphertext only.
 
 Bind loopback by default; deploy behind an HTTPS reverse proxy for remote use.
 Every request needs the same high-entropy bearer token. One instance/token per
@@ -32,7 +32,7 @@ def init_db(path: Path) -> None:
 
 def make_handler(path: Path, token: str):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "NexusRelay/1"
+        server_version = "DrexiusRelay/1"
 
         def send_body(self, status: int, body: bytes, content_type: str = "application/json") -> None:
             self.send_response(status)
@@ -120,12 +120,12 @@ def main():
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--db", type=Path, default=Path(__file__).with_name("relay.sqlite3"))
     args = parser.parse_args()
-    token = os.environ.get("NEXUS_RELAY_TOKEN", "")
+    token = os.environ.get("DREXIUS_RELAY_TOKEN", "")
     if len(token) < 32:
-        parser.error("set NEXUS_RELAY_TOKEN to a random secret of at least 32 characters")
+        parser.error("set DREXIUS_RELAY_TOKEN to a random secret of at least 32 characters")
     init_db(args.db)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(args.db, token))
-    print(f"Nexus relay listening on {args.host}:{server.server_port}; use HTTPS reverse proxy for remote clients", flush=True)
+    print(f"Drexius relay listening on {args.host}:{server.server_port}; use HTTPS reverse proxy for remote clients", flush=True)
     server.serve_forever()
 
 

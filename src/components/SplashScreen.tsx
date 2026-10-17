@@ -1,7 +1,7 @@
 import { BatteryFull, Check, ShieldCheck, Signal, Wifi } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import { appearances, type Appearance } from '../lib/artwork';
-import { NetworkBackdrop, NetworkMark, Wordmark } from './NexusArt';
+import { NetworkBackdrop, NetworkMark, Wordmark } from './DrexiusArt';
 
 export function SplashScreen({
   appearance,

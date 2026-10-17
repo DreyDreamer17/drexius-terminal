@@ -41,7 +41,7 @@ import { parseOsFromBanner } from '../lib/os';
 import { registry } from '../lib/sessions';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus, SessionEvent } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
@@ -105,7 +105,7 @@ const MAX_RESUME_ATTEMPTS = 6;
 interface Props {
   pane: Pane;
   host: Host;
-  theme: NexusTheme;
+  theme: DrexiusTheme;
   fontSize: number;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
@@ -637,7 +637,7 @@ export const TerminalPane = memo(function TerminalPane({
               break;
             case 'disconnected':
               sessionRef.current = null;
-              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
               term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });
@@ -649,7 +649,7 @@ export const TerminalPane = memo(function TerminalPane({
           sessionRef.current ||
           pane.sessionId ||
           (() => {
-            try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+            try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
           })();
         if (existingLocalSid) {
           suppressLocalBanner = true;
@@ -658,13 +658,13 @@ export const TerminalPane = memo(function TerminalPane({
           if (attached) {
             if (dead()) return;
             sessionRef.current = existingLocalSid;
-            try { localStorage.setItem('nx.pane.sid.' + pane.id, existingLocalSid); } catch {}
+            try { localStorage.setItem('drx.pane.sid.' + pane.id, existingLocalSid); } catch {}
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingLocalSid });
             return;
           }
-          try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+          try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
         }
 
         term.write(`\r\n\x1b[90m→ Spawning ${pane.customShell ? 'custom session' : 'local PTY shell'}…\x1b[0m\r\n`);
@@ -675,7 +675,7 @@ export const TerminalPane = memo(function TerminalPane({
             return;
           }
           sessionRef.current = sid;
-          try { localStorage.setItem('nx.pane.sid.' + pane.id, sid); } catch {}
+          try { localStorage.setItem('drx.pane.sid.' + pane.id, sid); } catch {}
           retryRef.current = 0;
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
@@ -732,7 +732,7 @@ export const TerminalPane = memo(function TerminalPane({
             }
             case 'disconnected':
               sessionRef.current = null;
-              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
               lastSentSize.current = { cols: 0, rows: 0 };
               term.write(`\r\n\x1b[31m✖ ${ev.reason}\x1b[0m\r\n`);
               setStatus('disconnected');
@@ -749,7 +749,7 @@ export const TerminalPane = memo(function TerminalPane({
           sessionRef.current ||
           pane.sessionId ||
           (() => {
-            try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+            try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
           })();
         if (existingSshSid) {
           suppressConnectBanner = true;
@@ -758,14 +758,14 @@ export const TerminalPane = memo(function TerminalPane({
           if (attached) {
             if (dead()) return;
             sessionRef.current = existingSshSid;
-            try { localStorage.setItem('nx.pane.sid.' + pane.id, existingSshSid); } catch {}
+            try { localStorage.setItem('drx.pane.sid.' + pane.id, existingSshSid); } catch {}
             lastSentSize.current = { cols: initCols, rows: initRows };
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingSshSid });
             return;
           }
-          try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+          try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
         }
 
         term.write(
@@ -779,7 +779,7 @@ export const TerminalPane = memo(function TerminalPane({
           return;
         }
         sessionRef.current = sid;
-        try { localStorage.setItem('nx.pane.sid.' + pane.id, sid); } catch {}
+        try { localStorage.setItem('drx.pane.sid.' + pane.id, sid); } catch {}
         lastSentSize.current = { cols: initCols, rows: initRows };
         retryRef.current = 0;
         setStatus('connected');
@@ -1602,7 +1602,7 @@ export const TerminalPane = memo(function TerminalPane({
           bridge.listSshSessions().then((sessions) => {
             if (sessionRef.current === currentSid && !sessions.some((s) => s.sessionId === currentSid)) {
               sessionRef.current = null;
-              try { localStorage.removeItem('nx.pane.sid.' + pane.id); } catch {}
+              try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
               lastSentSize.current = { cols: 0, rows: 0 };
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });

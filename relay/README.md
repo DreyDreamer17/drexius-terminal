@@ -1,4 +1,4 @@
-# Nexus relay (self-hosted, single sync group)
+# Drexius relay (self-hosted, single sync group)
 
 The desktop app is the client. This reference relay stores **opaque encrypted
 blobs**, HMAC-blinded identifiers and a change cursor in SQLite. It does not
@@ -8,7 +8,7 @@ client IPs and the bearer token; use a trusted host and HTTPS.
 ## Local test
 
 ```bash
-export NEXUS_RELAY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export DREXIUS_RELAY_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
 python3 relay/relay.py --host 127.0.0.1 --port 8787
 ```
 
@@ -35,8 +35,8 @@ sync; their local SQLCipher keys are intentionally different.
 
 ## Operation & limitations
 
-- One relay instance/token per sync group. Set `NEXUS_RELAY_TOKEN` to at least
-  32 random characters; protect it like a password. **No Nexus-hosted relay
+- One relay instance/token per sync group. Set `DREXIUS_RELAY_TOKEN` to at least
+  32 random characters; protect it like a password. **No Drexius-hosted relay
   exists.** You must run and secure this service yourself.
 - Database: `relay/relay.sqlite3` by default (override `--db`). Back it up
   using SQLite's online backup API or after stopping the server; keep it out

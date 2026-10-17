@@ -4,7 +4,7 @@ import {
   scrollableAccessoryKeys,
   type TerminalModifiers,
 } from '../lib/mobileTerminal';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 
 export function TerminalAccessory({
   modifiers,
@@ -17,7 +17,7 @@ export function TerminalAccessory({
   modifiers: TerminalModifiers;
   onModifier: (key: keyof TerminalModifiers) => void;
   onKey: (data: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
   /** Pane tools that used to live in the (removed) top bar; the drawers (keypad, AI, snippets, history) are owned by the app. */
   tools?: { onKeypad: () => void; onSearch: () => void; onHistory: () => void; onAssistant?: () => void; onSnippets?: () => void };
   hasSuggestion?: boolean;

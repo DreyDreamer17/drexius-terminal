@@ -1,8 +1,8 @@
 //! Encrypted v2 relay sync (self-hosted).
 //!
 //!   seed    ── random group secret in SQLCipher, shared by encrypted LAN pairing
-//!   K_sync  = HKDF-SHA256(seed, info="nexus/sync/v2")   → XChaCha20-Poly1305 key
-//!   K_index = HKDF-SHA256(seed, info="nexus/index/v2")  → HMAC key for blinded record ids
+//!   K_sync  = HKDF-SHA256(seed, info="drexius/sync/v2")   → XChaCha20-Poly1305 key
+//!   K_index = HKDF-SHA256(seed, info="drexius/index/v2")  → HMAC key for blinded record ids
 //!
 //! The relay (any HTTP server implementing PUT/GET /blobs/:id, GET /changes?since=)
 //! stores only:
@@ -80,11 +80,11 @@ pub struct SyncKeys {
 
 impl SyncKeys {
     pub fn derive(seed: &[u8; 32]) -> AppResult<Self> {
-        let hk = Hkdf::<Sha256>::new(Some(b"nexus-terminal-sync-v2"), seed);
+        let hk = Hkdf::<Sha256>::new(Some(b"drexius-terminal-sync-v2"), seed);
         let mut enc = Zeroizing::new([0u8; 32]);
         let mut index = Zeroizing::new([0u8; 32]);
-        hk.expand(b"nexus/sync/v2", enc.as_mut()).map_err(|e| AppError::Crypto(e.to_string()))?;
-        hk.expand(b"nexus/index/v2", index.as_mut()).map_err(|e| AppError::Crypto(e.to_string()))?;
+        hk.expand(b"drexius/sync/v2", enc.as_mut()).map_err(|e| AppError::Crypto(e.to_string()))?;
+        hk.expand(b"drexius/index/v2", index.as_mut()).map_err(|e| AppError::Crypto(e.to_string()))?;
         Ok(Self { enc, index })
     }
 
@@ -181,7 +181,7 @@ impl HttpRelay {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
-                .user_agent(concat!("nexus-terminal/", env!("CARGO_PKG_VERSION")))
+                .user_agent(concat!("drexius-terminal/", env!("CARGO_PKG_VERSION")))
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_default(),

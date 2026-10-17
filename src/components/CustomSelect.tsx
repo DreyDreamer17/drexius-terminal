@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
 export interface SelectOption<T = string | number> {
@@ -17,7 +17,7 @@ export interface CustomSelectProps<T = string | number> {
   placeholder?: string;
   className?: string;
   dropUp?: boolean;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
   accentColor?: string;
 }
 

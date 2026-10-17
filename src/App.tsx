@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
-import { THEMES, type NexusTheme } from './lib/themes';
+import { THEMES, type DrexiusTheme } from './lib/themes';
 import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import { LockScreen } from './components/LockScreen';
 import { LaunchSplash } from './components/LaunchSplash';
@@ -102,7 +102,7 @@ const LOCAL_HOST: Host = {
 
 /** Auto-lock timeouts in minutes. 0 means off. */
 const AUTO_LOCK_OPTIONS = [0, 5, 15, 30, 60] as const;
-const AUTO_LOCK_STORAGE_KEY = 'nx.autolock_minutes';
+const AUTO_LOCK_STORAGE_KEY = 'drx.autolock_minutes';
 const AUTO_LOCK_DEFAULT = 15;
 
 function readAutoLockMinutes(): number {
@@ -119,7 +119,7 @@ function readAutoLockMinutes(): number {
 
 
 /** Tiny theme preview: terminal background with its red/green/blue/magenta strip (same as the desktop theme popover). */
-function ThemeSwatch({ t, large = false }: { t: NexusTheme; large?: boolean }) {
+function ThemeSwatch({ t, large = false }: { t: DrexiusTheme; large?: boolean }) {
   return (
     <span className={cn('nx-theme-swatch', large && 'nx-theme-swatch-lg')} style={{ background: t.xterm.background, boxShadow: `0 0 0 1px ${t.accent}55` }} aria-hidden="true">
       {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <i key={i} style={{ background: c }} />)}
@@ -127,7 +127,7 @@ function ThemeSwatch({ t, large = false }: { t: NexusTheme; large?: boolean }) {
   );
 }
 
-const WORKSPACE_STORAGE_KEY = 'nx.workspace.state.v1';
+const WORKSPACE_STORAGE_KEY = 'drx.workspace.state.v1';
 
 function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mobilePage: MobilePage } | null {
   try {
@@ -218,7 +218,7 @@ export default function App() {
       const enabled = hasStored || bridge.osKeychainEnabled();
       setDeviceLockEnabled(enabled);
       if (hasStored && !bridge.osKeychainEnabled()) {
-        try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+        try { localStorage.setItem('drx.os_keychain', '1'); } catch {}
       }
     }).catch(() => {});
   }, [unlocked, mobilePage, settingsPicker]);
@@ -231,7 +231,7 @@ export default function App() {
     if (!isTauri || !unlocked || bridge.osKeychainEnabled()) return;
     bridge.osKeychainStatus(true).then((hasStored) => {
       if (!hasStored) return;
-      try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+      try { localStorage.setItem('drx.os_keychain', '1'); } catch {}
       setDeviceLockEnabled(true);
     }).catch(() => {});
   }, [unlocked]);
@@ -278,7 +278,7 @@ export default function App() {
             const storedSid =
               pane.sessionId ||
               (() => {
-                try { return localStorage.getItem('nx.pane.sid.' + pane.id); } catch { return null; }
+                try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
               })();
             if (storedSid && liveSessions.some((s) => s.sessionId === storedSid)) {
               claimedSessionIds.add(storedSid);
@@ -303,7 +303,7 @@ export default function App() {
             const pi = t.panes.findIndex((p) => !p.isLocal && p.hostId === sess.hostId && !p.sessionId);
             if (pi !== -1) {
               const pane = t.panes[pi];
-              try { localStorage.setItem('nx.pane.sid.' + pane.id, sess.sessionId); } catch {}
+              try { localStorage.setItem('drx.pane.sid.' + pane.id, sess.sessionId); } catch {}
               const updatedPanes = [...t.panes];
               updatedPanes[pi] = { ...pane, sessionId: sess.sessionId };
               nextTabs[ti] = { ...t, panes: updatedPanes };
@@ -317,7 +317,7 @@ export default function App() {
             const h = hosts.find((x) => x.id === sess.hostId);
             if (h) {
               const paneId = uid();
-              try { localStorage.setItem('nx.pane.sid.' + paneId, sess.sessionId); } catch {}
+              try { localStorage.setItem('drx.pane.sid.' + paneId, sess.sessionId); } catch {}
               const pane: Pane = { id: paneId, hostId: h.id, resume: true, sessionId: sess.sessionId };
               const tab: Tab = {
                 id: uid(),
@@ -352,7 +352,7 @@ export default function App() {
   const [newConnNonce, setNewConnNonce] = useState(0);
   const [aiWidth, setAiWidth] = useState<number>(() => {
     try {
-      const saved = localStorage.getItem('nx.ai.panel_width');
+      const saved = localStorage.getItem('drx.ai.panel_width');
       if (saved) {
         const n = parseInt(saved, 10);
         if (Number.isFinite(n) && n >= 320 && n <= 1200) return n;
@@ -393,16 +393,16 @@ export default function App() {
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
       try {
-        localStorage.setItem('nx.ai.panel_width', String(aiWidthRef.current));
+        localStorage.setItem('drx.ai.panel_width', String(aiWidthRef.current));
       } catch {}
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
   }, []);
-  const [themeId, setThemeId] = useState(() => localStorage.getItem('nx.theme') ?? 'nexus');
-  const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('nx.font') ?? 13));
-  const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('nx.lineHeight') ?? 1.0));
+  const [themeId, setThemeId] = useState(() => localStorage.getItem('drx.theme') ?? 'drexius');
+  const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('drx.font') ?? 13));
+  const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('drx.lineHeight') ?? 1.0));
   const [showThemes, setShowThemes] = useState(false);
   const [showSync, setShowSync] = useState(false);
   const [modal, setModal] = useState<{ host: Host | null } | null>(null);
@@ -411,16 +411,16 @@ export default function App() {
   const [quickFilter, setQuickFilter] = useState('');
   const [quickPos, setQuickPos] = useState<{ top: number; left: number }>({ top: 40, left: 200 });
   const quickBtnRef = useRef<HTMLButtonElement>(null);
-  const [zen, setZen] = useState(() => localStorage.getItem('nx.zen') === '1');
-  const [showRail, setShowRail] = useState(() => localStorage.getItem('nx.rail') === '1');
-  const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('nx.status') === '1');
+  const [zen, setZen] = useState(() => localStorage.getItem('drx.zen') === '1');
+  const [showRail, setShowRail] = useState(() => localStorage.getItem('drx.rail') === '1');
+  const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('drx.status') === '1');
   const [broadcast, setBroadcast] = useState(false);
-  const [showTerminalTools, setShowTerminalTools] = useState(() => localStorage.getItem('nx.terminalTools') === '1');
+  const [showTerminalTools, setShowTerminalTools] = useState(() => localStorage.getItem('drx.terminalTools') === '1');
   const toggleTerminalTools = useCallback(() => {
     setShowTerminalTools((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem('nx.terminalTools', next ? '1' : '0');
+        localStorage.setItem('drx.terminalTools', next ? '1' : '0');
       } catch {}
       return next;
     });
@@ -444,7 +444,7 @@ export default function App() {
   const toast = useCallback((m: string) => { setToastMsg(m); setTimeout(() => setToastMsg((c) => (c === m ? null : c)), 2400); }, []);
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [activeVaultId, setActiveVaultId] = useState<string | 'all'>(
-    () => localStorage.getItem('nx.vault.active') ?? 'personal'
+    () => localStorage.getItem('drx.vault.active') ?? 'personal'
   );
   const [shareModal, setShareModal] = useState<{ initialTab?: 'share' | 'import' } | null>(null);
   const [showSerial, setShowSerial] = useState(false);
@@ -452,13 +452,13 @@ export default function App() {
   const [showSshConfig, setShowSshConfig] = useState(false);
   const [showTailscale, setShowTailscale] = useState(false);
 
-  useEffect(() => { localStorage.setItem('nx.theme', themeId); }, [themeId]);
-  useEffect(() => { localStorage.setItem('nx.font', String(fontSize)); }, [fontSize]);
-  useEffect(() => { localStorage.setItem('nx.lineHeight', String(lineHeight)); }, [lineHeight]);
-  useEffect(() => { localStorage.setItem('nx.zen', zen ? '1' : '0'); }, [zen]);
-  useEffect(() => { localStorage.setItem('nx.rail', showRail ? '1' : '0'); }, [showRail]);
-  useEffect(() => { localStorage.setItem('nx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
-  useEffect(() => { localStorage.setItem('nx.vault.active', activeVaultId); }, [activeVaultId]);
+  useEffect(() => { localStorage.setItem('drx.theme', themeId); }, [themeId]);
+  useEffect(() => { localStorage.setItem('drx.font', String(fontSize)); }, [fontSize]);
+  useEffect(() => { localStorage.setItem('drx.lineHeight', String(lineHeight)); }, [lineHeight]);
+  useEffect(() => { localStorage.setItem('drx.zen', zen ? '1' : '0'); }, [zen]);
+  useEffect(() => { localStorage.setItem('drx.rail', showRail ? '1' : '0'); }, [showRail]);
+  useEffect(() => { localStorage.setItem('drx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
+  useEffect(() => { localStorage.setItem('drx.vault.active', activeVaultId); }, [activeVaultId]);
 
   const refresh = useCallback(async () => {
     const [h, s, k, tun, v] = await Promise.all([
@@ -663,9 +663,9 @@ export default function App() {
       registry.get(p.id)?.sessionId ||
       p.sessionId ||
       (() => {
-        try { return localStorage.getItem('nx.pane.sid.' + p.id); } catch { return null; }
+        try { return localStorage.getItem('drx.pane.sid.' + p.id); } catch { return null; }
       })();
-    try { localStorage.removeItem('nx.pane.sid.' + p.id); } catch {}
+    try { localStorage.removeItem('drx.pane.sid.' + p.id); } catch {}
     if (!sid) return;
     if (p.kind === 'serial') {
       bridge.closeSerial(sid).catch(() => {});
@@ -1054,8 +1054,8 @@ export default function App() {
               )}
             >
               <img
-                src="/nexus-logo.png"
-                alt="NexusTerminal"
+                src="/drexius-logo.png"
+                alt="DrexiusTerminal"
                 className="h-5.5 w-5.5 rounded-lg object-contain transition-transform duration-200 group-hover:scale-105 group-active:scale-95"
               />
             </button>
@@ -1938,7 +1938,7 @@ export default function App() {
           title="Drag to resize AI Assistant (Double-click to reset)"
           onDoubleClick={() => {
             setAiWidth(420);
-            localStorage.setItem('nx.ai.panel_width', '420');
+            localStorage.setItem('drx.ai.panel_width', '420');
           }}
         >
           {/* Expanded transparent hit area so mouse easily catches the edge */}
@@ -2142,7 +2142,7 @@ export default function App() {
                           const { authenticate } = await import('@tauri-apps/plugin-biometric');
                           await authenticate('Verify Biometric / Screen Lock to Enable', {
                             allowDeviceCredential: true,
-                            title: 'NexusTerminal Vault',
+                            title: 'Drexius Vault',
                             subtitle: 'Confirm fingerprint, face or device screen lock to enable quick unlock',
                           });
                         } catch (bioErr: any) {
@@ -2213,8 +2213,8 @@ export default function App() {
                     if (!recoveryKey) return;
                     try {
                       await navigator.share({
-                        title: 'NexusTerminal Recovery Kit',
-                        text: `NEXUSTERMINAL EMERGENCY RECOVERY KEY:\n${recoveryKey}\n\nKeep this secret and offline.`,
+                        title: 'Drexius Recovery Kit',
+                        text: `DREXIUS EMERGENCY RECOVERY KEY:\n${recoveryKey}\n\nKeep this secret and offline.`,
                       });
                     } catch (e: any) {
                       if (e?.name !== 'AbortError') console.warn(e);
@@ -2233,7 +2233,7 @@ export default function App() {
                 onClick={async () => {
                   if (!recoveryKey) return;
                   try {
-                    const text = `=====================================================\nNEXUSTERMINAL EMERGENCY RECOVERY KIT\n=====================================================\n\nEmergency Recovery Key:\n${recoveryKey}\n\nGenerated: ${new Date().toISOString()}\n=====================================================`;
+                    const text = `=====================================================\nDREXIUS EMERGENCY RECOVERY KIT\n=====================================================\n\nEmergency Recovery Key:\n${recoveryKey}\n\nGenerated: ${new Date().toISOString()}\n=====================================================`;
                     const path = await bridge.vaultSaveEmergencyKit(text);
                     setDownloadedRecoveryPath(path);
                   } catch (e) {
@@ -2281,7 +2281,7 @@ export default function App() {
               </div>
               <p className="text-slate-400 leading-relaxed text-[11.5px]">
                 {storageGranted === true
-                  ? 'NexusTerminal has storage access. You can browse internal storage, save recovery keys to Downloads, and transfer files via Local SFTP.'
+                  ? 'Drexius has storage access. You can browse internal storage, save recovery keys to Downloads, and transfer files via Local SFTP.'
                   : 'Storage permission is required to browse shared storage, save your Emergency Recovery Key to Downloads, and transfer files in SFTP.'}
               </p>
 
@@ -2317,7 +2317,7 @@ export default function App() {
                 <span>Accessible Storage Directories</span>
               </div>
               <p className="text-slate-400 leading-relaxed text-[11.5px]">
-                NexusTerminal uses these shared storage paths for file operations:
+                Drexius uses these shared storage paths for file operations:
               </p>
               <div className="font-mono text-[11px] text-cyan-300 bg-black/40 rounded-lg p-2.5 border border-white/5 space-y-1">
                 <div>• /storage/emulated/0/Download</div>
@@ -2658,7 +2658,7 @@ function Welcome({
       <div className="nx-blob pointer-events-none absolute left-1/4 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]" />
       <div className="nx-blob-2 pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-[100px]" />
       <div className="relative w-full max-w-2xl px-6 py-6 text-center">
-        <img src="/nexus-logo.png" alt="" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
+        <img src="/drexius-logo.png" alt="" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-white">Where to today?</h1>
         <p className="mt-2 text-sm text-slate-500">Pick a host to open an encrypted session. Select a host to get started; your sessions stay connected while you switch.</p>
         <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
@@ -2698,18 +2698,18 @@ function SyncModal({
   onClose: () => void;
   onOpenPairing: () => void;
   toast: (m: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }) {
   const accentColor = theme?.accent ?? '#22d3ee';
   const bgColor = theme?.xterm?.background ?? '#0e131d';
-  const [url, setUrl] = useState(() => localStorage.getItem('nx.sync.relay') ?? '');
+  const [url, setUrl] = useState(() => localStorage.getItem('drx.sync.relay') ?? '');
   const [token, setToken] = useState('');
   const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string; hasToken?: boolean; relayUrl?: string | null; skippedBlobs?: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     try {
-      localStorage.removeItem('nx.sync.token');
+      localStorage.removeItem('drx.sync.token');
     } catch {}
     if (isTauri) {
       bridge.syncStatus().then((st) => {
@@ -2727,9 +2727,9 @@ function SyncModal({
         setStatus(await bridge.syncStatus());
       }
       try {
-        localStorage.removeItem('nx.sync.token');
-        if (url) localStorage.setItem('nx.sync.relay', url);
-        else localStorage.removeItem('nx.sync.relay');
+        localStorage.removeItem('drx.sync.token');
+        if (url) localStorage.setItem('drx.sync.relay', url);
+        else localStorage.removeItem('drx.sync.relay');
       } catch {}
       toast(url ? 'Relay settings saved — pair a new vault to share its sync key' : 'Relay sync disabled');
       onClose();
@@ -2757,7 +2757,7 @@ function SyncModal({
   };
   const steps = [
     ['Seed', 'Random group key · shared by encrypted pairing'],
-    ['K_sync', 'HKDF-SHA256(seed, "nexus/sync/v2")'],
+    ['K_sync', 'HKDF-SHA256(seed, "drexius/sync/v2")'],
     ['Seal', 'XChaCha20-Poly1305 · 256-byte padded CBOR'],
     ['Blind', 'blob id = HMAC(K_index, table:id)'],
     ['Merge', 'Hybrid logical clocks · last-writer-wins'],

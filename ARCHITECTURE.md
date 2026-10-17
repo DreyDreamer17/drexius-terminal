@@ -1,10 +1,10 @@
-# NexusTerminal — Architecture
+# DrexiusTerminal — Architecture
 
 > A secure, local-first, open-source alternative to Termius.
 > Stack: **Tauri 2 (Rust)** backend · **React 19 + Tailwind 4 + xterm.js** frontend.
 
 ```
-nexusterminal/
+drexiusterminal/
 ├── ARCHITECTURE.md
 ├── index.html · package.json · vite.config.ts · tsconfig.json
 ├── src/                                # React frontend (WebView)
@@ -193,7 +193,7 @@ ai_client::ai_stream_proxy
 
 ## 6. OpenCode agent & serial UART
 
-* **OpenCode CLI (`opencode.rs`):** runs a local or remote `opencode` binary; remote execution uses an SSH exec channel streaming JSON events and falls back to local execution if OpenCode is unavailable on the host. Local runs use `~/NexusTerminal/ai-workspace`. Tool permissions are deny-by-default: read-only and autonomous modes differ in which actions they allow/ask for; sensitive paths and dangerous shell patterns are denied. This is policy-based filtering, not a sandbox or a guarantee against every shell escape.
+* **OpenCode CLI (`opencode.rs`):** runs a local or remote `opencode` binary; remote execution uses an SSH exec channel streaming JSON events and falls back to local execution if OpenCode is unavailable on the host. Local runs use `~/DrexiusTerminal/ai-workspace`. Tool permissions are deny-by-default: read-only and autonomous modes differ in which actions they allow/ask for; sensitive paths and dangerous shell patterns are denied. This is policy-based filtering, not a sandbox or a guarantee against every shell escape.
 * **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
 **Build/config notes and known limitations**

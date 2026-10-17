@@ -145,7 +145,7 @@ pub async fn sftp_download(
         let c = conn.lock();
         let mut src = c.sftp.open(Path::new(&remote))?;
         let total = src.stat()?.size.unwrap_or(0);
-        let temp_local = format!("{}.nexus-{}.part", local, uuid::Uuid::new_v4());
+        let temp_local = format!("{}.drexius-{}.part", local, uuid::Uuid::new_v4());
         let mut dst = std::fs::File::create(&temp_local)?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
@@ -176,7 +176,7 @@ pub async fn sftp_download(
         let temp_local_path = std::path::Path::new(&temp_local);
         let local_path = std::path::Path::new(&local);
         let rename_res = if local_path.exists() {
-            let backup_local = format!("{}.nexus-bak.{}", local, uuid::Uuid::new_v4());
+            let backup_local = format!("{}.drexius-bak.{}", local, uuid::Uuid::new_v4());
             let backup_path = std::path::Path::new(&backup_local);
             if let Err(_) = std::fs::rename(local_path, backup_path) {
                 std::fs::rename(temp_local_path, local_path)
@@ -226,7 +226,7 @@ pub async fn sftp_upload(
         let c = conn.lock();
         let mut src = std::fs::File::open(&local)?;
         let total = src.metadata()?.len();
-        let temp_remote = format!("{}.nexus-{}.part", remote, uuid::Uuid::new_v4());
+        let temp_remote = format!("{}.drexius-{}.part", remote, uuid::Uuid::new_v4());
         let mut dst = c.sftp.create(Path::new(&temp_remote))?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
@@ -265,7 +265,7 @@ pub async fn sftp_upload(
             Ok(()) => Ok(()),
             Err(_) => {
                 // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
-                let backup_remote = format!("{}.nexus-bak.{}", remote, uuid::Uuid::new_v4());
+                let backup_remote = format!("{}.drexius-bak.{}", remote, uuid::Uuid::new_v4());
                 let backup_path = Path::new(&backup_remote);
                 let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
                 match c.sftp.rename(temp_remote_path, remote_path, None) {
@@ -360,7 +360,7 @@ pub fn sftp_write_text(
 ) -> AppResult<()> {
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
-    let temp_remote = format!("{}.nexus-{}.part", path, uuid::Uuid::new_v4());
+    let temp_remote = format!("{}.drexius-{}.part", path, uuid::Uuid::new_v4());
     // Keep the original mode (+x scripts, 0600 secrets) across the atomic
     // replace — a fresh temp file would otherwise reset it to the umask.
     let orig_perm = c.sftp.stat(Path::new(&path)).ok().and_then(|st| st.perm);
@@ -400,7 +400,7 @@ pub fn sftp_write_text(
         Ok(()) => Ok(()),
         Err(_) => {
             // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
-            let backup_remote = format!("{}.nexus-bak.{}", path, uuid::Uuid::new_v4());
+            let backup_remote = format!("{}.drexius-bak.{}", path, uuid::Uuid::new_v4());
             let backup_path = Path::new(&backup_remote);
             let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
             match c.sftp.rename(temp_remote_path, remote_path, None) {

@@ -57,7 +57,7 @@ import {
 } from '../lib/ollama';
 import { bridge } from '../lib/bridge';
 import type { AiBalanceStrategy, AiProviderConfig, Host, OpencodeHostStatus } from '../lib/types';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
@@ -88,7 +88,7 @@ const sanitizeConfigsForStorage = (cfgs: AiProviderConfig[]): AiProviderConfig[]
 const loadCachedConfigs = (): AiProviderConfig[] => {
   const defaults = createDefaultAiConfigs();
   try {
-    const raw = localStorage.getItem('nx.ai.configs');
+    const raw = localStorage.getItem('drx.ai.configs');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
@@ -157,12 +157,12 @@ function formatRelativeTime(timestamp: number): string {
 
 export function loadSavedSessions(): SavedChatSession[] {
   try {
-    const raw = localStorage.getItem('nx.ai.saved_sessions');
+    const raw = localStorage.getItem('drx.ai.saved_sessions');
     let list: SavedChatSession[] = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(list)) list = [];
 
-    // Migrate legacy 'nx.ai.messages' if it exists
-    const legacyRaw = localStorage.getItem('nx.ai.messages');
+    // Migrate legacy 'drx.ai.messages' if it exists
+    const legacyRaw = localStorage.getItem('drx.ai.messages');
     if (legacyRaw) {
       try {
         const legacyMsgs: Msg[] = JSON.parse(legacyRaw);
@@ -181,7 +181,7 @@ export function loadSavedSessions(): SavedChatSession[] {
           list.unshift(legacySession);
         }
       } catch {}
-      localStorage.removeItem('nx.ai.messages');
+      localStorage.removeItem('drx.ai.messages');
     }
 
     // Prune sessions older than 1 week without reconnection/activity
@@ -189,7 +189,7 @@ export function loadSavedSessions(): SavedChatSession[] {
     const pruned = list.filter((s) => now - (s.updatedAt || s.createdAt || 0) <= ONE_WEEK_MS);
 
     if (pruned.length !== list.length || legacyRaw) {
-      localStorage.setItem('nx.ai.saved_sessions', JSON.stringify(pruned));
+      localStorage.setItem('drx.ai.saved_sessions', JSON.stringify(pruned));
     }
     return pruned;
   } catch {
@@ -201,7 +201,7 @@ export function saveSessionsToStorage(sessions: SavedChatSession[]): void {
   try {
     const now = Date.now();
     const pruned = sessions.filter((s) => now - (s.updatedAt || s.createdAt || 0) <= ONE_WEEK_MS);
-    localStorage.setItem('nx.ai.saved_sessions', JSON.stringify(pruned));
+    localStorage.setItem('drx.ai.saved_sessions', JSON.stringify(pruned));
   } catch (err) {
     console.warn('Failed to save AI sessions to storage:', err);
   }
@@ -218,14 +218,14 @@ export function AIPanel({
   activePaneId: string | null;
   toast: (m: string) => void;
   onClose?: () => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
   newConnectionNonce?: number;
   visible?: boolean;
 }) {
   const mobile = useMobile();
   const [configs, setConfigs] = useState<AiProviderConfig[]>(() => loadCachedConfigs());
   const [activeProviderId, setActiveProviderId] = useState<string>(() => {
-    return localStorage.getItem('nx.ai.active_provider') || 'gemini';
+    return localStorage.getItem('drx.ai.active_provider') || 'gemini';
   });
   const [online, setOnline] = useState<boolean | null>(null);
   const [probing, setProbing] = useState(false);
@@ -244,9 +244,9 @@ export function AIPanel({
   const [singleKeyInput, setSingleKeyInput] = useState('');
   const [batchKeyInput, setBatchKeyInput] = useState('');
   const [showKeySecret, setShowKeySecret] = useState(false);
-  const [scrubSecrets, setScrubSecrets] = useState(() => localStorage.getItem('nx.ai.scrub_secrets') !== 'false');
+  const [scrubSecrets, setScrubSecrets] = useState(() => localStorage.getItem('drx.ai.scrub_secrets') !== 'false');
   const [contextLines, setContextLines] = useState<number>(() => {
-    const raw = localStorage.getItem('nx.ai.context_lines');
+    const raw = localStorage.getItem('drx.ai.context_lines');
     return raw ? parseInt(raw, 10) : 1000;
   });
 
@@ -291,7 +291,7 @@ export function AIPanel({
     const next = !opencodeAutonomous;
     if (next && !(await confirmDialog({
       title: 'Enable autonomous OpenCode mode?',
-      message: 'The agent will run shell commands and tools without asking, inside ~/NexusTerminal/ai-workspace. Common destructive commands are denied, but this is not a sandbox.',
+      message: 'The agent will run shell commands and tools without asking, inside ~/DrexiusTerminal/ai-workspace. Common destructive commands are denied, but this is not a sandbox.',
       confirmLabel: 'Enable',
       danger: true,
     }))) return;
@@ -748,13 +748,13 @@ export function AIPanel({
           toast('Could not read AI settings from the vault; edits are disabled until reload');
         }
         try {
-          localStorage.setItem('nx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(merged)));
+          localStorage.setItem('drx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(merged)));
         } catch {}
 
         const activeId = await bridge.getActiveAiProvider();
         if (activeId && map.has(activeId)) {
           setActiveProviderId(activeId);
-          localStorage.setItem('nx.ai.active_provider', activeId);
+          localStorage.setItem('drx.ai.active_provider', activeId);
         }
       } catch (err) {
         console.error('Failed to initialize AI configs:', err);
@@ -892,7 +892,7 @@ export function AIPanel({
         next.push(updated);
       }
       try {
-        localStorage.setItem('nx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(next)));
+        localStorage.setItem('drx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(next)));
       } catch {}
       return next;
     });
@@ -905,7 +905,7 @@ export function AIPanel({
 
   const switchProvider = async (providerId: string) => {
     setActiveProviderId(providerId);
-    localStorage.setItem('nx.ai.active_provider', providerId);
+    localStorage.setItem('drx.ai.active_provider', providerId);
     try {
       await bridge.setActiveAiProvider(providerId);
     } catch (e) {
@@ -949,7 +949,7 @@ export function AIPanel({
       if (idx >= 0) next[idx] = clean;
       else next.push(clean);
       try {
-        localStorage.setItem('nx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(next)));
+        localStorage.setItem('drx.ai.configs', JSON.stringify(sanitizeConfigsForStorage(next)));
       } catch {}
       return next;
     });
@@ -1109,7 +1109,7 @@ export function AIPanel({
   const toggleScrubSecrets = () => {
     const next = !scrubSecrets;
     setScrubSecrets(next);
-    localStorage.setItem('nx.ai.scrub_secrets', String(next));
+    localStorage.setItem('drx.ai.scrub_secrets', String(next));
     toast(next ? 'Terminal secret redaction enabled' : 'Terminal secret redaction disabled');
   };
 
@@ -1597,7 +1597,7 @@ export function AIPanel({
                     </button>
                   </div>
                   <p className="text-[11px] leading-relaxed text-emerald-200/80">
-                    OpenCode CLI is detected and running natively on remote host <strong className="text-white">{hostOpencodeStatus.hostLabel}</strong>. NexusTerminal routes AI queries and tool execution directly through the remote OpenCode runtime with zero configuration and no API keys required.
+                    OpenCode CLI is detected and running natively on remote host <strong className="text-white">{hostOpencodeStatus.hostLabel}</strong>. DrexiusTerminal routes AI queries and tool execution directly through the remote OpenCode runtime with zero configuration and no API keys required.
                   </p>
                 </div>
               );
@@ -1611,7 +1611,7 @@ export function AIPanel({
                     <span>OpenCode Free Frontier Models (Local Runtime)</span>
                   </div>
                   <p className="text-[11px] leading-relaxed text-emerald-200/80">
-                    OpenCode CLI is detected on your local system. NexusTerminal routes directly through your local OpenCode runtime to access zero-cost hosted models (Nemotron-3 Ultra, Muse Spark, Ling 3.1 Flash, etc.) with no API keys or subscription needed.
+                    OpenCode CLI is detected on your local system. DrexiusTerminal routes directly through your local OpenCode runtime to access zero-cost hosted models (Nemotron-3 Ultra, Muse Spark, Ling 3.1 Flash, etc.) with no API keys or subscription needed.
                   </p>
                 </div>
               );
@@ -2111,7 +2111,7 @@ export function AIPanel({
                   type="button"
                   onClick={() => {
                     setContextLines(opt.lines);
-                    localStorage.setItem('nx.ai.context_lines', String(opt.lines));
+                    localStorage.setItem('drx.ai.context_lines', String(opt.lines));
                     toast(`Terminal context set to ${opt.label} (~${opt.desc})`);
                   }}
                   className={cn(
@@ -2190,7 +2190,7 @@ export function AIPanel({
               <Cpu className="relative h-10 w-10 text-fuchsia-300/80" />
             </div>
             <p className="mt-4 text-sm font-semibold text-slate-200">
-              Nexus AI SRE Copilot
+              Drexius AI SRE Copilot
             </p>
             <p className="mt-1 max-w-[260px] text-xs text-slate-400">
               Powered by <span className="font-semibold text-cyan-300">{activeConfig.name}</span> ({activeConfig.selectedModel}).

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "NexusTerminal",
+  "productName": "DrexiusTerminal",
   "version": "0.1.0",
-  "identifier": "dev.nexusterminal.app",
+  "identifier": "dev.drexius.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "NexusTerminal",
+        "title": "DrexiusTerminal",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

@@ -4,7 +4,7 @@ import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { registry } from '../lib/sessions';
 import type { FileEntry } from '../lib/types';
 import { cn } from '../utils/cn';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
 
 const fmtSize = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
@@ -22,9 +22,9 @@ export function SftpDrawer({
   tick: number;
   onClose: () => void;
   toast: (m: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0b0f17';
 
@@ -275,9 +275,9 @@ function RemoteFileEditorModal({
   onClose: () => void;
   toast: (m: string) => void;
   onSaved?: () => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0d121c';
 

@@ -1,4 +1,4 @@
-package dev.nexusterminal.app
+package dev.drexius.app
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -41,10 +41,10 @@ class SessionForegroundService : Service() {
   private val binder = LocalBinder()
 
   companion object {
-    const val CHANNEL_ID = "nexus_active_sessions"
+    const val CHANNEL_ID = "drexius_active_sessions"
     const val NOTIFICATION_ID = 48201
     const val EXTRA_SESSION_COUNT = "extra_session_count"
-    const val ACTION_STOP = "dev.nexusterminal.app.STOP_SESSION_SERVICE"
+    const val ACTION_STOP = "dev.drexius.app.STOP_SESSION_SERVICE"
     private const val BACKGROUND_STOP_GRACE_MS = 120_000L
     private const val FOREGROUND_STOP_DEBOUNCE_MS = 3_000L
 
@@ -72,7 +72,7 @@ class SessionForegroundService : Service() {
 
     /**
      * Entrypoint invoked directly from Rust via JNI using `ndk_context`'s Application
-     * `Context` (`context.getClassLoader().loadClass("dev.nexusterminal.app.SessionForegroundService")`).
+     * `Context` (`context.getClassLoader().loadClass("dev.drexius.app.SessionForegroundService")`).
      */
     @JvmStatic
     fun updateActiveSessions(context: Context, count: Int) {
@@ -202,7 +202,7 @@ class SessionForegroundService : Service() {
             val pm = appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager
             wakeLock = pm?.newWakeLock(
               PowerManager.PARTIAL_WAKE_LOCK,
-              "NexusTerminal::SessionWakeLock"
+              "DrexiusTerminal::SessionWakeLock"
             )?.apply {
               setReferenceCounted(false)
             }
@@ -221,7 +221,7 @@ class SessionForegroundService : Service() {
             } else {
               WifiManager.WIFI_MODE_FULL_HIGH_PERF
             }
-            wifiLock = wm?.createWifiLock(lockMode, "NexusTerminal::SessionWifiLock")?.apply {
+            wifiLock = wm?.createWifiLock(lockMode, "DrexiusTerminal::SessionWifiLock")?.apply {
               setReferenceCounted(false)
             }
           }
@@ -353,7 +353,7 @@ class SessionForegroundService : Service() {
 
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setSmallIcon(R.mipmap.ic_launcher)
-      .setContentTitle("NexusTerminal")
+      .setContentTitle("DrexiusTerminal")
       .setContentText(summary)
       .setContentIntent(pendingOpen)
       .setOngoing(true)

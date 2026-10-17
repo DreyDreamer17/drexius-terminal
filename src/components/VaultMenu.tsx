@@ -12,7 +12,7 @@ import {
   QrCode,
 } from 'lucide-react';
 import type { Vault } from '../lib/types';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 import { safeUid } from '../utils/uuid';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
@@ -28,7 +28,7 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenImportModal: () => void;
   onOpenPairingModal?: () => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function VaultMenu({
@@ -317,7 +317,7 @@ export function VaultMenu({
                   <div className="grid h-6 w-6 place-items-center rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/15 text-fuchsia-400 shrink-0 group-hover:scale-105 transition-transform">
                     <Download className="h-3.5 w-3.5" />
                   </div>
-                  <span className="font-medium">Import Shared Vault (.nxvault)…</span>
+                  <span className="font-medium">Import Shared Vault (.drxvault)…</span>
                 </button>
 
                 {onOpenPairingModal && (
@@ -547,7 +547,7 @@ export function VaultMenu({
                   <Download className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-sm">Import Shared Vault (.nxvault)…</p>
+                  <p className="font-semibold text-sm">Import Shared Vault (.drxvault)…</p>
                   <p className="text-xs text-slate-400">Decrypt and import a team vault file</p>
                 </div>
               </button>

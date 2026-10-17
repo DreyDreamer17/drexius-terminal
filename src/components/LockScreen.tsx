@@ -20,7 +20,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { useMobile } from '../hooks/useMobile';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
@@ -46,7 +46,7 @@ export function LockScreen({
 }: {
   onUnlocked: () => void;
   onJoinRequested?: () => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }) {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [joinExisting, setJoinExisting] = useState(false);
@@ -55,7 +55,7 @@ export function LockScreen({
     onUnlocked();
     if (initialized === false && joinExisting) onJoinRequested?.();
   };
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#06080d';
   const [pw, setPw] = useState('');
@@ -153,7 +153,7 @@ export function LockScreen({
         setHasStored(enabled);
         setRemember(enabled);
         if (hasDeviceCred && !bridge.osKeychainEnabled()) {
-          try { localStorage.setItem('nx.os_keychain', '1'); } catch {}
+          try { localStorage.setItem('drx.os_keychain', '1'); } catch {}
         }
       }
     })();
@@ -161,7 +161,7 @@ export function LockScreen({
 
   const shareEmergencyKit = async (key: string) => {
     const text = `=====================================================
-NEXUSTERMINAL EMERGENCY RECOVERY KIT
+DREXIUS EMERGENCY RECOVERY KIT
 =====================================================
 
 Emergency Recovery Key:
@@ -169,7 +169,7 @@ ${key}
 
 IMPORTANT:
 - This key was generated during vault creation or password reset.
-- Because NexusTerminal uses zero-knowledge encryption, this key
+- Because Drexius uses zero-knowledge encryption, this key
   is the ONLY way to recover your vault if you forget your master password.
 - Store this file in a password manager, encrypted USB drive, or physical safe.
 - Do NOT share this key with anyone.
@@ -179,7 +179,7 @@ Generated: ${new Date().toISOString()}
     try {
       if (typeof navigator !== 'undefined' && navigator.share) {
         await navigator.share({
-          title: 'NexusTerminal Recovery Kit',
+          title: 'Drexius Recovery Kit',
           text,
         });
       }
@@ -201,7 +201,7 @@ Generated: ${new Date().toISOString()}
       } catch (_) {}
     }
     const text = `=====================================================
-NEXUSTERMINAL EMERGENCY RECOVERY KIT
+DREXIUS EMERGENCY RECOVERY KIT
 =====================================================
 
 Emergency Recovery Key:
@@ -209,7 +209,7 @@ ${key}
 
 IMPORTANT:
 - This key was generated during vault creation or password reset.
-- Because NexusTerminal uses zero-knowledge encryption, this key
+- Because Drexius uses zero-knowledge encryption, this key
   is the ONLY way to recover your vault if you forget your master password.
 - Store this file in a password manager, encrypted USB drive, or physical safe.
 - Do NOT share this key with anyone.
@@ -364,9 +364,9 @@ Generated: ${new Date().toISOString()}
       if (isTauri && mobile) {
         try {
           const { authenticate } = await import('@tauri-apps/plugin-biometric');
-          await authenticate('Unlock NexusTerminal Vault', {
+          await authenticate('Unlock Drexius Vault', {
             allowDeviceCredential: true,
-            title: 'NexusTerminal Vault',
+            title: 'Drexius Vault',
             subtitle: 'Confirm fingerprint, face or device screen lock',
             cancelTitle: 'Use Master Password',
           });
@@ -418,13 +418,13 @@ Generated: ${new Date().toISOString()}
       <div className="relative w-full max-w-md mx-auto md:max-w-5xl md:grid md:grid-cols-2 md:gap-12 md:items-center">
         <div className="hidden md:block">
           <img
-            src="/nexus-logo.png"
+            src="/drexius-logo.png"
             alt=""
             className="h-20 w-20 rounded-2xl"
             style={{ boxShadow: `0 0 50px -5px ${accentColor}60` }}
           />
           <h1 className="mt-6 text-5xl font-bold tracking-tight text-white">
-            Nexus<span style={{ color: accentColor }}>Terminal</span>
+            Drexius<span style={{ color: accentColor }}>Terminal</span>
           </h1>
           <p className="mt-3 max-w-md text-slate-400">
             The open-source, local-first SSH workspace. Terminals, SFTP, snippets and an on-device AI — secured by a vault only you can open.
@@ -472,11 +472,11 @@ Generated: ${new Date().toISOString()}
                 boxShadow: `0 0 30px ${accentColor}30`,
               }}
             >
-              <img src="/nexus-logo.png" alt="Nexus" className="h-10 w-10 rounded-xl md:hidden" />
+              <img src="/drexius-logo.png" alt="Drexius" className="h-10 w-10 rounded-xl md:hidden" />
               <Lock className="hidden md:block h-5 w-5" />
             </div>
             <h1 className="mt-4 text-2xl font-bold tracking-tight text-white md:hidden">
-              Nexus<span style={{ color: accentColor }}>Terminal</span>
+              Drexius<span style={{ color: accentColor }}>Terminal</span>
             </h1>
             <h2 className="mt-1.5 text-base font-semibold text-slate-200 md:mt-3 md:text-2xl md:font-bold md:text-white">
               {initialized === false ? 'Create your master vault' : 'Unlock vault'}
@@ -772,7 +772,7 @@ Generated: ${new Date().toISOString()}
             {isTauri
               ? mobile
                 ? <>Native Android · SQLCipher AES-256 vault · libssh2 SSH{hasStored && <> · {keyringInfo.name} enabled</>}</>
-                : <>Desktop mode · SQLCipher vault at app-data/nexus.vault · real SSH via libssh2{hasStored && <> · {keyringInfo.platform === 'mac' ? 'Touch ID enabled' : keyringInfo.platform === 'windows' ? 'Windows Hello enabled' : 'system keyring enabled'}</>}.</>
+                : <>Desktop mode · SQLCipher vault at app-data/drexius.vault · real SSH via libssh2{hasStored && <> · {keyringInfo.platform === 'mac' ? 'Touch ID enabled' : keyringInfo.platform === 'windows' ? 'Windows Hello enabled' : 'system keyring enabled'}</>}.</>
               : <>Browser preview · vault encrypted with WebCrypto AES-256-GCM in localStorage · SSH sessions run in a local sandbox. Build with Tauri for real connections and OS keychain support.
                 {initialized && <button type="button" onClick={async () => { if (await confirmDialog({ title: 'Erase the sandbox vault?', message: 'All hosts, snippets and keys stored in this browser preview will be deleted.', confirmLabel: 'Erase vault', danger: true })) { await bridge.resetDemoVault(); setInitialized(false); } }} className="ml-1 hover:underline" style={{ color: accentColor }}>Reset sandbox vault</button>}</>}
           </div>
@@ -841,7 +841,7 @@ Generated: ${new Date().toISOString()}
             {/* Body */}
             <div className="relative flex-1 overflow-y-auto px-6 py-5 space-y-4">
               <p className="text-xs text-slate-400 leading-relaxed">
-                NexusTerminal uses zero-knowledge encryption. If you ever forget your master password,{' '}
+                Drexius uses zero-knowledge encryption. If you ever forget your master password,{' '}
                 <strong className="text-slate-200">this recovery key is the ONLY way to regain access to your vault</strong>.
                 Save it now in a secure offline location or password manager.
               </p>
@@ -938,7 +938,7 @@ Generated: ${new Date().toISOString()}
               <div className="flex items-start gap-2.5 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200/90 leading-relaxed">
                 <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
                 <span>
-                  NexusTerminal cannot recover or reset your master password for you. If you lose this key and forget your master password, your vault data cannot be recovered.
+                  Drexius cannot recover or reset your master password for you. If you lose this key and forget your master password, your vault data cannot be recovered.
                 </span>
               </div>
             </div>
@@ -1097,7 +1097,7 @@ Generated: ${new Date().toISOString()}
                       autoCorrect="off"
                       autoCapitalize="off"
                       rows={2}
-                      placeholder="NX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                      placeholder="DRX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
                       className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-600 focus:outline-none focus:ring-1"
                       style={{ outlineColor: accentColor }}
                     />

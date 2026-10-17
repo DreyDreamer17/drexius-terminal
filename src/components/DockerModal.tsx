@@ -18,7 +18,7 @@ import {
 import type { DockerContainer, Host } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -26,7 +26,7 @@ interface Props {
   activeHostId?: string | null;
   onOpenTerminalWithCommand?: (host: Host, command: string, title?: string) => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
   onClose: () => void;
 }
 
@@ -50,7 +50,7 @@ export function DockerModal({
   theme,
   onClose,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
 

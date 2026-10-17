@@ -64,7 +64,7 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
         username: '',
         algorithm: genAlgo,
         bits: genAlgo === 'rsa' ? 4096 : undefined,
-        comment: genComment || `${genAlgo}@nexus`,
+        comment: genComment || `${genAlgo}@drexius`,
         passphrase: genPassphrase || null,
         vaultId: targetVault,
       });
@@ -442,7 +442,7 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
                 <label className="mb-1 block text-[10px] uppercase tracking-wider text-slate-400">Key Comment</label>
                 <input
                   className={inputClass}
-                  placeholder="e.g. user@nexus-workstation"
+                  placeholder="e.g. user@drexius-workstation"
                   value={genComment}
                   onChange={(e) => setGenComment(e.target.value)}
                 />

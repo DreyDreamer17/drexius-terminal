@@ -34,7 +34,7 @@ export function KnownHostsPanel({ toast }: Props) {
     if (
       await confirmDialog({
         title: `Revoke host key for ${kh.host}:${kh.port}?`,
-        message: 'NexusTerminal will ask you to verify this host\u2019s identity again on the next connection.',
+        message: 'DrexiusTerminal will ask you to verify this host\u2019s identity again on the next connection.',
         confirmLabel: 'Revoke key',
         danger: true,
       })

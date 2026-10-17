@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { bridge } from '../lib/bridge';
 import type { SerialPortInfo } from '../lib/types';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -26,7 +26,7 @@ interface Props {
     stopBits: number;
     flowControl: string;
   }) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 interface SelectOption<T = string | number> {
@@ -43,7 +43,7 @@ interface CustomSelectProps<T = string | number> {
   placeholder?: string;
   className?: string;
   dropUp?: boolean;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 function CustomSelect<T extends string | number>({

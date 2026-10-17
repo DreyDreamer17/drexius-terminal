@@ -1,14 +1,14 @@
 [package]
-name = "nexus-terminal"
+name = "drexius-terminal"
 version = "0.1.0"
-description = "NexusTerminal — secure, local-first SSH client with local AI"
-authors = ["NexusTerminal Contributors"]
+description = "DrexiusTerminal — secure, local-first SSH client with local AI"
+authors = ["DrexiusTerminal Contributors"]
 license = "GPL-3.0-or-later"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "nexus_terminal_lib"
+name = "drexius_terminal_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

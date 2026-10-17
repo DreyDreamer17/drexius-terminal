@@ -439,7 +439,7 @@ impl Drop for CancelGuard {
 fn ai_workspace_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join("NexusTerminal")
+        .join("DrexiusTerminal")
         .join("ai-workspace")
 }
 
@@ -534,9 +534,9 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "/*/.password-store/*": "deny",
             "/*/.netrc": "deny",
             "/*/.git-credentials": "deny",
-            "/*/*/nexus.vault*": "deny",
-            "/*/dev.nexusterminal.app/*": "deny",
-            "~/.local/share/dev.nexusterminal.app/*": "deny"
+            "/*/*/drexius.vault*": "deny",
+            "/*/dev.drexius.app/*": "deny",
+            "~/.local/share/dev.drexius.app/*": "deny"
         },
         "bash": {
             "*": "__BASH_FALLBACK__",

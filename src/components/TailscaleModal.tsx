@@ -20,7 +20,7 @@ import { bridge } from '../lib/bridge';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { OsIcon } from './OsIcon';
 import { CustomSelect } from './CustomSelect';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -30,7 +30,7 @@ interface Props {
   onSuccess: () => void;
   onDirectConnect?: (h: Partial<Host>) => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function TailscaleModal({
@@ -42,7 +42,7 @@ export function TailscaleModal({
   toast,
   theme,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
 

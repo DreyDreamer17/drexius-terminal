@@ -34,7 +34,7 @@ import {
 import { bridge, isBridgeError } from '../lib/bridge';
 import type { FileEntry, Host, Tab } from '../lib/types';
 import { cn } from '../utils/cn';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { OsIcon } from './OsIcon';
 import { SftpCodeEditor, type EditorFile } from './SftpCodeEditor';
 
@@ -98,7 +98,7 @@ interface SftpTabProps {
   hosts: Host[];
   onUpdateTab: (patch: Partial<Tab>) => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }: SftpTabProps) {
@@ -107,7 +107,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   const [fileActions, setFileActions] = useState<{ entry: FileEntry; side: 'local' | 'remote' } | null>(null);
   const [permissions, setPermissions] = useState<FileEntry | null>(null);
 
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent || '#22d3ee';
   const bgColor = activeTheme.xterm.background || '#090d16';
 

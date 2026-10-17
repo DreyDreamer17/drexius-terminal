@@ -398,7 +398,7 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   }
 }
 
-/* ─── NEXUS Launch Splash Screen ────────────────────────────────────────────── */
+/* ─── DREXIUS Launch Splash Screen ───────────────────────────────────────────── */
 .splash-screen {
   background: var(--screen-bg, #050715);
   color: var(--screen-fg, #f5f6fc);
@@ -448,7 +448,8 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   filter: drop-shadow(0 0 12px #08b1e214);
 }
 .splash-wordmark {
-  width: 71.5%;
+  width: 66%;
+  max-width: 275px;
   height: auto;
   margin-top: 24px;
   animation: wordmark-arrive .8s .4s both;
@@ -531,7 +532,7 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
 
 .splash-fullscreen .splash-brand { top: 18%; }
 .splash-fullscreen .splash-symbol { width: min(36vh, 250px); }
-.splash-fullscreen .splash-wordmark { width: min(40vh, 285px); margin-top: 25px; }
+.splash-fullscreen .splash-wordmark { width: min(38vh, 285px); margin-top: 25px; }
 .splash-fullscreen .splash-tagline { font-size: 11px; margin-top: 18px; letter-spacing: 1.3px; }
 .splash-fullscreen .splash-loading { width: 235px; left: 50%; transform: translateX(-50%); bottom: 14%; }
 .splash-fullscreen .loading-track { height: 3px; }

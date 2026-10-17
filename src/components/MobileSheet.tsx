@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, type CSSProperties, type ReactNode, type KeyboardEventHandler } from 'react';
 import { createPortal } from 'react-dom';
 import { X, type LucideIcon } from 'lucide-react';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 
 // Portaled sheets must inherit the workspace lock, not escape its inert root.
 export const WorkspaceAccessContext = createContext(true);
@@ -68,7 +68,7 @@ export function SheetHandle({ onClose }: { onClose: () => void }) {
  * badge + accent kicker + title header, close button. `kicker` is the small uppercase label
  * (FILE, HOST, SESSIONS); `title` keeps its own case because it is usually a name. */
 export function MobileSheet({ title, kicker, subtitle, icon: Icon, theme, children, onClose }: {
-  title: string; kicker?: string; subtitle?: string; icon?: LucideIcon; theme?: NexusTheme; children: ReactNode; onClose: () => void;
+  title: string; kicker?: string; subtitle?: string; icon?: LucideIcon; theme?: DrexiusTheme; children: ReactNode; onClose: () => void;
 }) {
   const accessible = useContext(WorkspaceAccessContext);
   if (!accessible) return null;

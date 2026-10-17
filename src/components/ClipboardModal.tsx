@@ -12,14 +12,14 @@ import {
 } from 'lucide-react';
 import type { ClipboardItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
   onClose: () => void;
   onPaste: (text: string) => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 const timeAgo = (ts: number): string => {
@@ -33,7 +33,7 @@ const timeAgo = (ts: number): string => {
 };
 
 export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
 

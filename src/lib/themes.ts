@@ -1,10 +1,10 @@
 import type { ITheme } from '@xterm/xterm';
 
-export interface NexusTheme { id: string; name: string; accent: string; xterm: ITheme; }
+export interface DrexiusTheme { id: string; name: string; accent: string; xterm: ITheme; }
 
-export const THEMES: NexusTheme[] = [
+export const THEMES: DrexiusTheme[] = [
   {
-    id: 'nexus', name: 'Nexus Night', accent: '#22d3ee',
+    id: 'drexius', name: 'Drexius Night', accent: '#22d3ee',
     xterm: {
       background: '#0a0d14', foreground: '#d6deeb', cursor: '#22d3ee', cursorAccent: '#0a0d14', selectionBackground: '#22d3ee33',
       black: '#1b2130', red: '#ff5f7e', green: '#4ade80', yellow: '#fbbf24', blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#d6deeb',

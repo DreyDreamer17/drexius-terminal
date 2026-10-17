@@ -1,7 +1,7 @@
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { AlertTriangle, HelpCircle } from 'lucide-react';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
-import type { NexusTheme } from '../lib/themes';
+import type { DrexiusTheme } from '../lib/themes';
 
 export interface ConfirmOptions {
   title: string;
@@ -63,13 +63,13 @@ function settle(p: PendingConfirm, ok: boolean) {
   p.resolve(ok);
 }
 
-export function ConfirmHost({ theme }: { theme?: NexusTheme }) {
+export function ConfirmHost({ theme }: { theme?: DrexiusTheme }) {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   if (!current) return null;
   return <ConfirmSheet key={current.id} request={current} theme={theme} />;
 }
 
-function ConfirmSheet({ request, theme }: { request: PendingConfirm; theme?: NexusTheme }) {
+function ConfirmSheet({ request, theme }: { request: PendingConfirm; theme?: DrexiusTheme }) {
   const { title, message, confirmLabel = 'Confirm', cancelLabel = 'Cancel', danger = false } = request.options;
   const accent = danger ? '#fb7185' : theme?.accent ?? '#22d3ee';
   const background = theme?.xterm?.background ?? '#0e131d';

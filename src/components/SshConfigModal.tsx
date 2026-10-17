@@ -15,7 +15,7 @@ import {
 import type { ParsedSshHost, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 
 interface Props {
   vaults: Vault[];
@@ -23,7 +23,7 @@ interface Props {
   onClose: () => void;
   onSuccess: () => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function SshConfigModal({
@@ -34,7 +34,7 @@ export function SshConfigModal({
   toast,
   theme,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
 

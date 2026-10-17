@@ -1,4 +1,4 @@
-package dev.nexusterminal.app
+package dev.drexius.app
 
 import android.Manifest
 import android.content.Intent

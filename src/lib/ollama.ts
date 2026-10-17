@@ -1,5 +1,5 @@
 /**
- * AI Provider Engine, Multi-Key Pooling & Intelligent Load Balancing for Nexus Terminal.
+ * AI Provider Engine, Multi-Key Pooling & Intelligent Load Balancing for Drexius Terminal.
  *
  * Supports:
  * - Local / VPS Ollama (NDJSON)
@@ -660,8 +660,8 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
   const headers: Record<string, string> = {};
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
   if (config.providerId === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://nexusterminal.app';
-    headers['X-Title'] = 'Nexus Terminal';
+    headers['HTTP-Referer'] = 'https://drexiusterminal.app';
+    headers['X-Title'] = 'Drexius Terminal';
   }
 
   try {
@@ -952,7 +952,7 @@ export function formatMessagesForOpencode(messages: ChatMsg[]): string {
 }
 
 /** Autonomous (`--auto`) OpenCode mode is opt-in and off unless the user enabled it in the AI panel. */
-export const OPENCODE_AUTONOMOUS_KEY = 'nx.ai.opencode_autonomous';
+export const OPENCODE_AUTONOMOUS_KEY = 'drx.ai.opencode_autonomous';
 export function isOpencodeAutonomous(): boolean {
   try {
     return localStorage.getItem(OPENCODE_AUTONOMOUS_KEY) === 'true';
@@ -1244,8 +1244,8 @@ async function streamOpenAi(
     }
   }
   if (config.providerId === 'openrouter') {
-    headers['HTTP-Referer'] = 'https://nexusterminal.app';
-    headers['X-Title'] = 'Nexus Terminal';
+    headers['HTTP-Referer'] = 'https://drexiusterminal.app';
+    headers['X-Title'] = 'Drexius Terminal';
   }
 
   const payload = JSON.stringify({
@@ -1357,7 +1357,7 @@ export async function chatStream(
 
 // ─────────────────────── SRE System Prompt & Risk Scoring ───────────────────────
 
-export const SYSTEM_PROMPT_CHAT = `You are Nexus, a senior SRE assistant embedded inside an SSH terminal client.
+export const SYSTEM_PROMPT_CHAT = `You are Drexius, a senior SRE assistant embedded inside an SSH terminal client.
 Rules:
 - Be concise. Prefer bullet points.
 - When suggesting commands, put each runnable command in its own \`\`\`bash fenced block.

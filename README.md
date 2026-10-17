@@ -1,9 +1,9 @@
-# NexusTerminal
+# DrexiusTerminal
 
 > **Local-first, secure, open-source terminal workspace and Termius alternative.**  
 > Built with **Tauri 2 (Rust)**, **React 19**, **Tailwind CSS 4**, and **xterm.js 6**.
 
-NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, serial connections, a local SQLCipher vault, encrypted team bundles, and a multi-provider AI assistant. New devices can join an existing vault via encrypted LAN pairing; ongoing sync uses a [self-hosted relay](relay/README.md) (see [limitations](#sync-and-pairing-limitations)).
+DrexiusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, serial connections, a local SQLCipher vault, encrypted team bundles, and a multi-provider AI assistant. New devices can join an existing vault via encrypted LAN pairing; ongoing sync uses a [self-hosted relay](relay/README.md) (see [limitations](#sync-and-pairing-limitations)).
 
 ---
 
@@ -25,7 +25,7 @@ NexusTerminal provides a terminal workspace with multi-pane splits, SSH/SFTP, se
 - **AI Workspace & OpenCode**:
   - **Multi-Provider AI Relay**: Support for Ollama, OpenAI-compatible APIs (OpenAI, DeepSeek, Groq, OpenRouter), Anthropic, and Gemini.
   - **Secure Outbound Relay (desktop)**: AI keys and proxy settings are stored in the encrypted SQLCipher vault; Rust injects credentials for configured provider origins. Browser demo mode handles credentials in JavaScript.
-  - **OpenCode Agent Integration**: Background execution via OpenCode CLI locally in a scratch workspace (`~/NexusTerminal/ai-workspace`) or over SSH, with deny-by-default tool permissions (read-only or autonomous modes).
+  - **OpenCode Agent Integration**: Background execution via OpenCode CLI locally in a scratch workspace (`~/DrexiusTerminal/ai-workspace`) or over SSH, with deny-by-default tool permissions (read-only or autonomous modes).
 
 ---
 
@@ -42,7 +42,7 @@ For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.m
 ### Sync and pairing limitations
 
 - LAN pairing sends a **one-time snapshot**. If the source has configured a relay, the encrypted transfer also enrolls a new, empty vault into its sync group (stable shared seed, relay URL and token). The new device has its **own local master password**. Pairing includes host/keychain credentials, snippets, tunnels and AI provider configuration **without API keys or proxy URLs**. A revoked device keeps data it already received.
-- Ongoing relay sync requires a [self-hosted relay](relay/README.md); no Nexus-hosted service is provided. Independently created vaults—even with identical passwords—cannot read each other's encrypted blobs: use **Join existing vault** during setup. Synced tables are hosts **including inline host secrets**, keychain (including private keys), snippets, tunnels and vault metadata. AI configs and known-host trust are local only. The relay sees ciphertext plus traffic metadata; it cannot prevent a device that already has the group seed from reading previously synced data.
+- Ongoing relay sync requires a [self-hosted relay](relay/README.md); no Drexius-hosted service is provided. Independently created vaults—even with identical passwords—cannot read each other's encrypted blobs: use **Join existing vault** during setup. Synced tables are hosts **including inline host secrets**, keychain (including private keys), snippets, tunnels and vault metadata. AI configs and known-host trust are local only. The relay sees ciphertext plus traffic metadata; it cannot prevent a device that already has the group seed from reading previously synced data.
 - This is an initial implementation, **not a substitute for backups**: conflict resolution is record-level last-writer-wins; compromised-device revocation does not rotate the group seed; recovery from loss of all enrolled devices is not yet supported. Team bundles exclude AI configurations and are separate from pairing and relay sync.
 
 ---
@@ -93,7 +93,10 @@ For implementation details and limitations, see [ARCHITECTURE.md](ARCHITECTURE.m
 
 ---
 
-## License
+## License & Trademarks
 
-NexusTerminal is open-source software licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [LICENSE](./LICENSE) for full details.
+**Drexius Terminal** source code is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**. See [LICENSE](./LICENSE) for full details.
+
+**Trademarks & Branding:** The name "Drexius Terminal", the "Drexius" mark, the `dev.drexius.app` application identifier, and official Drexius Terminal logos and artwork are proprietary trademarks of the author and are **not** licensed under the GPLv3. You may not distribute modified or unmodified builds of this software using the Drexius name, branding, or official logos without explicit written permission.
+
 

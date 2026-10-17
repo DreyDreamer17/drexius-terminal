@@ -11,7 +11,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { cn } from '../utils/cn';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
 
 export interface EditorFile {
@@ -27,7 +27,7 @@ interface SftpCodeEditorProps {
   onSave: (newContent: string) => Promise<void>;
   onClose: () => void;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 // ── Language Detection ──
@@ -194,7 +194,7 @@ export function SftpCodeEditor({
   toast,
   theme,
 }: SftpCodeEditorProps) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent || '#22d3ee';
   const bgColor = activeTheme.xterm.background || '#090d16';
 

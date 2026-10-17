@@ -9,7 +9,7 @@ export function NetworkMark({ className = '', animated = false }: { className?: 
       viewBox="0 0 330 300"
       fill="none"
       role="img"
-      aria-label="NEXUS connected hexagon symbol"
+      aria-label="DREXIUS connected hexagon symbol"
       dangerouslySetInnerHTML={{ __html: markMarkup(id) }}
     />
   );
@@ -20,9 +20,9 @@ export function Wordmark({ className = '' }: { className?: string }) {
   return (
     <svg
       className={`wordmark ${className}`}
-      viewBox="0 0 385 64"
+      viewBox="0 0 466 64"
       role="img"
-      aria-label="NEXUS"
+      aria-label="DREXIUS"
       dangerouslySetInnerHTML={{ __html: wordmarkMarkup(id) }}
     />
   );

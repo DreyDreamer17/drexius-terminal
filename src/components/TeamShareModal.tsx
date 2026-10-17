@@ -15,7 +15,7 @@ import type { EncryptedTeamVaultBundle, Host, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
 import { CustomSelect } from './CustomSelect';
-import { THEMES, type NexusTheme } from '../lib/themes';
+import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 
 interface Props {
@@ -26,7 +26,7 @@ interface Props {
   onClose: () => void;
   onRefresh: () => Promise<void>;
   toast: (msg: string) => void;
-  theme?: NexusTheme;
+  theme?: DrexiusTheme;
 }
 
 export function TeamShareModal({
@@ -39,7 +39,7 @@ export function TeamShareModal({
   toast,
   theme,
 }: Props) {
-  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('nx.theme') ?? 'nexus')) || THEMES[0];
+  const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
 
@@ -120,10 +120,10 @@ export function TeamShareModal({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${exportBundle.vaultName.toLowerCase().replace(/\s+/g, '-')}.nxvault`;
+    a.download = `${exportBundle.vaultName.toLowerCase().replace(/\s+/g, '-')}.drxvault`;
     a.click();
     URL.revokeObjectURL(url);
-    toast('Downloaded .nxvault file');
+    toast('Downloaded .drxvault file');
   };
 
   const handleImport = async (e: React.FormEvent) => {
@@ -227,7 +227,7 @@ export function TeamShareModal({
             } : undefined}
           >
             <Download className="h-3.5 w-3.5" />
-            <span>Import Shared Vault (.nxvault)</span>
+            <span>Import Shared Vault (.drxvault)</span>
           </button>
         </div>
 
@@ -368,7 +368,7 @@ export function TeamShareModal({
                       }}
                     >
                       <Download className="h-3.5 w-3.5" />
-                      <span>Download .nxvault File</span>
+                      <span>Download .drxvault File</span>
                     </button>
                   </div>
 
@@ -395,7 +395,7 @@ export function TeamShareModal({
               >
                 <Download className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
-                  Import a shared `.nxvault` file or paste the encrypted JSON payload provided by your team lead.
+                  Import a shared `.drxvault` file or paste the encrypted JSON payload provided by your team lead.
                 </span>
               </div>
 
@@ -404,7 +404,7 @@ export function TeamShareModal({
                 <textarea
                   rows={4}
                   required
-                  placeholder='Paste {"version": 1, "format": "nexus-team-vault", ...}'
+                  placeholder='Paste {"version": 1, "format": "drexius-team-vault", ...}'
                   value={importJson}
                   onChange={(e) => setImportJson(e.target.value)}
                   className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 p-2.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none"
