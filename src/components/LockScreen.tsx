@@ -24,6 +24,7 @@ import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { useMobile } from '../hooks/useMobile';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
+import drexiusLogo from '../assets/drexius-logo.png';
 function getPasswordStrength(p: string): { score: number; label: string; color: string } {
   if (!p) return { score: 0, label: '', color: 'transparent' };
   let score = 0;
@@ -418,8 +419,8 @@ Generated: ${new Date().toISOString()}
       <div className="relative w-full max-w-md mx-auto md:max-w-5xl md:grid md:grid-cols-2 md:gap-12 md:items-center">
         <div className="hidden md:block">
           <img
-            src="/drexius-logo.png"
-            alt=""
+            src={drexiusLogo}
+            alt="Drexius"
             className="h-20 w-20 rounded-2xl"
             style={{ boxShadow: `0 0 50px -5px ${accentColor}60` }}
           />
@@ -472,7 +473,7 @@ Generated: ${new Date().toISOString()}
                 boxShadow: `0 0 30px ${accentColor}30`,
               }}
             >
-              <img src="/drexius-logo.png" alt="Drexius" className="h-10 w-10 rounded-xl md:hidden" />
+              <img src={drexiusLogo} alt="Drexius" className="h-10 w-10 rounded-xl md:hidden" />
               <Lock className="hidden md:block h-5 w-5" />
             </div>
             <h1 className="mt-4 text-2xl font-bold tracking-tight text-white md:hidden">

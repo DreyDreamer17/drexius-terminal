@@ -1,4 +1,5 @@
 import { useMobile, useMobileViewport } from './hooks/useMobile';
+import drexiusLogo from './assets/drexius-logo.png';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
 import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX } from './lib/mobileTerminal';
 import { MobileSheet, ResponsiveOverlay, SheetHandle, WorkspaceAccessContext } from './components/MobileSheet';
@@ -1054,7 +1055,7 @@ export default function App() {
               )}
             >
               <img
-                src="/drexius-logo.png"
+                src={drexiusLogo}
                 alt="DrexiusTerminal"
                 className="h-5.5 w-5.5 rounded-lg object-contain transition-transform duration-200 group-hover:scale-105 group-active:scale-95"
               />
@@ -2658,7 +2659,7 @@ function Welcome({
       <div className="nx-blob pointer-events-none absolute left-1/4 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]" />
       <div className="nx-blob-2 pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-[100px]" />
       <div className="relative w-full max-w-2xl px-6 py-6 text-center">
-        <img src="/drexius-logo.png" alt="" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
+        <img src={drexiusLogo} alt="Drexius" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-white">Where to today?</h1>
         <p className="mt-2 text-sm text-slate-500">Pick a host to open an encrypted session. Select a host to get started; your sessions stay connected while you switch.</p>
         <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
