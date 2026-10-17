@@ -72,31 +72,21 @@ npm run tauri:build    # installable bundle
 | **Hosts and secrets, vault-backed** — profiles, groups, inline secrets and reusable identities, encrypted at rest.<br><img src="docs/images/hosts.png" alt="Host sidebar"> | **SFTP without the terminal** — a graphical remote and local file manager, with a code editor, transfer queue and wrapped-line editing.<br><img src="docs/images/sftp-browser.png" alt="SFTP browser"> |
 | **Pair a device over the LAN** — X25519 key exchange plus a 6-digit PIN. The PIN is only an HKDF salt and is never transmitted.<br><img src="docs/images/pairing.png" alt="Device pairing"> | **Recovery you control** — a 128-bit Emergency Recovery Key, shown once, downloadable, and never stored in the clear.<br><img src="docs/images/recovery-kit.png" alt="Emergency recovery kit"> |
 
-<table>
-<tr>
-<td width="50%" valign="top">
+### Mobile experience
 
 **Mobile is a first-class layout, not a squeeze.** Below 768 px the workspace becomes a
 five-tab app: a Termius-style full-screen terminal with a session bar and an extended
 keypad, bottom drawers for AI, snippets, keypad and history, pinch-to-zoom font sizing,
 long-press word selection with draggable handles, and CTRL/ALT latches.
 
-<img src="docs/images/mobile-lock.png" alt="Mobile lock screen" width="240">
-&nbsp;&nbsp;
-<img src="docs/images/mobile-hosts.png" alt="Mobile hosts" width="240">
-&nbsp;&nbsp;
-<img src="docs/images/mobile-terminal.png" alt="Mobile terminal" width="240">
+Android builds are in progress; the mobile shell, its native capabilities and the
+physical-device release checklist are documented in **[docs/mobile-ui.md](docs/mobile-ui.md)**.
 
-</td>
-<td valign="top">
+| Mobile Vault Unlock | Host & Identity Manager | Full-Screen Terminal |
+|:---:|:---:|:---:|
+| <img src="docs/images/mobile-lock.png" alt="Mobile lock screen" width="260"> | <img src="docs/images/mobile-hosts.png" alt="Mobile hosts" width="260"> | <img src="docs/images/mobile-terminal.png" alt="Mobile terminal" width="260"> |
+| *Touch-friendly master vault unlock* | *Quick connect, identities & saved hosts* | *Accessory keypad, session bar & virtual keys* |
 
-**Works where you are.** Android builds are in progress; the mobile shell, its native
-capabilities and the physical-device release checklist are documented in
-[docs/mobile-ui.md](docs/mobile-ui.md).
-
-</td>
-</tr>
-</table>
 
 ---
 
