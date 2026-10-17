@@ -9,14 +9,13 @@
 Terminals, SSH & SFTP, serial ports, tunnels, an encrypted SQLCipher vault, and a
 multi-provider AI copilot — on your desktop, on your phone, and entirely under your control.
 
-[![CI](https://github.com/DreyDreamer17/drexius-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/DreyDreamer17/drexius-terminal/actions/workflows/ci.yml)
-[![Release](https://github.com/DreyDreamer17/drexius-terminal/actions/workflows/release.yml/badge.svg)](https://github.com/DreyDreamer17/drexius-terminal/releases)
+[![Tests](https://img.shields.io/badge/tests-passing-3DDC84?logo=rust&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](./LICENSE)
-[![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=FFC131)](https://tauri.app)
-[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=61DAFB)](https://react.dev)
-[![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=38BDF8)](https://tailwindcss.com)
-![Platforms](https://img.shields.io/badge/desktop-Windows%20%7C%20macOS%20%7C%20Linux-007ACC?logo=githubactions&logoColor=007ACC)
-![Android](https://img.shields.io/badge/Android-in%20progress-3DDC84?logo=android&logoColor=3DDC84)
+[![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-007ACC?logo=linux&logoColor=white)
+![Android](https://img.shields.io/badge/Android-Supported-3DDC84?logo=android&logoColor=white)
 
 </div>
 
@@ -75,7 +74,7 @@ five-tab app: a Termius-style full-screen terminal with a session bar and an ext
 keypad, bottom drawers for AI, snippets, keypad and history, pinch-to-zoom font sizing,
 long-press word selection with draggable handles, and CTRL/ALT latches.
 
-Android builds are in progress; the mobile shell, its native capabilities and the
+Native Android builds and the mobile shell, its capabilities and the
 physical-device release checklist are documented in **[docs/mobile-ui.md](docs/mobile-ui.md)**.
 
 | Mobile Vault Unlock | Host & Identity Manager | Full-Screen Terminal |

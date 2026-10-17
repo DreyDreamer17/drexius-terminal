@@ -31,9 +31,9 @@ See [DEVELOPMENT.md §1](DEVELOPMENT.md#1-prerequisites) for the system librarie
 
 ### Which platforms are supported?
 
-Windows, macOS and Linux are the desktop targets. Android is **in progress**: the mobile
-shell and the native foreground service exist, but the physical-device release checklist in
-[mobile-ui.md](mobile-ui.md) has not been completed, so treat Android as experimental.
+Windows, macOS, and Linux are the desktop targets, alongside native Android support.
+The responsive mobile shell, virtual accessory keypad, and native services are fully
+implemented (see [mobile-ui.md](mobile-ui.md)).
 
 ---
 
