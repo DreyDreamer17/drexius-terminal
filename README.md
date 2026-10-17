@@ -11,6 +11,7 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 
 [![Tests](https://img.shields.io/badge/tests-passing-3DDC84?logo=rust&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal)
 [![Release](https://img.shields.io/badge/release-v0.1.0--beta.1-238636?logo=github&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1)
+[![Downloads](https://img.shields.io/github/downloads/DreyDreamer17/drexius-terminal/total?color=blue&logo=github)](https://github.com/DreyDreamer17/drexius-terminal/releases)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](./LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
