@@ -37,11 +37,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       # Node 22 is not incidental: `npm run test:mobile` calls
       # `node --experimental-strip-types`, which needs Node >= 22.6.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -58,10 +58,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       # relay.py is stdlib-only (hmac/json/argparse), so no pip install step.
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -73,9 +73,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
 
@@ -90,7 +90,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       # Tauri v2 on Linux links against WebKitGTK/GTK at compile time.
       - name: Install system dependencies
@@ -114,7 +114,7 @@ jobs:
           rustup component add rustfmt clippy
           rustc --version
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -131,7 +131,7 @@ jobs:
       # Only the downloaded crate sources are cached, not target/: ssh2 and
       # rusqlite both vendor OpenSSL, so target/ runs into GBs and would blow
       # past the cache limit for a modest win.
-      - uses: actions/cache@v6
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
