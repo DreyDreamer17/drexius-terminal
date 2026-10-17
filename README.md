@@ -16,8 +16,7 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 [![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-007ACC?logo=linux&logoColor=white)
-![Android](https://img.shields.io/badge/Android-Supported-3DDC84?logo=android&logoColor=white)
+![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20Linux%20%7C%20Windows%20%7C%20macOS-3DDC84?logo=linux&logoColor=white)
 
 <p align="center">
   <a href="#downloads"><b>📥 Direct Downloads</b></a> &nbsp;•&nbsp;
@@ -45,10 +44,12 @@ Pre-built binaries for **v0.1.0-beta.1 (Public Beta)**:
 | Platform | Format | Architecture | Direct Download | Notes |
 |:---|:---|:---|:---|:---|
 | **Android** | `.apk` | Universal (ARM64, ARMv7, x86_64) | [**Download APK**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-universal.apk) *(17.4 MB)* | Install directly on phone or tablet |
+| **Windows** | `.exe` (Setup) | x86_64 | [**Download Setup.exe**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64-setup.exe) *(5.56 MB)* | Standard installer ([.msi](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64_en-US.msi) *(7.23 MB)*) |
+| **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) | [**Download DMG (Apple Silicon)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_aarch64.dmg) *(8.21 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_aarch64.app.tar.gz)) |
+| **macOS** | `.dmg` | Intel (x86_64) | [**Download DMG (Intel)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64.dmg) *(8.20 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_x64.app.tar.gz)) |
 | **Linux** | `.AppImage` | x86_64 | [**Download AppImage**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.AppImage) *(107 MB)* | Standalone executable (`chmod +x`) |
-| **Linux** | `.deb` | amd64 | [**Download .deb**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-amd64.deb) *(7.6 MB)* | Debian, Ubuntu, Linux Mint |
-| **Linux** | `.rpm` | x86_64 | [**Download .rpm**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.rpm) *(7.6 MB)* | Fedora, RHEL, openSUSE |
-| **Windows & macOS** | Native packages | x86_64 / ARM64 | *In progress (coming in the next beta update)* | [Build from source](#building-from-source) available |
+| **Linux** | `.deb` | amd64 | [**Download .deb**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-amd64.deb) *(7.57 MB)* | Debian, Ubuntu, Linux Mint |
+| **Linux** | `.rpm` | x86_64 | [**Download .rpm**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.rpm) *(7.58 MB)* | Fedora, RHEL, openSUSE |
 
 > Checksums and release notes are available on the [GitHub Releases](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1) page. Verify integrity with [SHA256SUMS.txt](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/SHA256SUMS.txt).
 
