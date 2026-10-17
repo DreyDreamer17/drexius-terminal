@@ -1,0 +1,75 @@
+# Keep the dependency graph current.
+#
+# The Rust core is the reason to be careful here: ssh2 and rusqlite both vendor
+# OpenSSL, and Cargo.lock is committed and used with --locked in CI. A careless
+# bump of a transitive OpenSSL-adjacent crate is exactly the kind of change that
+# needs a human reading the diff, so the Rust ecosystem is grouped with the
+# linters to keep those PRs small and reviewable.
+
+version: 2
+
+updates:
+  # Frontend: React, Vite, Tailwind, xterm.js and the Tauri JS API.
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Africa/Nairobi
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    groups:
+      # Patch and minor updates to the frontend stack travel together.
+      frontend-minor:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # Rust core.
+  - package-ecosystem: cargo
+    directory: '/src-tauri'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Africa/Nairobi
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+    # A Cargo.lock update is a release decision, not a formatting change: it can
+    # move the vendored OpenSSL version and the SQLCipher build underneath the
+    # vault. Keep those PRs separate and individually reviewable.
+    groups:
+      cargo-patch:
+        applies-to: version-updates
+        update-types:
+          - patch
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # The GitHub Actions used by CI, the release workflow, CodeQL and the
+  # screenshot capture.
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Africa/Nairobi
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: 'chore(deps)'
+
+# No Python entry on purpose: the reference relay is stdlib-only by design
+# (relay/relay.py uses nothing outside the standard library), so there is no
+# dependency file for Dependabot to watch.

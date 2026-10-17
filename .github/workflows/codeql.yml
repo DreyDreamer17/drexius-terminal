@@ -1,0 +1,89 @@
+# Static analysis for the two languages that carry real logic: the TypeScript
+# frontend and the Rust core.
+#
+# The Rust analysis is the interesting one. The vault (Argon2id + SQLCipher), the
+# pairing protocol (X25519 + HKDF + XChaCha20-Poly1305), the sync protocol (HKDF
+# + HMAC-blinded ids + XChaCha20-Poly1305) and the AI relay's destination policy
+# are all hand-rolled crypto and parsing code, and CodeQL's Rust queries are good
+# at finding the mistakes that hand-rolled crypto makes.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Weekly, off the hour, so it never competes with the busiest CI window.
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: rust
+            build-mode: autobuild
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # CodeQL needs a buildable tree for the Rust analysis. The Tauri crate links
+      # against WebKitGTK/GTK at compile time, so those headers must be present.
+      - name: Install system dependencies
+        if: matrix.language == 'rust'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Select stable toolchain
+        if: matrix.language == 'rust'
+        run: |
+          rustup default stable
+          rustc --version
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-and-quality
+
+      # The frontend is not compiled by CodeQL, so the dependency graph is built
+      # here instead. The Rust build happens in the autobuild step below.
+      - name: Build the frontend
+        if: matrix.language == 'javascript-typescript'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'

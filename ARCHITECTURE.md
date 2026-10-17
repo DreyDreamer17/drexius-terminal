@@ -3,6 +3,22 @@
 > A secure, local-first, open-source alternative to Termius.
 > Stack: **Tauri 2 (Rust)** backend · **React 19 + Tailwind 4 + xterm.js** frontend.
 
+## Documentation map
+
+This file is the **authoritative design document**. The rest of the documentation builds on
+it rather than repeating it:
+
+| Document | Covers |
+|---|---|
+| **[docs/SECURITY.md](docs/SECURITY.md)** | The threat model, what is and is not protected, the six security layers, and how to report a vulnerability. |
+| **[docs/SYNC.md](docs/SYNC.md)** | Operating a relay, pairing a device, rotating credentials, and backing up. |
+| **[docs/AI.md](docs/AI.md)** | Providers, key pools, proxies, prompt hygiene, the risk classifier, and the OpenCode agent. |
+| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Repository layout, the test matrix, the run modes, and how releases are built. |
+| **[docs/FAQ.md](docs/FAQ.md)** | Common questions and troubleshooting. |
+| **[docs/mobile-ui.md](docs/mobile-ui.md)** | The responsive shell and the physical-device release checklist. |
+| **[relay/README.md](relay/README.md)** | The reference relay implementation. |
+
+
 ```
 drexiusterminal/
 ├── ARCHITECTURE.md

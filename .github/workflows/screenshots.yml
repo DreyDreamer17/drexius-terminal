@@ -1,0 +1,109 @@
+# Regenerate the demo images in docs/images/ from the browser preview build.
+#
+# The README and the docs embed real screenshots of the running application, so
+# they have to stay in step with the UI. This workflow re-captures them whenever
+# the frontend changes, and opens a pull request with the result.
+#
+# It is deliberately NOT part of CI: the images are documentation, not a gate, and
+# a flaky capture should never be able to block a merge.
+#
+# Only first-party actions are used here. The `gh` CLI is preinstalled on the
+# runners, which is enough to open the pull request without a third-party action.
+
+name: Screenshots
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'scripts/capture-screenshots.mjs'
+      - 'index.html'
+      - 'vite.config.ts'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    name: Capture demo screenshots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # playwright-core ships no browser of its own, so install one explicitly.
+      # --with-deps pulls the shared libraries Chromium needs on a bare runner.
+      - name: Install Chromium
+        run: |
+          npx playwright-core install --with-deps chromium
+          # playwright-core does not export a getter for the download path, so ask
+          # the CLI where it put the browser.
+          echo "CHROMIUM_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - name: Start the dev server
+        run: |
+          npm run dev -- --host 127.0.0.1 --port 5173 &
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:5173; then
+              echo "dev server is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "dev server did not come up in time" >&2
+          exit 1
+
+      - name: Capture the screenshots
+        env:
+          BASE_URL: http://127.0.0.1:5173
+        run: npm run screenshots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-screenshots
+          path: docs/images/*.png
+          if-no-files-found: error
+          retention-days: 14
+
+      # Open a pull request with the refreshed images so a human can eyeball the
+      # diff before it lands. Skipped on forks, which have no write token.
+      - name: Open a pull request with the refreshed images
+        if: github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- docs/images; then
+            branch="chore/screenshots-${{ github.run_id }}"
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add docs/images
+            git commit -m "chore(docs): refresh demo screenshots"
+            git push -u origin "$branch"
+            gh pr create \
+              --base master \
+              --head "$branch" \
+              --title "chore(docs): refresh demo screenshots" \
+              --body "Regenerated \`docs/images/\` from the browser preview build. Please eyeball the diff before merging."
+          else
+            echo "Screenshots are unchanged."
+          fi

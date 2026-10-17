@@ -8,6 +8,9 @@
 #   * `tauri build` / bundling — needs app signing and icon toolchain.
 #   * Anything touching the OS keychain — CI runners have no keyring service,
 #     which is exactly the path `os_keychain_status` guards at startup.
+#
+# Sibling workflows: `release.yml` (tagged bundles), `codeql.yml` (static
+# analysis) and `screenshots.yml` (regenerates the demo images in docs/images).
 
 name: CI
 
@@ -64,6 +67,23 @@ jobs:
 
       - name: unittest discover
         run: python -m unittest discover -s relay -v
+
+  docs:
+    name: Docs — internal link check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # A broken cross-reference in the README is the cheapest documentation bug
+      # there is, and the easiest to miss by eye. This is a plain Node script, not
+      # a third-party link checker, so there is nothing extra to install.
+      - name: Check internal documentation links
+        run: npm run docs:links
 
   rust:
     name: Rust — cargo test

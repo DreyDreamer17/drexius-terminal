@@ -1,0 +1,153 @@
+# Build and publish the desktop bundles.
+#
+# Triggered by pushing a `v*` tag. The tag is the single source of truth for the
+# version: bump `version` in src-tauri/Cargo.toml *and* src-tauri/tauri.conf.json
+# before tagging, because the two files are not synchronised automatically.
+#
+# The bundles are built on the native runner for each platform, so the macOS build
+# is a real .app/.dmg, the Windows build is a real .msi/.exe, and the Linux build is
+# a real .deb/.rpm/AppImage.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v0.1.0). Leave empty to build the current ref.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: '22'
+
+jobs:
+  # Proves the bundle actually builds before any of the (slow) platform jobs run.
+  verify:
+    name: Verify before release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Select stable toolchain
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustc --version
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:mobile
+      - run: npm run build
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --locked --no-fail-fast
+
+  build:
+    name: Build ${{ matrix.label }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - label: macOS (Intel)
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - label: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - label: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # The runners already ship rustup; a third-party action that installs the
+      # toolchain is a worse bet than three commands we can read.
+      - name: Select stable toolchain and target
+        run: |
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc --version
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      # tauri.conf.json points frontendDist at ../dist and dist/ is gitignored, so a
+      # clean checkout has nothing for tauri-build to resolve when build.rs runs.
+      - run: npm ci
+      - run: npm run build
+
+      # tauri-action is the only practical way to get a signed, platform-native
+      # bundle out of a matrix job: it drives the bundler, uploads the artefacts and
+      # attaches them to the release. Signing is optional — when the certificate
+      # secrets are absent it produces an unsigned but perfectly installable bundle.
+      - name: Build bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing (optional — set these repository secrets to enable it)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows signing (optional)
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: DrexiusTerminal ${{ github.event.inputs.tag || github.ref_name }}
+          releaseBody: |
+            See [CHANGELOG](https://github.com/DreyDreamer17/drexius-terminal/releases) for details.
+
+            Check the release notes for any change to the trust model before upgrading
+            a machine that holds production credentials.
+          # Draft on purpose: an accidental tag push must not ship binaries to the
+          # world. Review the notes, then publish the draft from the Releases page.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}

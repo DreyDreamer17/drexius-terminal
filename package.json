@@ -13,7 +13,9 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test:mobile": "node --experimental-strip-types --test tests/mobile-terminal.test.mjs",
-    "test:mobile-ui": "node tests/mobile-ui.smoke.mjs"
+    "test:mobile-ui": "node tests/mobile-ui.smoke.mjs",
+    "screenshots": "node scripts/capture-screenshots.mjs",
+    "docs:links": "node scripts/check-doc-links.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
