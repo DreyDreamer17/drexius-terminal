@@ -104,7 +104,8 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libudev-dev
 
       # No third-party Rust action: the runners already ship rustup, and a
       # versioned action I cannot test here is a worse bet than three commands.

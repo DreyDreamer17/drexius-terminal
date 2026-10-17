@@ -234,7 +234,7 @@ The full threat model, trust boundaries, disclosure policy and known limitations
   ```bash
   # Debian / Ubuntu / Mint
   sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev
 
   # Arch Linux / Manjaro
   sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget openssl

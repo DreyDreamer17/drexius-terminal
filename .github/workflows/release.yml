@@ -52,7 +52,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
+            librsvg2-dev patchelf libudev-dev
 
       - name: Select stable toolchain
         run: |
@@ -113,7 +113,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
+            librsvg2-dev patchelf libudev-dev
 
       # tauri.conf.json points frontendDist at ../dist and dist/ is gitignored, so a
       # clean checkout has nothing for tauri-build to resolve when build.rs runs.
