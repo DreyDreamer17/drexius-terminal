@@ -19,8 +19,8 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 ![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20Linux%20%7C%20Windows%20%7C%20macOS-3DDC84?logo=linux&logoColor=white)
 
 <p align="center">
+  <a href="https://dreydreamer17.github.io/drexius-terminal/"><b>🌐 Try Live Browser Demo</b></a> &nbsp;•&nbsp;
   <a href="#downloads"><b>📥 Direct Downloads</b></a> &nbsp;•&nbsp;
-  <a href="#try-it-in-60-seconds">⚡ Browser Preview</a> &nbsp;•&nbsp;
   <a href="#screenshots">📸 Screenshots</a> &nbsp;•&nbsp;
   <a href="#documentation">📖 Documentation</a>
 </p>
@@ -57,9 +57,16 @@ Pre-built binaries for **v0.1.0-beta.1 (Public Beta)**:
 
 ## Try it in 60 seconds
 
-DrexiusTerminal ships a **browser preview** — a full demo sandbox that runs with no native
-toolchain, no account, and no server. It is the same React UI, wired to a simulated shell,
-a virtual filesystem, and a WebCrypto-encrypted vault held in `localStorage`.
+### 🌐 Instant Web Sandbox (No install needed)
+You can test the full Drexius Terminal workspace right inside your browser without installing anything:
+
+👉 **[Launch Live Browser Demo](https://dreydreamer17.github.io/drexius-terminal/)**
+
+It is the same React UI, wired to a simulated shell, a virtual filesystem, and a WebCrypto-encrypted vault held in `localStorage`. Nothing leaves your machine.
+
+---
+
+### Run locally from source
 
 ```bash
 git clone https://github.com/DreyDreamer17/drexius-terminal.git
