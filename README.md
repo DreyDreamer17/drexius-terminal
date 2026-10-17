@@ -113,6 +113,36 @@ physical-device release checklist are documented in **[docs/mobile-ui.md](docs/m
 
 ## What you get
 
+### ⚡ Performance & resource footprint
+
+Drexius Terminal is engineered with **Tauri 2 (Rust) and WebKit** rather than Electron (Chromium + Node.js). 
+
+Empirical baseline running side-by-side on Linux:
+
+| Metric | Termius *(Electron)* | Drexius Terminal *(Tauri + Rust)* | Difference |
+|:---|:---:|:---:|:---:|
+| **Physical RAM (RSS)** | **~1,250 – 1,340 MB** *(~1.3 GB)* | **~220 – 338 MB** *(~0.25 GB)* | **~4x to 6x less RAM** 🚀 |
+| **Idle / Background CPU** | **13.8% – 78%** | **~2.7% – 3.1%** | **~5x to 25x less CPU** |
+| **Process Count** | **9 processes** | **2 processes** | **4.5x fewer processes** |
+| **Telemetry / Tracking** | Sentry IPC & Crashpad handlers | **0% (Local-first)** | **100% Private & offline** |
+
+<details>
+<summary><b>🔍 How to reproduce this benchmark on your own system</b></summary>
+
+With both applications open, run:
+
+```bash
+ps -eo rss,pcpu,comm,args | awk '
+/[d]rexius/ {dm+=$1; dc+=$2}
+/[t]ermius/ {tm+=$1; tc+=$2}
+END {
+  printf "Drexius: %.0f MB RAM, %.1f%% CPU\n", dm/1024, dc
+  printf "Termius: %.0f MB RAM, %.1f%% CPU\n", tm/1024, tc
+}'
+```
+
+</details>
+
 ### Terminal engine
 
 Full **xterm.js 6** with the WebGL renderer (automatic DOM fallback on context loss),
