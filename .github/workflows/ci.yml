@@ -132,7 +132,7 @@ jobs:
       # Only the downloaded crate sources are cached, not target/: ssh2 and
       # rusqlite both vendor OpenSSL, so target/ runs into GBs and would blow
       # past the cache limit for a modest win.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
