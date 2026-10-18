@@ -47,7 +47,7 @@
     "playwright-core": "^1.64.0",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
-    "vite": "7.3.2",
+    "vite": "8.3.4",
     "vite-plugin-singlefile": "2.3.0"
   }
 }
