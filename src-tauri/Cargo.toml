@@ -64,7 +64,7 @@ tauri-plugin-clipboard-manager = "2"
 socket2 = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "0.22"
 ndk-context = "0.1"
 
 [profile.release]
