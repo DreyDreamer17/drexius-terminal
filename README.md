@@ -28,7 +28,7 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 </div>
 
 <p align="center">
-  <a href="#screenshots"><img src="docs/images/workspace.png" alt="DrexiusTerminal workspace" width="900"></a>
+  <img src="docs/images/preview.webp" alt="DrexiusTerminal in action" width="900">
 </p>
 
 <p align="center"><sub>
