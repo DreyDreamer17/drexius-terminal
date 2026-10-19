@@ -35,14 +35,20 @@ import {
   Server,
   Boxes,
   Radio,
+  ArrowLeftRight,
+  ExternalLink,
+  Copy,
+  Square,
+  Zap,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
+import { PortStreamDetector, type DetectedPort } from '../lib/portDetector';
 import { registry } from '../lib/sessions';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import type { DrexiusTheme } from '../lib/themes';
-import type { Host, Pane, PaneStatus, SessionEvent } from '../lib/types';
+import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 
@@ -141,6 +147,7 @@ interface Props {
   mobileHidden?: boolean;
   broadcast?: boolean;
   onOpenDocker?: () => void;
+  onTunnelChange?: () => void;
   onFocus: () => void;
   onClose: () => void;
   onChange: () => void;
@@ -150,6 +157,16 @@ interface Props {
   mobileBar?: MobileSessionBarActions;
   /** Mobile only: fraction of the pane height covered by a half-open drawer; the terminal gives up that space. */
   drawerInset?: number;
+}
+
+interface PortPromptItem {
+  port: number;
+  localPort: number;
+  protocol: 'http' | 'https' | 'tcp';
+  sourceText: string;
+  state: 'detected' | 'forwarding' | 'active' | 'local-ready';
+  tunnelId?: string;
+  error?: string;
 }
 
 /** What the phone session bar can do; the pane itself owns close + keyboard. */
@@ -181,6 +198,7 @@ export const TerminalPane = memo(function TerminalPane({
   isSplit = false,
   broadcast = false,
   onOpenDocker,
+  onTunnelChange,
   mobileHidden = false,
   onFocus,
   onClose,
@@ -237,6 +255,173 @@ export const TerminalPane = memo(function TerminalPane({
 
   const isSerial = pane.kind === 'serial';
   const isLocal = (!isSerial) && (pane.isLocal || host.id === '__local__' || host.id.startsWith('local'));
+  const isLoopbackHost =
+    host.hostname.trim() === '127.0.0.1' ||
+    host.hostname.trim().toLowerCase() === 'localhost' ||
+    host.hostname.trim() === '::1';
+
+  // Auto-Detected Port Forwarding state
+  const portDetectorRef = useRef<PortStreamDetector>(new PortStreamDetector(host.port ? [host.port] : []));
+  const [portBanner, setPortBanner] = useState<PortPromptItem | null>(null);
+
+  const handleDetectedPorts = useCallback(
+    (items: DetectedPort[]) => {
+      if (!items.length) return;
+      const latest = items[items.length - 1];
+      if (isLocal || isLoopbackHost) {
+        setPortBanner({
+          port: latest.port,
+          localPort: latest.port,
+          protocol: latest.protocol,
+          sourceText: latest.sourceText,
+          state: 'local-ready',
+        });
+        return;
+      }
+      Promise.all([bridge.listTunnels(), bridge.activeTunnels()])
+        .then(([saved, activeList]) => {
+          const existing = saved.find(
+            (t) => t.hostId === host.id && t.forwardType === 'local' && t.remotePort === latest.port
+          );
+          const runningInfo = existing ? activeList.find((a) => a.id === existing.id && a.running) : undefined;
+          if (existing && runningInfo) {
+            setPortBanner({
+              port: latest.port,
+              localPort: runningInfo.boundPort || existing.localPort,
+              protocol: latest.protocol,
+              sourceText: latest.sourceText,
+              state: 'active',
+              tunnelId: existing.id,
+            });
+          } else {
+            setPortBanner({
+              port: latest.port,
+              localPort: existing?.localPort || latest.port,
+              protocol: latest.protocol,
+              sourceText: latest.sourceText,
+              state: 'detected',
+              tunnelId: existing?.id,
+            });
+          }
+        })
+        .catch(() => {
+          setPortBanner({
+            port: latest.port,
+            localPort: latest.port,
+            protocol: latest.protocol,
+            sourceText: latest.sourceText,
+            state: 'detected',
+          });
+        });
+    },
+    [host.id, isLocal, isLoopbackHost]
+  );
+
+  const handleAutoForward = useCallback(
+    async (banner: PortPromptItem, openInBrowser: boolean) => {
+      setPortBanner((prev) =>
+        prev && prev.port === banner.port ? { ...prev, state: 'forwarding', error: undefined } : prev
+      );
+      try {
+        const existingList = await bridge.listTunnels();
+        const existing = existingList.find(
+          (t) => t.hostId === host.id && t.forwardType === 'local' && t.remotePort === banner.port
+        );
+        let tunnelId = existing?.id || banner.tunnelId || '';
+        let chosenLocalPort = existing?.localPort || banner.port;
+
+        const baseConfig: TunnelConfig = existing ?? {
+          id: tunnelId,
+          label: `Auto: ${host.label} :${banner.port}`,
+          hostId: host.id,
+          forwardType: 'local',
+          localHost: '127.0.0.1',
+          localPort: chosenLocalPort,
+          remoteHost: '127.0.0.1',
+          remotePort: banner.port,
+          vaultId: host.vaultId || 'personal',
+        };
+
+        if (!tunnelId) {
+          tunnelId = await bridge.saveTunnel(baseConfig);
+        }
+
+        let startedInfo = null;
+        let lastErr: unknown = null;
+        for (let offset = 0; offset <= 10; offset++) {
+          const candidatePort = offset === 0 ? chosenLocalPort : banner.port + offset;
+          if (candidatePort > 65535) break;
+          if (offset > 0) {
+            await bridge.saveTunnel({
+              ...baseConfig,
+              id: tunnelId,
+              localPort: candidatePort,
+            });
+          }
+          try {
+            startedInfo = await bridge.startTunnel(tunnelId);
+            chosenLocalPort = startedInfo.boundPort || candidatePort;
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err;
+            const msg = isBridgeError(err) ? err.message : String(err);
+            if (!/failed to bind|address already in use|eaddrinuse/i.test(msg)) {
+              throw err;
+            }
+          }
+        }
+
+        if (lastErr) throw lastErr;
+
+        onTunnelChange?.();
+        onChangeRef.current();
+        setPortBanner({
+          ...banner,
+          localPort: chosenLocalPort,
+          state: 'active',
+          tunnelId,
+          error: undefined,
+        });
+        const url = `${banner.protocol === 'https' ? 'https' : 'http'}://127.0.0.1:${chosenLocalPort}`;
+        toast(
+          chosenLocalPort === banner.port
+            ? `⚡ Port :${banner.port} forwarded → ${url}`
+            : `⚡ Port :${banner.port} forwarded → ${url} (:${banner.port} was busy)`
+        );
+        if (openInBrowser) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+      } catch (err) {
+        const msg = isBridgeError(err) ? err.message : String(err);
+        setPortBanner((prev) =>
+          prev && prev.port === banner.port ? { ...prev, state: 'detected', error: msg } : prev
+        );
+        toast(`Port forward failed: ${msg}`);
+      }
+    },
+    [host.id, host.label, host.vaultId, onTunnelChange, toast]
+  );
+
+  const handleStopAutoForward = useCallback(
+    async (banner: PortPromptItem) => {
+      if (!banner.tunnelId) {
+        setPortBanner(null);
+        return;
+      }
+      try {
+        await bridge.stopTunnel(banner.tunnelId);
+        onTunnelChange?.();
+        onChangeRef.current();
+        toast(`Stopped port forward :${banner.port}`);
+      } catch (err) {
+        toast(`Failed to stop tunnel: ${String(err)}`);
+      } finally {
+        setPortBanner(null);
+      }
+    },
+    [onTunnelChange, toast]
+  );
 
   const update = useCallback(
     (patch: Parameters<typeof registry.patch>[1]) => {
@@ -667,6 +852,10 @@ export const TerminalPane = memo(function TerminalPane({
           switch (ev.type) {
             case 'output':
               smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+              if (!suppressLocalBanner) {
+                const found = portDetectorRef.current.feed(ev.data);
+                if (found.length > 0) handleDetectedPorts(found);
+              }
               break;
             case 'cwd':
               setCwd(ev.path);
@@ -754,6 +943,10 @@ export const TerminalPane = memo(function TerminalPane({
           switch (ev.type) {
             case 'output':
               smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+              if (!suppressConnectBanner) {
+                const found = portDetectorRef.current.feed(ev.data);
+                if (found.length > 0) handleDetectedPorts(found);
+              }
               break;
             case 'cwd':
               setCwd(ev.path);
@@ -880,7 +1073,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     },
-    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange]
+    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange, handleDetectedPorts]
   );
 
   const mobile = useMobile();
@@ -2159,6 +2352,164 @@ export const TerminalPane = memo(function TerminalPane({
             style={{ background: `radial-gradient(ellipse at top, ${searchAccent} 0%, transparent 70%)` }}
           />
           {searchControls}
+        </div>
+      )}
+
+      {/* Auto-Detected Listening Port Banner (1-Tap SSH Port Forward & Preview) */}
+      {portBanner && status === 'connected' && (
+        <div
+          role="region"
+          aria-label="Detected listening port"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            backgroundColor: theme.xterm.background || '#0e131d',
+            borderColor:
+              portBanner.state === 'active'
+                ? 'rgba(52, 211, 153, 0.4)'
+                : `${theme.accent || '#22d3ee'}45`,
+            boxShadow:
+              portBanner.state === 'active'
+                ? '0 12px 32px rgba(0,0,0,0.55), 0 0 20px rgba(16, 185, 129, 0.18)'
+                : `0 12px 32px rgba(0,0,0,0.55), 0 0 20px ${theme.accent || '#22d3ee'}20`,
+          }}
+          className={cn(
+            'nx-rise absolute z-20 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs shadow-2xl backdrop-blur-xl',
+            mobile
+              ? 'inset-x-2.5 top-2'
+              : cn(
+                  'right-3 max-w-md',
+                  showSearch ? (showHeader ? 'top-22' : 'top-14') : showHeader ? 'top-10' : 'top-2.5'
+                )
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                'grid h-6 w-6 shrink-0 place-items-center rounded-lg border',
+                portBanner.state === 'active'
+                  ? 'border-emerald-400/35 bg-emerald-400/15 text-emerald-300'
+                  : 'border-cyan-400/35 bg-cyan-400/15 text-cyan-300'
+              )}
+            >
+              {portBanner.state === 'forwarding' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : portBanner.state === 'active' ? (
+                <ArrowLeftRight className="h-3.5 w-3.5" />
+              ) : (
+                <Zap className="h-3.5 w-3.5" />
+              )}
+            </span>
+            <div className="min-w-0">
+              {portBanner.state === 'active' ? (
+                <div className="flex items-center gap-1.5 font-medium text-emerald-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span className="font-mono text-[11.5px]">
+                    127.0.0.1:{portBanner.localPort} ⇄ :{portBanner.port}
+                  </span>
+                </div>
+              ) : portBanner.state === 'local-ready' ? (
+                <div className="font-medium text-slate-100">
+                  Local server on <span className="font-mono font-semibold text-cyan-300">:{portBanner.port}</span>
+                </div>
+              ) : (
+                <div className="font-medium text-slate-100">
+                  Port <span className="font-mono font-semibold text-cyan-300">:{portBanner.port}</span> listening
+                </div>
+              )}
+              <div className="truncate font-mono text-[10px] text-slate-400 max-w-[200px]">
+                {portBanner.state === 'active'
+                  ? `${portBanner.protocol === 'https' ? 'https' : 'http'}://127.0.0.1:${portBanner.localPort}`
+                  : portBanner.sourceText}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {portBanner.state === 'detected' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleAutoForward(portBanner, false)}
+                  className="flex items-center gap-1 rounded-lg border border-cyan-400/35 bg-cyan-400/15 px-2.5 py-1 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/25 transition cursor-pointer"
+                >
+                  <ArrowLeftRight className="h-3 w-3" />
+                  <span>Forward</span>
+                </button>
+                {portBanner.protocol !== 'tcp' && (
+                  <button
+                    type="button"
+                    onClick={() => handleAutoForward(portBanner, true)}
+                    className="flex items-center gap-1 rounded-lg bg-cyan-400 px-2.5 py-1 text-[11px] font-semibold text-slate-950 hover:brightness-110 transition cursor-pointer"
+                  >
+                    <span>Forward &amp; Open</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                )}
+              </>
+            )}
+
+            {portBanner.state === 'forwarding' && (
+              <span className="px-2 text-[11px] text-slate-400">Binding tunnel…</span>
+            )}
+
+            {(portBanner.state === 'active' || portBanner.state === 'local-ready') && (
+              <>
+                {portBanner.protocol !== 'tcp' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `${portBanner.protocol === 'https' ? 'https' : 'http'}://127.0.0.1:${portBanner.localPort}`;
+                      window.open(url, '_blank', 'noopener,noreferrer');
+                    }}
+                    className="flex items-center gap-1 rounded-lg border border-emerald-400/35 bg-emerald-400/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-400/25 transition cursor-pointer"
+                  >
+                    <span>Open</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url =
+                      portBanner.protocol === 'tcp'
+                        ? `127.0.0.1:${portBanner.localPort}`
+                        : `${portBanner.protocol === 'https' ? 'https' : 'http'}://127.0.0.1:${portBanner.localPort}`;
+                    bridge.writeClipboard(url).then(() => toast(`Copied ${url}`)).catch(() => {});
+                  }}
+                  title="Copy local address"
+                  className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                >
+                  <Copy className="h-3 w-3" />
+                  <span>Copy</span>
+                </button>
+                {portBanner.state === 'active' && (
+                  <button
+                    type="button"
+                    onClick={() => handleStopAutoForward(portBanner)}
+                    title="Stop port forward"
+                    className="flex items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-500/20 transition cursor-pointer"
+                  >
+                    <Square className="h-2.5 w-2.5 fill-current" />
+                    <span>Stop</span>
+                  </button>
+                )}
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                portDetectorRef.current.ignorePort(portBanner.port);
+                setPortBanner(null);
+              }}
+              title="Dismiss"
+              aria-label="Dismiss port banner"
+              className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       )}
 

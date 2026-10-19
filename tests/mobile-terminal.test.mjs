@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { accessoryKeys, isTerminalModifierKey, modifiedTerminalInput, getWrappedRowsAbove, SmartTerminalWriter } from '../src/lib/mobileTerminal.ts';
+import { detectPortsInLine, PortStreamDetector } from '../src/lib/portDetector.ts';
 
 const ctrl = { ctrl: true, alt: false };
 const alt = { ctrl: false, alt: true };
@@ -214,4 +215,45 @@ test('SmartTerminalWriter never rewinds or clears during paste, arrow navigation
 
   writer.dispose();
 });
+
+test('detectPortsInLine strips ANSI formatting and detects Vite, FastAPI, Python, and generic listeners', () => {
+  // Vite bolds the port number inside ANSI SGR codes
+  const viteLine = '  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://localhost:\x1b[1m5173\x1b[22m/\x1b[39m';
+  assert.deepEqual(detectPortsInLine(viteLine), [
+    { port: 5173, protocol: 'http', sourceText: 'http://localhost:5173/' },
+  ]);
+
+  // Python http.server
+  const pyLine = 'Serving HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ...';
+  assert.deepEqual(detectPortsInLine(pyLine), [
+    { port: 8000, protocol: 'http', sourceText: 'http://0.0.0.0:8000/' },
+  ]);
+
+  // Generic listening announcement without URL
+  const genericLine = 'Server listening on port 3000';
+  assert.deepEqual(detectPortsInLine(genericLine), [
+    { port: 3000, protocol: 'http', sourceText: 'listening on port 3000' },
+  ]);
+});
+
+test('detectPortsInLine ignores connection errors and SSH ports', () => {
+  assert.deepEqual(detectPortsInLine('curl: (7) Failed to connect to localhost port 3000: Connection refused'), []);
+  assert.deepEqual(detectPortsInLine('Error: listen EADDRINUSE: address already in use 127.0.0.1:5173'), []);
+  assert.deepEqual(detectPortsInLine('Server listening on 0.0.0.0:22'), []);
+  assert.deepEqual(detectPortsInLine('Listening on 127.0.0.1:8022'), []);
+});
+
+test('PortStreamDetector reassembles split chunks without premature partial-port detection', () => {
+  const detector = new PortStreamDetector([2222]);
+  // Split right in the middle of port 5173
+  assert.deepEqual(detector.feed('  ➜  Local:   \x1b[36mhttp://localhost:\x1b[1m51'), []);
+  assert.deepEqual(detector.feed('73\x1b[22m/\x1b[39m\r\n'), [
+    { port: 5173, protocol: 'http', sourceText: 'http://localhost:5173/' },
+  ]);
+  // Subsequent output with the same port does not re-trigger unless unignored
+  assert.deepEqual(detector.feed('http://localhost:5173/\r\n'), []);
+  // Ignored SSH port is skipped
+  assert.deepEqual(detector.feed('Listening on 0.0.0.0:2222\r\n'), []);
+});
+
 

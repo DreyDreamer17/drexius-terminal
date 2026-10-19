@@ -1947,6 +1947,7 @@ export default function App() {
                           setDockerHostId(p.isLocal ? '__local__' : h.id);
                           setShowDockerModal(true);
                         }}
+                        onTunnelChange={refresh}
                         onFocus={() => focusPane(t.id, p.id)}
                         onClose={() => closePane(t.id, p.id)}
                         onChange={bump}
