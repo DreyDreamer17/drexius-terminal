@@ -1,0 +1,13 @@
+# Android renderer-death survival for Tauri/Wry.
+#
+# Wry generates RustWebViewClient.kt during the Android build, and its
+# default class does not override onRenderProcessGone(). Android therefore
+# kills the entire app process when the WebView renderer is reclaimed.
+# Inject a one-line delegate into the generated class; MainActivity owns
+# the actual cleanup/recreate logic and returns true for handled deaths.
+#
+# Keep this file at the repository root: different parts of the Tauri and
+# Gradle build invoke Cargo from either the root or src-tauri/, and Cargo
+# discovers configuration by walking upward from the invocation directory.
+[env]
+WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION = { value = "override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean = MainActivity.handleRendererProcessGone(view, detail.didCrash(), detail.rendererPriorityAtExit())", force = true }

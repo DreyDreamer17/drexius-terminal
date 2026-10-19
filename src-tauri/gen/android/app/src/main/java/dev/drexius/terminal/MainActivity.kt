@@ -1,18 +1,27 @@
 package dev.drexius.terminal
 
 import android.Manifest
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
+import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
+import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.Lifecycle
 
 class MainActivity : TauriActivity() {
   companion object {
@@ -43,6 +52,73 @@ class MainActivity : TauriActivity() {
       val ctx = instance?.applicationContext ?: return
       SessionForegroundService.updateActiveSessions(ctx, count)
     }
+
+    private const val RENDERER_LOG_TAG = "DrexiusRenderer"
+    private const val RENDERER_CRASH_LOOP_WINDOW_MS = 30_000L
+
+    @Volatile
+    private var lastRendererCrashAtMs = 0L
+
+    @Volatile
+    private var rendererRecoveryInProgress = false
+
+    @Volatile
+    private var rendererRecoveryPending = false
+
+    /**
+     * Called from Wry's generated RustWebViewClient (see
+     * WRY_RUSTWEBVIEWCLIENT_CLASS_EXTENSION in the repository-root
+     * .cargo/config.toml).
+     *
+     * Returning true tells Android that we handled the renderer exit.
+     * Without this claim, Android kills this whole process—including the
+     * Rust SSH sessions and foreground service—whenever the separate
+     * WebView renderer process is reclaimed under memory pressure.
+     */
+    @JvmStatic
+    fun handleRendererProcessGone(
+      webView: WebView,
+      didCrash: Boolean,
+      rendererPriorityAtExit: Int,
+    ): Boolean {
+      Log.w(
+        RENDERER_LOG_TAG,
+        "Renderer gone: pid=${Process.myPid()}, didCrash=$didCrash, " +
+          "rendererPriorityAtExit=$rendererPriorityAtExit; claiming it",
+      )
+
+      val activity = findMainActivity(webView.context) ?: instance
+      if (activity != null && !activity.isFinishing && !activity.isDestroyed) {
+        return activity.recoverFromRendererGone(webView, didCrash)
+      }
+
+      // Even if there is no usable Activity to recreate, claim the death and
+      // discard the dead view. Returning false here would make Android kill
+      // the process that this handler exists to preserve.
+      Log.w(RENDERER_LOG_TAG, "No active MainActivity available for renderer recovery")
+      destroyDeadWebView(webView)
+      return true
+    }
+
+    private fun findMainActivity(context: Context): MainActivity? {
+      var current: Context? = context
+      while (current is ContextWrapper) {
+        if (current is MainActivity) return current
+        val base = current.baseContext
+        if (base === current) break
+        current = base
+      }
+      return current as? MainActivity
+    }
+
+    private fun destroyDeadWebView(webView: WebView) {
+      try {
+        (webView.parent as? ViewGroup)?.removeView(webView)
+      } catch (_: Exception) {}
+      try {
+        webView.destroy()
+      } catch (_: Exception) {}
+    }
   }
 
   private var appWebView: WebView? = null
@@ -50,6 +126,9 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     appWebView = webView
+    rendererRecoveryInProgress = false
+    rendererRecoveryPending = false
+    Log.i(RENDERER_LOG_TAG, "WebView created: pid=${Process.myPid()}")
     // Prevent Android from lowering the WebView renderer process priority to WAIVED
     // when the user opens the multi-app overview (Recents), switches apps, or locks
     // the screen. Without `waivedWhenNotVisible = false`, Android's lmkd can kill or
@@ -59,6 +138,69 @@ class MainActivity : TauriActivity() {
         webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
       } catch (_: Exception) {}
     }
+  }
+
+  private fun recoverFromRendererGone(webView: WebView, didCrash: Boolean): Boolean {
+    if (appWebView === webView) {
+      // Do not let lifecycle hooks call onResume()/resumeTimers() on a
+      // WebView whose renderer is already gone.
+      appWebView = null
+    }
+
+    if (rendererRecoveryInProgress || rendererRecoveryPending) {
+      destroyDeadWebView(webView)
+      return true
+    }
+
+    if (didCrash) {
+      val now = SystemClock.elapsedRealtime()
+      val previousCrashAt = lastRendererCrashAtMs
+      if (previousCrashAt != 0L && now - previousCrashAt < RENDERER_CRASH_LOOP_WINDOW_MS) {
+        // A renderer that crashes again immediately after recovery is
+        // likely hitting the same page/content fault. Let Android apply
+        // its default crash behaviour instead of recreating forever.
+        // System low-memory kills report didCrash=false and always take
+        // the recovery path below.
+        Log.e(RENDERER_LOG_TAG, "Renderer crashed again within ${now - previousCrashAt}ms; not claiming it")
+        return false
+      }
+      lastRendererCrashAtMs = now
+    }
+
+    destroyDeadWebView(webView)
+
+    if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+      // The usual low-memory path: Home/app-switching has already stopped
+      // the Activity. Claim the renderer now, but do not build another
+      // memory-heavy WebView in the background for lmkd to reclaim again.
+      // onStart() recreates the Activity when the user actually returns;
+      // until then only the Rust process/FGS need to stay resident.
+      rendererRecoveryPending = true
+      Log.i(RENDERER_LOG_TAG, "Activity is stopped; postponing WebView recovery until return")
+      return true
+    }
+
+    rendererRecoveryInProgress = true
+
+    // Activity.recreate() uses Android's configuration-change relaunch
+    // path, which Tao/Wry explicitly preserve: the Rust process and its
+    // state stay alive, while a new Activity/WebView is created for the
+    // existing Tauri window. The recreated frontend can then reattach
+    // to Rust-owned SSH sessions.
+    Handler(Looper.getMainLooper()).post {
+      if (!isFinishing && !isDestroyed) {
+        try {
+          Log.i(RENDERER_LOG_TAG, "Recreating Activity in pid=${Process.myPid()}")
+          recreate()
+        } catch (e: Exception) {
+          rendererRecoveryInProgress = false
+          Log.e(RENDERER_LOG_TAG, "Activity recreate after renderer loss failed", e)
+        }
+      } else {
+        rendererRecoveryInProgress = false
+      }
+    }
+    return true
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,6 +217,20 @@ class MainActivity : TauriActivity() {
 
   override fun onStart() {
     super.onStart()
+    if (rendererRecoveryPending) {
+      rendererRecoveryPending = false
+      rendererRecoveryInProgress = true
+      isActivityVisible = false
+      try {
+        Log.i(RENDERER_LOG_TAG, "Returning to foreground; recreating Activity in pid=${Process.myPid()}")
+        recreate()
+      } catch (e: Exception) {
+        rendererRecoveryInProgress = false
+        rendererRecoveryPending = true
+        Log.e(RENDERER_LOG_TAG, "Deferred Activity recreate after renderer loss failed", e)
+      }
+      return
+    }
     isActivityVisible = true
     keepWebViewActive()
   }
@@ -103,6 +259,13 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    if (!isChangingConfigurations) {
+      // A configuration-change destroy is part of renderer recovery and is
+      // followed by a new Activity/WebView. Any other destroy means this
+      // Activity instance will not perform a deferred recovery.
+      rendererRecoveryPending = false
+      rendererRecoveryInProgress = false
+    }
     appWebView = null
     super.onDestroy()
     if (instance == this) {
