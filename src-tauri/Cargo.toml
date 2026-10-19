@@ -29,7 +29,7 @@ ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
 rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "serde_json"] }
 
 # ── Cryptography ─────────────────────────────────────────────
-argon2 = "0.5"                       # Master-password KDF (Argon2id)
+argon2 = "0.6"                       # Master-password KDF (Argon2id)
 chacha20poly1305 = "0.10"            # XChaCha20-Poly1305 for E2EE sync blobs
 hkdf = "0.12"
 hmac = "0.12"
