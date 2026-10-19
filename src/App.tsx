@@ -51,7 +51,7 @@ import {
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
 import { THEMES, type DrexiusTheme } from './lib/themes';
-import type { Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
+import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import { LockScreen } from './components/LockScreen';
 import { LaunchSplash } from './components/LaunchSplash';
 import { HostSidebar } from './components/HostSidebar';
@@ -62,6 +62,7 @@ import { SerialModal } from './components/SerialModal';
 import { DevicePairingModal } from './components/DevicePairingModal';
 import { SshConfigModal } from './components/SshConfigModal';
 import { TailscaleModal } from './components/TailscaleModal';
+import { CloudSyncModal } from './components/CloudSyncModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -479,6 +480,30 @@ export default function App() {
   const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
   const [showSshConfig, setShowSshConfig] = useState(false);
   const [showTailscale, setShowTailscale] = useState(false);
+  const [showCloudSync, setShowCloudSync] = useState(false);
+  const [cloudStatuses, setCloudStatuses] = useState<Record<string, CloudInstance>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('drx.cloud.statuses.v2') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [cloudRefreshing, setCloudRefreshing] = useState(false);
+
+  const mergeCloudStatuses = useCallback((instances: CloudInstance[]) => {
+    if (!instances.length) return;
+    setCloudStatuses((prev) => {
+      const next = { ...prev };
+      for (const inst of instances) {
+        next[`cloud:${inst.provider}:${inst.id}`] = inst;
+        if (inst.ip) next[`ip:${inst.ip}`] = inst;
+      }
+      try {
+        localStorage.setItem('drx.cloud.statuses.v2', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   useEffect(() => { localStorage.setItem('drx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('drx.font', String(fontSize)); }, [fontSize]);
@@ -503,6 +528,59 @@ export default function App() {
     setVaults(v);
   }, []);
   useEffect(() => { if (unlocked) refresh(); }, [unlocked, refresh]);
+
+  const refreshCloudStatuses = useCallback(async (silent = false) => {
+    if (!unlocked) return;
+    const providers = new Set<CloudProviderId>();
+    for (const h of hosts) {
+      for (const t of h.tags) {
+        if (t.startsWith('cloud:hetzner:')) providers.add('hetzner');
+        else if (t.startsWith('cloud:digitalocean:')) providers.add('digitalocean');
+        else if (t.startsWith('cloud:proxmox:')) providers.add('proxmox');
+      }
+    }
+    if (providers.size === 0) return;
+    setCloudRefreshing(true);
+    try {
+      const creds = await bridge.getCloudCredentials();
+      const collected: CloudInstance[] = [];
+      for (const p of providers) {
+        try {
+          if (p === 'hetzner' && creds.hetznerToken) {
+            const list = await bridge.fetchCloudInstances('hetzner', creds.hetznerToken);
+            collected.push(...list);
+          } else if (p === 'digitalocean' && creds.digitaloceanToken) {
+            const list = await bridge.fetchCloudInstances('digitalocean', creds.digitaloceanToken);
+            collected.push(...list);
+          } else if (p === 'proxmox' && creds.proxmoxToken && creds.proxmoxUrl) {
+            const list = await bridge.fetchCloudInstances('proxmox', creds.proxmoxToken, creds.proxmoxUrl, creds.proxmoxInsecure);
+            collected.push(...list);
+          }
+        } catch (err) {
+          console.warn(`Cloud status refresh failed for ${p}:`, err);
+        }
+      }
+      if (collected.length > 0) {
+        mergeCloudStatuses(collected);
+        if (!silent) toast('Updated live cloud power states');
+      }
+    } finally {
+      setCloudRefreshing(false);
+    }
+  }, [unlocked, hosts, mergeCloudStatuses, toast]);
+
+  const initialCloudPollDoneRef = useRef(false);
+  useEffect(() => {
+    if (!unlocked) {
+      initialCloudPollDoneRef.current = false;
+      return;
+    }
+    if (hosts.length === 0 || initialCloudPollDoneRef.current) return;
+    if (hosts.some((h) => h.tags.some((t) => t.startsWith('cloud:')))) {
+      initialCloudPollDoneRef.current = true;
+      refreshCloudStatuses(true);
+    }
+  }, [unlocked, hosts, refreshCloudStatuses]);
 
   // Relay sync runs in the background only for a configured, unlocked vault.
   // No silent success toast: errors remain available in Sync Status for retry.
@@ -1815,6 +1893,10 @@ export default function App() {
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
                     onOpenTailscale={() => setShowTailscale(true)}
+                    onOpenCloudSync={() => setShowCloudSync(true)}
+                    cloudStatuses={cloudStatuses}
+                    onRefreshCloudStatuses={() => refreshCloudStatuses(false)}
+                    cloudRefreshing={cloudRefreshing}
                     onOpenTermuxPreset={openTermuxPreset}
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
@@ -2072,6 +2154,7 @@ export default function App() {
         <div className="nx-settings-group">
           <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
           <button className="nx-settings-row" onClick={() => setShowTailscale(true)}><Network size={18} /> Tailscale sync & discovery</button>
+          <button className="nx-settings-row" onClick={() => setShowCloudSync(true)}><Cloud size={18} /> Cloud Fleet Sync (Hetzner / DO / Proxmox)</button>
           <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
           <button className="nx-settings-row" onClick={() => setShowDockerModal(true)}><Boxes size={18} /> Docker containers</button>
           <button className="nx-settings-row" onClick={() => setPanel('keychain')}><KeyRound size={18} /> Keychain</button>
@@ -2662,6 +2745,34 @@ export default function App() {
               authMethod: h.authMethod || 'key',
               group: 'Tailscale',
               tags: ['tailscale'],
+              hasSecret: false,
+              os: h.os || null,
+            };
+            openHost(tempHost);
+          }}
+          toast={toast}
+          theme={theme}
+        />
+      )}
+      {showCloudSync && (
+        <CloudSyncModal
+          vaults={vaults}
+          defaultVaultId={activeVaultId}
+          onClose={() => setShowCloudSync(false)}
+          onSuccess={(liveInstances) => {
+            if (liveInstances?.length) mergeCloudStatuses(liveInstances);
+            refresh();
+          }}
+          onDirectConnect={(h) => {
+            const tempHost: Host = {
+              id: uid(),
+              label: h.label || 'Cloud Instance',
+              hostname: h.hostname || '',
+              port: h.port || 22,
+              username: h.username || 'root',
+              authMethod: h.authMethod || 'key',
+              group: h.group || 'Cloud',
+              tags: h.tags || ['cloud'],
               hasSecret: false,
               os: h.os || null,
             };

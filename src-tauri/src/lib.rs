@@ -15,6 +15,7 @@ mod ai_client;
 mod opencode;
 mod ssh_config;
 mod tailscale;
+mod cloud_sync;
 mod docker;
 
 use std::time::Duration;
@@ -211,6 +212,11 @@ pub fn run() {
             tailscale::tailscale_import,
             tailscale::tailscale_get_credentials,
             tailscale::tailscale_save_credentials,
+            // cloud provider fleet sync
+            cloud_sync::cloud_fetch_instances,
+            cloud_sync::cloud_import_instances,
+            cloud_sync::cloud_get_credentials,
+            cloud_sync::cloud_save_credentials,
             // docker container management
             docker::docker_list_containers,
             docker::docker_container_action,

@@ -40,6 +40,9 @@ import type {
   Snapshot,
   Snippet,
   TailscaleDevice,
+  CloudCredentials,
+  CloudInstance,
+  CloudProviderId,
   DockerContainer,
   TunnelConfig,
   Vault,
@@ -592,6 +595,121 @@ export const bridge = {
     if (isTauri) return invoke('tailscale_save_credentials', { apiKey, tailnet: tailnet || null });
     localStorage.setItem('drx.tailscale.apikey', apiKey);
     if (tailnet) localStorage.setItem('drx.tailscale.tailnet', tailnet);
+  },
+
+  // ── Cloud Provider Fleet Sync (Hetzner, DigitalOcean, Proxmox VE) ──
+  async fetchCloudInstances(
+    provider: CloudProviderId,
+    apiToken: string,
+    apiUrl?: string | null,
+    allowInsecure?: boolean
+  ): Promise<CloudInstance[]> {
+    if (isTauri) {
+      return invoke('cloud_fetch_instances', {
+        provider,
+        apiToken,
+        apiUrl: apiUrl || null,
+        allowInsecure: allowInsecure ?? true,
+      });
+    }
+    if (provider === 'hetzner') {
+      return [
+        { id: 'hz-1', provider: 'hetzner', name: 'prod-api-01', ip: '159.69.10.20', status: 'running', online: true, region: 'fsn1', instanceType: 'cpx31', os: 'ubuntu', tags: ['hetzner', 'fsn1', 'env:prod'] },
+        { id: 'hz-2', provider: 'hetzner', name: 'staging-worker', ip: '159.69.10.21', status: 'off', online: false, region: 'nbg1', instanceType: 'cx22', os: 'debian', tags: ['hetzner', 'nbg1', 'env:staging'] },
+      ];
+    }
+    if (provider === 'digitalocean') {
+      return [
+        { id: 'do-1', provider: 'digitalocean', name: 'do-k8s-node-1', ip: '167.99.200.15', status: 'running', online: true, region: 'fra1', instanceType: 's-2vcpu-4gb', os: 'rocky', tags: ['digitalocean', 'fra1', 'k8s'] },
+      ];
+    }
+    return [
+      { id: '100', provider: 'proxmox', name: 'ct-nextcloud', ip: '192.168.1.150', status: 'running', online: true, region: 'pve', instanceType: 'lxc #100', os: 'debian', tags: ['proxmox', 'lxc', 'pve'] },
+      { id: '102', provider: 'proxmox', name: 'vm-k3s-master', ip: '192.168.1.160', status: 'running', online: true, region: 'pve', instanceType: 'qemu #102', os: 'ubuntu', tags: ['proxmox', 'qemu', 'pve'] },
+    ];
+  },
+
+  async importCloudInstances(
+    instances: Array<{
+      id: string;
+      provider: CloudProviderId;
+      name: string;
+      ip: string;
+      username: string;
+      port?: number;
+      os?: string | null;
+      region?: string | null;
+      tags: string[];
+      vaultId: string;
+    }>
+  ): Promise<number> {
+    if (isTauri) return invoke('cloud_import_instances', { instances });
+    const s = need();
+    for (const item of instances) {
+      const groupMap: Record<CloudProviderId, { name: string; color: string }> = {
+        hetzner: { name: 'Hetzner Cloud', color: '#ef4444' },
+        digitalocean: { name: 'DigitalOcean', color: '#0080ff' },
+        proxmox: { name: 'Proxmox VE', color: '#f97316' },
+      };
+      const g = groupMap[item.provider];
+      const cloudTag = `cloud:${item.provider}:${item.id}`;
+      const tags = Array.from(new Set([...item.tags, item.provider, cloudTag]));
+      const existingIdx = s.hosts.findIndex(
+        (h) =>
+          (h.vaultId || 'personal') === (item.vaultId || 'personal') &&
+          (h.tags.includes(cloudTag) || h.label.toLowerCase() === item.name.toLowerCase() || h.hostname === item.ip)
+      );
+      if (existingIdx >= 0) {
+        s.hosts[existingIdx] = {
+          ...s.hosts[existingIdx],
+          label: item.name,
+          hostname: item.ip,
+          port: item.port || s.hosts[existingIdx].port || 22,
+          username: item.username || s.hosts[existingIdx].username || 'root',
+          os: item.os || s.hosts[existingIdx].os || null,
+          tags,
+        };
+      } else {
+        s.hosts.push({
+          id: uid(),
+          label: item.name,
+          hostname: item.ip,
+          port: item.port || 22,
+          username: item.username || 'root',
+          authMethod: 'key',
+          group: g.name,
+          color: g.color,
+          tags,
+          hasSecret: false,
+          os: item.os || 'linux',
+          vaultId: item.vaultId || 'personal',
+        });
+      }
+    }
+    await persistDemo();
+    return instances.length;
+  },
+
+  async getCloudCredentials(): Promise<CloudCredentials> {
+    if (isTauri) {
+      return invoke('cloud_get_credentials');
+    }
+    return {
+      hetznerToken: localStorage.getItem('drx.cloud.hetzner'),
+      digitaloceanToken: localStorage.getItem('drx.cloud.do'),
+      proxmoxUrl: localStorage.getItem('drx.cloud.pve.url'),
+      proxmoxToken: localStorage.getItem('drx.cloud.pve.token'),
+      proxmoxInsecure: localStorage.getItem('drx.cloud.pve.insecure') !== '0',
+    };
+  },
+
+  async saveCloudCredentials(creds: CloudCredentials): Promise<void> {
+    if (isTauri) return invoke('cloud_save_credentials', { creds });
+    if (creds.hetznerToken !== undefined) localStorage.setItem('drx.cloud.hetzner', creds.hetznerToken || '');
+    if (creds.digitaloceanToken !== undefined) localStorage.setItem('drx.cloud.do', creds.digitaloceanToken || '');
+    if (creds.proxmoxUrl !== undefined) localStorage.setItem('drx.cloud.pve.url', creds.proxmoxUrl || '');
+    if (creds.proxmoxToken !== undefined) localStorage.setItem('drx.cloud.pve.token', creds.proxmoxToken || '');
+    if (creds.proxmoxInsecure !== undefined) localStorage.setItem('drx.cloud.pve.insecure', creds.proxmoxInsecure ? '1' : '0');
   },
 
   // ── Docker Containers ──

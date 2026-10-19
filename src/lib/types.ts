@@ -359,3 +359,28 @@ export interface OpencodeHostStatus {
   installed: boolean;
   binaryPath?: string | null;
 }
+
+export type CloudProviderId = 'hetzner' | 'digitalocean' | 'proxmox';
+
+export interface CloudInstance {
+  id: string;
+  provider: CloudProviderId;
+  name: string;
+  ip: string;
+  ipv6?: string | null;
+  status: string;
+  online: boolean;
+  region?: string | null;
+  instanceType?: string | null;
+  os?: string | null;
+  tags: string[];
+}
+
+export interface CloudCredentials {
+  hetznerToken?: string | null;
+  digitaloceanToken?: string | null;
+  proxmoxUrl?: string | null;
+  proxmoxToken?: string | null;
+  proxmoxInsecure?: boolean;
+}
+

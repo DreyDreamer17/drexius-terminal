@@ -21,8 +21,10 @@ import {
   HardDrive,
   Server,
   Network,
+  Cloud,
+  RefreshCw,
 } from 'lucide-react';
-import type { Host, Vault } from '../lib/types';
+import type { CloudInstance, Host, Vault } from '../lib/types';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { registry } from '../lib/sessions';
 import { OsIcon } from './OsIcon';
@@ -44,6 +46,10 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
   onOpenTailscale?: () => void;
+  onOpenCloudSync?: () => void;
+  cloudStatuses?: Record<string, CloudInstance>;
+  onRefreshCloudStatuses?: () => void;
+  cloudRefreshing?: boolean;
   onOpenTermuxPreset?: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
   onClose?: () => void;
@@ -51,6 +57,16 @@ interface Props {
 }
 
 const authIcon = { key: KeyRound, password: Lock, agent: Fingerprint };
+
+function getHostCloudStatus(h: Host, map?: Record<string, CloudInstance>): CloudInstance | undefined {
+  if (!map) return undefined;
+  for (const tag of h.tags) {
+    if (tag.startsWith('cloud:') && map[tag]) {
+      return map[tag];
+    }
+  }
+  return map[`ip:${h.hostname}`];
+}
 
 function parseSshTarget(input: string): { username: string; hostname: string; port: number } | null {
   let s = input.trim();
@@ -95,6 +111,10 @@ export function HostSidebar({
   onOpenShareModal,
   onOpenSshConfig,
   onOpenTailscale,
+  onOpenCloudSync,
+  cloudStatuses,
+  onRefreshCloudStatuses,
+  cloudRefreshing,
   onOpenTermuxPreset,
   onQuickConnectSsh,
   onClose,
@@ -324,6 +344,16 @@ export function HostSidebar({
                   <Network className="h-3.5 w-3.5" style={{ color: accentColor }} />
                   <span>Tailscale Sync…</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onOpenCloudSync?.();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                >
+                  <Cloud className="h-3.5 w-3.5 text-sky-400" />
+                  <span>Cloud Fleet Sync…</span>
+                </button>
               </div>
             </>
           )}
@@ -432,38 +462,85 @@ export function HostSidebar({
       </MobileSheet>}
       {/* Host List */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 max-md:pb-24">
-        {groups.map(([g, list]) => (
-          <div key={g} className="mt-2">
-            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-              {g}
-            </div>
-            {list.map((h) => {
-              const Icon = authIcon[h.authMethod];
-              return (
-                <div
-                  key={h.id}
-                  onDoubleClick={() => { if (!mobile) onConnect(h); }}
-                  onClick={() => onConnect(h)}
-                  className="group relative flex max-md:min-h-16 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.04] transition"
-                >
-                  <div className="relative shrink-0">
-                    <OsIcon os={h.os} color={h.color} size={30} />
-                    {live.has(h.id) && (
-                      <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#0b0f17]" />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 truncate text-[13px] font-medium text-slate-200">
-                      <span className="truncate">{h.label}</span>
-                      <Icon className="h-3 w-3 text-slate-500 shrink-0" />
+        {groups.map(([g, list]) => {
+          const isCloudGroup =
+            g === 'Hetzner Cloud' ||
+            g === 'DigitalOcean' ||
+            g === 'Proxmox VE' ||
+            list.some((h) => h.tags.some((t) => t.startsWith('cloud:')));
+          return (
+            <div key={g} className="mt-2">
+              <div className="flex items-center justify-between px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                <span>{g}</span>
+                {isCloudGroup && onRefreshCloudStatuses && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRefreshCloudStatuses();
+                    }}
+                    title="Refresh cloud server power states"
+                    className="rounded p-0.5 text-slate-500 hover:bg-white/10 hover:text-sky-300 transition"
+                  >
+                    <RefreshCw className={cn('h-3 w-3', cloudRefreshing && 'animate-spin text-sky-400')} />
+                  </button>
+                )}
+              </div>
+              {list.map((h) => {
+                const Icon = authIcon[h.authMethod];
+                const cloudState = getHostCloudStatus(h, cloudStatuses);
+                return (
+                  <div
+                    key={h.id}
+                    onDoubleClick={() => { if (!mobile) onConnect(h); }}
+                    onClick={() => onConnect(h)}
+                    className="group relative flex max-md:min-h-16 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.04] transition"
+                  >
+                    <div className="relative shrink-0">
+                      <OsIcon os={h.os} color={h.color} size={30} />
+                      {live.has(h.id) ? (
+                        <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-[#0b0f17]" />
+                      ) : cloudState ? (
+                        <span
+                          title={`Cloud instance ${cloudState.online ? 'Running' : 'Stopped'} (${cloudState.status})`}
+                          className={cn(
+                            'absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full ring-2 ring-[#0b0f17]',
+                            cloudState.online ? 'bg-emerald-400' : 'bg-rose-400'
+                          )}
+                        />
+                      ) : null}
                     </div>
-                    <div className="truncate font-mono text-[10.5px] text-slate-500">
-                      {h.username}@{h.hostname}
-                      {h.port !== 22 ? `:${h.port}` : ''}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 truncate text-[13px] font-medium text-slate-200">
+                        <span className="truncate">{h.label}</span>
+                        <Icon className="h-3 w-3 text-slate-500 shrink-0" />
+                        {cloudState && (
+                          <span
+                            title={`Cloud status: ${cloudState.status}`}
+                            className={cn(
+                              'inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wide',
+                              cloudState.online
+                                ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300'
+                                : 'border-rose-400/25 bg-rose-400/10 text-rose-300'
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                'h-1.5 w-1.5 rounded-full',
+                                cloudState.online ? 'bg-emerald-400' : 'bg-rose-400'
+                              )}
+                            />
+                            {cloudState.online ? 'Running' : 'Stopped'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="truncate font-mono text-[10.5px] text-slate-500">
+                        {h.username}@{h.hostname}
+                        {h.port !== 22 ? `:${h.port}` : ''}
+                      </div>
                     </div>
-                  </div>
-                  {live.has(h.id) && <span className="md:hidden shrink-0 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300">Active</span>}
-                  <button type="button" aria-label={`Actions for ${h.label}`} className="nx-touch-button md:hidden" onClick={e => { e.stopPropagation(); setActionHost(h); }}>•••</button>
+                    {live.has(h.id) && <span className="md:hidden shrink-0 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-medium text-emerald-300">Active</span>}
+                    <button type="button" aria-label={`Actions for ${h.label}`} className="nx-touch-button md:hidden" onClick={e => { e.stopPropagation(); setActionHost(h); }}>•••</button>
                   <div
                     className="max-md:!hidden absolute right-1.5 hidden items-center gap-0.5 rounded-md p-0.5 shadow-lg ring-1 ring-white/10 group-hover:flex"
                     style={{ backgroundColor: bgColor }}
@@ -504,7 +581,8 @@ export function HostSidebar({
               );
             })}
           </div>
-        ))}
+          );
+        })}
         {!groups.length && (
           <div className="mt-8 text-center px-4">
             <p className="text-xs text-slate-500">
@@ -517,13 +595,21 @@ export function HostSidebar({
             >
               <Plus className="h-3 w-3" /> Add a host to {activeVault?.name ?? 'vault'}
             </button>
-            <div className="mt-2">
+            <div className="mt-2 flex flex-col items-center gap-1.5">
               <button
                 onClick={onOpenSshConfig}
                 className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-amber-300 transition"
               >
                 <FolderInput className="h-3 w-3" /> Import from ~/.ssh/config
               </button>
+              {onOpenCloudSync && (
+                <button
+                  onClick={onOpenCloudSync}
+                  className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-sky-300 transition"
+                >
+                  <Cloud className="h-3 w-3 text-sky-400" /> Sync Hetzner / DO / Proxmox
+                </button>
+              )}
             </div>
           </div>
         )}
