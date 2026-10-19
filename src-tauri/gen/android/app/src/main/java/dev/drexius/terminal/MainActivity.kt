@@ -244,17 +244,16 @@ class MainActivity : TauriActivity() {
 
   override fun onPause() {
     super.onPause()
-    // WryActivity.onPause() calls mWebView.onPause(), which suspends WebView JS
-    // timers and IPC callbacks when entering Recents (multi-app view) or locking
-    // the screen. Immediately resume WebView processing so live terminal sessions
-    // and UI state remain active.
-    keepWebViewActive()
+    // WryActivity.onPause() pauses the WebView. Let that parked state stand
+    // while Drexius is not interactive: SSH I/O and scrollback are owned by
+    // Rust, so the invisible terminal does not need the WebView resumed.
+    // onResume() will unpark the same WebView if its renderer survived.
   }
 
   override fun onStop() {
     isActivityVisible = false
     super.onStop()
-    keepWebViewActive()
+    // Keep the WebView parked while stopped; onStart()/onResume() resume it.
     SessionForegroundService.keepAliveForBackgroundTransition(applicationContext)
   }
 
