@@ -21,6 +21,7 @@ import {
   HardDrive,
   Server,
   Network,
+  Globe2,
   Cloud,
   RefreshCw,
 } from 'lucide-react';
@@ -46,6 +47,7 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
   onOpenTailscale?: () => void;
+  onOpenNetbird?: () => void;
   onOpenCloudSync?: () => void;
   cloudStatuses?: Record<string, CloudInstance>;
   onRefreshCloudStatuses?: () => void;
@@ -111,6 +113,7 @@ export function HostSidebar({
   onOpenShareModal,
   onOpenSshConfig,
   onOpenTailscale,
+  onOpenNetbird,
   onOpenCloudSync,
   cloudStatuses,
   onRefreshCloudStatuses,
@@ -343,6 +346,16 @@ export function HostSidebar({
                 >
                   <Network className="h-3.5 w-3.5" style={{ color: accentColor }} />
                   <span>Tailscale Sync…</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onOpenNetbird?.();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                >
+                  <Globe2 className="h-3.5 w-3.5 text-orange-400" />
+                  <span>NetBird Mesh Sync…</span>
                 </button>
                 <button
                   onClick={() => {
@@ -602,6 +615,14 @@ export function HostSidebar({
               >
                 <FolderInput className="h-3 w-3" /> Import from ~/.ssh/config
               </button>
+              {onOpenNetbird && (
+                <button
+                  onClick={onOpenNetbird}
+                  className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-orange-300 transition"
+                >
+                  <Globe2 className="h-3 w-3 text-orange-400" /> Sync NetBird Mesh
+                </button>
+              )}
               {onOpenCloudSync && (
                 <button
                   onClick={onOpenCloudSync}

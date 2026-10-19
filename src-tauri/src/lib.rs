@@ -15,6 +15,7 @@ mod ai_client;
 mod opencode;
 mod ssh_config;
 mod tailscale;
+mod netbird;
 mod cloud_sync;
 mod docker;
 
@@ -212,6 +213,12 @@ pub fn run() {
             tailscale::tailscale_import,
             tailscale::tailscale_get_credentials,
             tailscale::tailscale_save_credentials,
+            // netbird mesh integration
+            netbird::netbird_detect_cli,
+            netbird::netbird_fetch_api,
+            netbird::netbird_import_devices,
+            netbird::netbird_get_credentials,
+            netbird::netbird_save_credentials,
             // cloud provider fleet sync
             cloud_sync::cloud_fetch_instances,
             cloud_sync::cloud_import_instances,

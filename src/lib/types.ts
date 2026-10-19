@@ -82,6 +82,7 @@ export interface Host {
   hasSecret: boolean;
   os?: string | null;
   jumpHostId?: string | null;
+  proxyCommand?: string | null;
   vaultId?: string | null;
   startupCommand?: string | null;
 }
@@ -94,6 +95,7 @@ export interface ParsedSshHost {
   username: string;
   identityFile?: string | null;
   proxyJump?: string | null;
+  proxyCommand?: string | null;
   group?: string | null;
 }
 
@@ -383,4 +385,32 @@ export interface CloudCredentials {
   proxmoxToken?: string | null;
   proxmoxInsecure?: boolean;
 }
+
+export interface NetbirdDevice {
+  id: string;
+  name: string;
+  hostname: string;
+  ip: string;
+  os?: string | null;
+  online: boolean;
+  lastSeen?: string | null;
+  tags: string[];
+  direct: boolean;
+  latency?: string | null;
+  isSelf?: boolean;
+}
+
+export interface NetbirdImportPayload {
+  hostname: string;
+  ip: string;
+  username: string;
+  os?: string | null;
+  vaultId: string;
+}
+
+export interface NetbirdCredentials {
+  token?: string | null;
+  managementUrl?: string | null;
+}
+
 

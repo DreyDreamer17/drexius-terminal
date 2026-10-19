@@ -11,6 +11,9 @@ import { THEMES, type DrexiusTheme } from '../lib/themes';
 
 const COLORS = ['#22d3ee', '#a78bfa', '#f43f5e', '#f59e0b', '#4ade80', '#60a5fa', '#f472b6', '#94a3b8'];
 
+const CLOUDFLARE_SSH_PRESET = 'cloudflared access ssh --hostname %h';
+const AWS_SSM_PRESET = 'aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p';
+
 function detectKeyType(k: string): string | null {
   if (!k.trim()) return null;
   if (k.includes('BEGIN RSA PRIVATE KEY')) return 'RSA (PEM)';
@@ -63,6 +66,7 @@ export function HostModal({
       hasSecret: false,
       vaultId: defaultVaultId && defaultVaultId !== 'all' ? defaultVaultId : 'personal',
       startupCommand: '',
+      proxyCommand: null,
     }
   );
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
@@ -76,6 +80,15 @@ export function HostModal({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copiedSetup, setCopiedSetup] = useState(false);
   const keyType = detectKeyType(privateKey);
+
+  const currentProxyCmd = (h.proxyCommand || '').trim();
+  const proxyMode = !currentProxyCmd
+    ? 'direct'
+    : currentProxyCmd === CLOUDFLARE_SSH_PRESET
+    ? 'cloudflare'
+    : currentProxyCmd === AWS_SSM_PRESET
+    ? 'aws_ssm'
+    : 'custom';
 
   const isTermuxLocal =
     h.port === 8022 &&
@@ -114,6 +127,7 @@ export function HostModal({
       label: finalLabel,
       tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
       startupCommand: h.startupCommand?.trim() || null,
+      proxyCommand: h.proxyCommand?.trim() || null,
     };
     const secretChanged = !h.keychainId && ((h.authMethod === 'password' && password) || (h.authMethod === 'key' && privateKey));
     let secret: HostSecret | undefined = secretChanged ? { password: password || null, privateKey: privateKey || null, passphrase: passphrase || null } : undefined;
@@ -308,6 +322,116 @@ export function HostModal({
               accentColor={accentColor}
             />
             <p className="mt-1 text-[11px] text-slate-500">Route and encrypt this SSH connection through an intermediate bastion server.</p>
+          </div>
+          {/* Zero-Trust & Proxy Gateway */}
+          <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <div className="flex items-center justify-between">
+              <label className={cn(label, 'mb-0 flex items-center gap-1.5 text-slate-300')}>
+                <ShieldCheck className="h-3.5 w-3.5 text-sky-400" />
+                Zero-Trust & Proxy Gateway (ProxyCommand)
+              </label>
+              {currentProxyCmd && (
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[9.5px] font-semibold text-sky-300">
+                  Proxy Active
+                </span>
+              )}
+            </div>
+
+            {/* Presets Row */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              <button
+                type="button"
+                onClick={() => set('proxyCommand', null)}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-medium border text-center transition',
+                  proxyMode === 'direct'
+                    ? 'border-white/20 bg-white/10 text-white'
+                    : 'border-white/5 bg-black/20 text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                )}
+              >
+                Direct
+              </button>
+              <button
+                type="button"
+                onClick={() => set('proxyCommand', CLOUDFLARE_SSH_PRESET)}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-medium border text-center transition truncate',
+                  proxyMode === 'cloudflare'
+                    ? 'border-amber-400/40 bg-amber-400/15 text-amber-200'
+                    : 'border-white/5 bg-black/20 text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                )}
+                title="Cloudflare Access SSH (cloudflared)"
+              >
+                Cloudflare Access
+              </button>
+              <button
+                type="button"
+                onClick={() => set('proxyCommand', AWS_SSM_PRESET)}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-medium border text-center transition truncate',
+                  proxyMode === 'aws_ssm'
+                    ? 'border-emerald-400/40 bg-emerald-400/15 text-emerald-200'
+                    : 'border-white/5 bg-black/20 text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                )}
+                title="AWS Systems Manager Session (aws ssm)"
+              >
+                AWS SSM
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (proxyMode === 'direct') {
+                    set('proxyCommand', 'nc -X 5 -x 127.0.0.1:1080 %h %p');
+                  }
+                }}
+                className={cn(
+                  'rounded-lg px-2 py-1.5 text-xs font-medium border text-center transition truncate',
+                  proxyMode === 'custom'
+                    ? 'border-sky-400/40 bg-sky-400/15 text-sky-200'
+                    : 'border-white/5 bg-black/20 text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                )}
+              >
+                Custom Proxy
+              </button>
+            </div>
+
+            {proxyMode !== 'direct' && (
+              <div className="space-y-2 pt-1 animate-in fade-in duration-100">
+                <input
+                  className={cn(input, 'font-mono text-xs')}
+                  value={h.proxyCommand ?? ''}
+                  onChange={(e) => set('proxyCommand', e.target.value)}
+                  placeholder="cloudflared access ssh --hostname %h"
+                />
+
+                {/* Token expansion preview */}
+                <div className="rounded-lg border border-white/5 bg-black/50 p-2 font-mono text-[11px] text-slate-400 space-y-1">
+                  <div className="text-[10px] text-slate-500 font-sans flex items-center justify-between">
+                    <span>Spawned command:</span>
+                    <span className="text-slate-400">Tokens: %h (host) · %p (port) · %r (user)</span>
+                  </div>
+                  <div className="text-sky-300 break-all">
+                    $ {(h.proxyCommand || '')
+                      .replace(/%h/g, h.hostname || '<host>')
+                      .replace(/%p/g, String(h.port || 22))
+                      .replace(/%r/g, h.username || 'root')
+                      .replace(/%%/g, '%')}
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-500">
+                  {proxyMode === 'cloudflare' && (
+                    <>Tunnels connection through Cloudflare Zero-Trust edge. Requires <code className="text-slate-400">cloudflared</code> installed locally.</>
+                  )}
+                  {proxyMode === 'aws_ssm' && (
+                    <>Connects to EC2 instances without open inbound ports. Hostname can be instance ID (e.g. <code className="text-slate-400">i-0123456789abcdef0</code>). Requires AWS CLI + SSM plugin.</>
+                  )}
+                  {proxyMode === 'custom' && (
+                    <>Local process stdin/stdout is bridged directly into libssh2 transport (same as OpenSSH <code className="text-slate-400">ProxyCommand</code>).</>
+                  )}
+                </p>
+              </div>
+            )}
           </div>
           {vaults && vaults.length > 0 && (
             <div>

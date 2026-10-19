@@ -330,6 +330,7 @@ pub fn tailscale_import(
             jump_host_id: None,
             vault_id: Some(v_id),
             startup_command: None,
+            proxy_command: None,
         };
 
         crate::vault::host_save(HostInput { profile, secret: None }, vault.clone())?;

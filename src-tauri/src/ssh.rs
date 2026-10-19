@@ -311,6 +311,119 @@ pub fn open_authenticated(
     open_authenticated_inner(host, secret, vault, &mut visited, 0)
 }
 
+pub fn expand_proxy_command(template: &str, host: &str, port: u16, user: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('h') => out.push_str(host),
+                Some('p') => out.push_str(&port.to_string()),
+                Some('r') => out.push_str(user),
+                Some('%') => out.push('%'),
+                Some(other) => {
+                    out.push('%');
+                    out.push(other);
+                }
+                None => out.push('%'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn connect_proxy_command(
+    cmd_template: &str,
+    target_host: &str,
+    target_port: u16,
+    username: &str,
+) -> AppResult<TcpStream> {
+    let expanded = expand_proxy_command(cmd_template, target_host, target_port, username);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| AppError::Network(format!("Failed to bind proxy listener: {e}")))?;
+    let local_addr = listener.local_addr()?;
+
+    std::thread::Builder::new()
+        .name(format!("proxy-cmd-{}", &target_host[..8.min(target_host.len())]))
+        .spawn(move || {
+            let (client_stream, _) = match listener.accept() {
+                Ok(x) => x,
+                Err(_) => return,
+            };
+            let _ = client_stream.set_nodelay(true);
+
+            #[cfg(not(target_os = "windows"))]
+            let mut child = match std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&expanded)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+
+            #[cfg(target_os = "windows")]
+            let mut child = match std::process::Command::new("cmd.exe")
+                .arg("/c")
+                .arg(&expanded)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+
+            let mut child_in = match child.stdin.take() {
+                Some(i) => i,
+                None => return,
+            };
+            let mut child_out = match child.stdout.take() {
+                Some(o) => o,
+                None => return,
+            };
+
+            let mut stream_writer = match client_stream.try_clone() {
+                Ok(w) => w,
+                Err(_) => return,
+            };
+            let mut stream_reader = client_stream;
+
+            let t1 = std::thread::spawn(move || {
+                let _ = std::io::copy(&mut child_out, &mut stream_writer);
+                let _ = stream_writer.shutdown(std::net::Shutdown::Write);
+            });
+
+            let t2 = std::thread::spawn(move || {
+                let _ = std::io::copy(&mut stream_reader, &mut child_in);
+            });
+
+            let _ = t1.join();
+            let _ = t2.join();
+            let _ = child.kill();
+            let _ = child.wait();
+        })
+        .map_err(AppError::Io)?;
+
+    match TcpStream::connect_timeout(&local_addr, Duration::from_secs(10)) {
+        Ok(s) => {
+            configure_tcp_stream(&s)?;
+            Ok(s)
+        }
+        Err(e) => {
+            let _ = TcpStream::connect(&local_addr);
+            Err(AppError::Network(format!("Failed to connect to proxy process stream: {e}")))
+        }
+    }
+}
+
 fn open_authenticated_inner(
     host: &HostProfile,
     secret: &HostSecret,
@@ -324,7 +437,9 @@ fn open_authenticated_inner(
         )));
     }
 
-    let tcp = if let Some(trimmed_jump) = host.jump_host_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let tcp = if let Some(trimmed_proxy) = host.proxy_command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        connect_proxy_command(trimmed_proxy, &host.hostname, host.port, &host.username)?
+    } else if let Some(trimmed_jump) = host.jump_host_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if !visited.insert(trimmed_jump.to_string()) {
             return Err(AppError::Other(format!(
                 "Jump host cycle detected involving host ID '{trimmed_jump}'"
@@ -1064,5 +1179,21 @@ mod tests {
         assert_eq!(parse_os_release("---\nAndroid\nLinux\n"), Some("android".into()));
         assert_eq!(parse_os_release("ID=termux"), Some("android".into()));
         assert_eq!(parse_os_release("---\nGNU/Linux\nLinux\n"), Some("linux".into()));
+    }
+
+    #[test]
+    fn expand_proxy_command_tokens() {
+        assert_eq!(
+            expand_proxy_command("cloudflared access ssh --hostname %h", "internal.corp.net", 22, "root"),
+            "cloudflared access ssh --hostname internal.corp.net"
+        );
+        assert_eq!(
+            expand_proxy_command("aws ssm start-session --target %h --parameters portNumber=%p", "i-0123456789abcdef0", 22, "ec2-user"),
+            "aws ssm start-session --target i-0123456789abcdef0 --parameters portNumber=22"
+        );
+        assert_eq!(
+            expand_proxy_command("nc -X 5 -x 127.0.0.1:1080 %h %p (user=%r, escaped=%%)", "10.0.0.5", 2222, "admin"),
+            "nc -X 5 -x 127.0.0.1:1080 10.0.0.5 2222 (user=admin, escaped=%)"
+        );
     }
 }

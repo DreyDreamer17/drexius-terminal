@@ -722,6 +722,7 @@ pub fn cloud_import_instances(
                 jump_host_id: prev.jump_host_id.clone(),
                 vault_id: Some(v_id),
                 startup_command: prev.startup_command.clone(),
+                proxy_command: prev.proxy_command.clone(),
             }
         } else {
             HostProfile {
@@ -744,6 +745,7 @@ pub fn cloud_import_instances(
                 jump_host_id: None,
                 vault_id: Some(v_id),
                 startup_command: None,
+                proxy_command: None,
             }
         };
 

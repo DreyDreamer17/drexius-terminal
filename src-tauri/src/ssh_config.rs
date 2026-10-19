@@ -27,6 +27,7 @@ pub struct ParsedSshHost {
     pub username: String,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
     pub group: Option<String>,
 }
 
@@ -308,6 +309,7 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
         let mut port: Option<u16> = None;
         let mut identity: Option<String> = None;
         let mut jump: Option<String> = None;
+        let mut proxy_cmd: Option<String> = None;
 
         for b in &blocks {
             if !block_applies(&b.kind, &name, hostname.as_deref().unwrap_or(&name)) {
@@ -322,6 +324,7 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
                         identity = Some(v.clone())
                     }
                     "proxyjump" if jump.is_none() => jump = Some(v.clone()),
+                    "proxycommand" if proxy_cmd.is_none() => proxy_cmd = Some(v.clone()),
                     _ => {}
                 }
             }
@@ -335,6 +338,7 @@ pub fn parse_ssh_config_text(content: &str) -> Vec<ParsedSshHost> {
             username: user.unwrap_or_else(local_username),
             identity_file: identity,
             proxy_jump: jump,
+            proxy_command: proxy_cmd,
             group: Some("SSH Config".to_string()),
         });
     }
@@ -481,6 +485,7 @@ pub fn ssh_config_import(
             jump_host_id,
             vault_id: Some(vault_id.clone()),
             startup_command: None,
+            proxy_command: parsed.proxy_command,
         };
 
         if let Err(e) = crate::vault::host_save(

@@ -27,6 +27,7 @@ import {
   Minimize2,
   KeyRound,
   Network,
+  Globe2,
   Terminal as TerminalIcon,
   PanelBottom,
   Radio,
@@ -62,6 +63,7 @@ import { SerialModal } from './components/SerialModal';
 import { DevicePairingModal } from './components/DevicePairingModal';
 import { SshConfigModal } from './components/SshConfigModal';
 import { TailscaleModal } from './components/TailscaleModal';
+import { NetbirdModal } from './components/NetbirdModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
@@ -480,6 +482,7 @@ export default function App() {
   const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
   const [showSshConfig, setShowSshConfig] = useState(false);
   const [showTailscale, setShowTailscale] = useState(false);
+  const [showNetbird, setShowNetbird] = useState(false);
   const [showCloudSync, setShowCloudSync] = useState(false);
   const [cloudStatuses, setCloudStatuses] = useState<Record<string, CloudInstance>>(() => {
     try {
@@ -1893,6 +1896,7 @@ export default function App() {
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
                     onOpenTailscale={() => setShowTailscale(true)}
+                    onOpenNetbird={() => setShowNetbird(true)}
                     onOpenCloudSync={() => setShowCloudSync(true)}
                     cloudStatuses={cloudStatuses}
                     onRefreshCloudStatuses={() => refreshCloudStatuses(false)}
@@ -2154,6 +2158,7 @@ export default function App() {
         <div className="nx-settings-group">
           <button className="nx-settings-row" onClick={() => setShowPairing({ initialTab: 'share' })}><QrCode size={18} /> LAN device pairing</button>
           <button className="nx-settings-row" onClick={() => setShowTailscale(true)}><Network size={18} /> Tailscale sync & discovery</button>
+          <button className="nx-settings-row" onClick={() => setShowNetbird(true)}><Globe2 size={18} /> NetBird mesh discovery</button>
           <button className="nx-settings-row" onClick={() => setShowCloudSync(true)}><Cloud size={18} /> Cloud Fleet Sync (Hetzner / DO / Proxmox)</button>
           <button className="nx-settings-row" onClick={() => setShowSync(true)}><Cloud size={18} /> Encrypted relay sync</button>
           <button className="nx-settings-row" onClick={() => setShowDockerModal(true)}><Boxes size={18} /> Docker containers</button>
@@ -2745,6 +2750,31 @@ export default function App() {
               authMethod: h.authMethod || 'key',
               group: 'Tailscale',
               tags: ['tailscale'],
+              hasSecret: false,
+              os: h.os || null,
+            };
+            openHost(tempHost);
+          }}
+          toast={toast}
+          theme={theme}
+        />
+      )}
+      {showNetbird && (
+        <NetbirdModal
+          vaults={vaults}
+          defaultVaultId={activeVaultId}
+          onClose={() => setShowNetbird(false)}
+          onSuccess={refresh}
+          onDirectConnect={(h) => {
+            const tempHost: Host = {
+              id: uid(),
+              label: h.label || 'NetBird Peer',
+              hostname: h.hostname || '',
+              port: h.port || 22,
+              username: h.username || 'root',
+              authMethod: h.authMethod || 'key',
+              group: 'NetBird',
+              tags: h.tags || ['netbird'],
               hasSecret: false,
               os: h.os || null,
             };

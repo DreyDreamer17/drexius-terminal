@@ -186,6 +186,8 @@ pub struct HostProfile {
     pub vault_id: Option<String>,
     #[serde(default)]
     pub startup_command: Option<String>,
+    #[serde(default)]
+    pub proxy_command: Option<String>,
 }
 
 /// Credentials — never serialized back to the frontend. Wiped on drop.
@@ -307,7 +309,7 @@ const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS hosts (
     id TEXT PRIMARY KEY, label TEXT NOT NULL, hostname TEXT NOT NULL, port INTEGER NOT NULL,
     username TEXT NOT NULL, auth_method TEXT NOT NULL, grp TEXT, tags TEXT NOT NULL DEFAULT '[]',
-    color TEXT, os TEXT, keychain_id TEXT, jump_host_id TEXT, vault_id TEXT, startup_command TEXT, updated_at INTEGER NOT NULL
+    color TEXT, os TEXT, keychain_id TEXT, jump_host_id TEXT, vault_id TEXT, startup_command TEXT, proxy_command TEXT, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS secrets (
     host_id TEXT PRIMARY KEY REFERENCES hosts(id) ON DELETE CASCADE,
@@ -748,6 +750,14 @@ impl Vault {
             tx.pragma_update(None, "user_version", 4)?;
             tx.commit()?;
         }
+        // v5: hosts gains proxy_command for Zero-Trust tunnels (Cloudflare Access, AWS SSM, custom ProxyCommand)
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(4);
+        if user_version < 5 {
+            let tx = conn.unchecked_transaction()?;
+            add_column_if_missing(&tx, "hosts", "proxy_command", "TEXT")?;
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
+        }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
         Ok(())
     }
@@ -1010,7 +1020,7 @@ impl Vault {
         self.with(|c| {
             let host_res = c
                 .query_row(
-                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
+                    "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
                             s.password, s.private_key, s.passphrase,
                             k.auth_method, k.password, k.private_key, k.passphrase, k.username
                      FROM hosts h
@@ -1020,24 +1030,24 @@ impl Vault {
                     [id],
                     |r| {
                         let mut profile = row_to_host(r)?;
-                        let k_auth: Option<String> = r.get(17)?;
+                        let k_auth: Option<String> = r.get(18)?;
                         let (auth_method, password, private_key, passphrase, username) = if let Some(ka) = k_auth {
                             // Sourced from Keychain
-                            let k_user: Option<String> = r.get(21)?;
+                            let k_user: Option<String> = r.get(22)?;
                             (
                                 AuthMethod::parse(&ka),
-                                r.get(18)?,
                                 r.get(19)?,
                                 r.get(20)?,
+                                r.get(21)?,
                                 k_user.unwrap_or(profile.username.clone()),
                             )
                         } else {
                             // Sourced from Host Secret
                             (
                                 profile.auth_method,
-                                r.get(14)?,
                                 r.get(15)?,
                                 r.get(16)?,
+                                r.get(17)?,
                                 profile.username.clone(),
                             )
                         };
@@ -1162,6 +1172,7 @@ fn row_to_host(r: &rusqlite::Row) -> rusqlite::Result<HostProfile> {
         jump_host_id: r.get::<_, Option<String>>(11).unwrap_or(None),
         vault_id: r.get::<_, Option<String>>(12).unwrap_or(None),
         startup_command: r.get::<_, Option<String>>(13).unwrap_or(None),
+        proxy_command: r.get::<_, Option<String>>(14).unwrap_or(None),
         has_secret: false,
     })
 }
@@ -1512,12 +1523,12 @@ pub fn request_storage_permission() -> AppResult<bool> {
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
         let mut st = c.prepare(
-            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
+            "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL) FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id ORDER BY h.grp, h.label",
         )?;
         let rows = st.query_map([], |r| {
             let mut h = row_to_host(r)?;
-            h.has_secret = r.get(14)?;
+            h.has_secret = r.get(15)?;
             Ok(h)
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1557,10 +1568,10 @@ pub fn host_save_with_new_keychain(
         )?;
         profile.keychain_id = Some(kc_id.clone());
         tx.execute(
-            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, proxy_command=?15, updated_at=?16",
             params![
                 profile.id, profile.label, profile.hostname, profile.port, profile.username,
                 profile.auth_method.as_str(), profile.group,
@@ -1568,6 +1579,7 @@ pub fn host_save_with_new_keychain(
                 profile.color, profile.os, profile.keychain_id, profile.jump_host_id,
                 profile.vault_id.clone().unwrap_or_else(|| "personal".into()),
                 profile.startup_command,
+                profile.proxy_command,
                 now()
             ],
         )?;
@@ -1588,10 +1600,10 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
     }
     vault.with(|c| {
         c.execute(
-            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, updated_at=?15",
+                 grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, proxy_command=?15, updated_at=?16",
             params![
                 profile.id, profile.label, profile.hostname, profile.port, profile.username,
                 profile.auth_method.as_str(), profile.group,
@@ -1599,6 +1611,7 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
                 profile.color, profile.os, profile.keychain_id, profile.jump_host_id,
                 profile.vault_id.unwrap_or_else(|| "personal".into()),
                 profile.startup_command,
+                profile.proxy_command,
                 now()
             ],
         )?;
@@ -3010,14 +3023,14 @@ pub async fn team_vault_export(
             });
 
             let mut st_hosts = c.prepare(
-                "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command,
+                "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
                         (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL)
                  FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id
                  WHERE h.vault_id = ?1",
             )?;
             let hosts = st_hosts.query_map([&vault_id], |r| {
                 let mut h = row_to_host(r)?;
-                h.has_secret = r.get(14)?;
+                h.has_secret = r.get(15)?;
                 Ok(h)
             })?.collect::<Result<Vec<_>, _>>()?;
 
@@ -3200,15 +3213,16 @@ pub async fn team_vault_import(
                 });
 
                 tx.execute(
-                    "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, updated_at)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                      ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                         grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?15",
+                         grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, updated_at=?16",
                     params![
                         host_id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
                         h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
                         h.color, h.os, safe_keychain_id, jump_id, payload.vault.id,
-                        // M1: startup commands are never imported from a bundle. Auto-run on connect is code execution.
+                        // M1: startup commands & proxy commands are never imported from a bundle. Untrusted code execution protection.
+                        Option::<String>::None,
                         Option::<String>::None,
                         now()
                     ],

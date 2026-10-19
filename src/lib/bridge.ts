@@ -40,6 +40,8 @@ import type {
   Snapshot,
   Snippet,
   TailscaleDevice,
+  NetbirdCredentials,
+  NetbirdDevice,
   CloudCredentials,
   CloudInstance,
   CloudProviderId,
@@ -595,6 +597,64 @@ export const bridge = {
     if (isTauri) return invoke('tailscale_save_credentials', { apiKey, tailnet: tailnet || null });
     localStorage.setItem('drx.tailscale.apikey', apiKey);
     if (tailnet) localStorage.setItem('drx.tailscale.tailnet', tailnet);
+  },
+
+  // ── NetBird Mesh ──
+  async detectNetbirdCli(): Promise<NetbirdDevice[] | null> {
+    if (isTauri) return invoke('netbird_detect_cli');
+    return null;
+  },
+
+  async fetchNetbirdApi(token: string, managementUrl?: string | null): Promise<NetbirdDevice[]> {
+    if (isTauri) return invoke('netbird_fetch_api', { token, managementUrl: managementUrl || null });
+    return [
+      { id: 'nb-1', name: 'my-desktop', hostname: 'my-desktop.netbird.cloud', ip: '100.90.10.1', online: true, tags: ['netbird', 'self'], direct: true, isSelf: true },
+      { id: 'nb-2', name: 'prod-api-server', hostname: 'prod-api-server.netbird.cloud', ip: '100.90.10.5', online: true, tags: ['netbird'], direct: true, latency: '24ms', isSelf: false },
+      { id: 'nb-3', name: 'staging-k8s', hostname: 'staging-k8s.netbird.cloud', ip: '100.90.10.12', online: false, tags: ['netbird'], direct: false, latency: '85ms', isSelf: false },
+    ];
+  },
+
+  async importNetbirdDevices(
+    devices: Array<{ hostname: string; ip: string; username: string; os?: string | null; vaultId: string }>
+  ): Promise<number> {
+    if (isTauri) return invoke('netbird_import_devices', { devices });
+    const s = need();
+    for (const d of devices) {
+      s.hosts.push({
+        id: uid(),
+        label: d.hostname,
+        hostname: d.ip,
+        port: 22,
+        username: d.username || 'root',
+        authMethod: 'key',
+        tags: ['netbird'],
+        group: 'NetBird',
+        color: '#f97316',
+        hasSecret: false,
+        os: d.os || null,
+        vaultId: d.vaultId || 'personal',
+      });
+    }
+    await persistDemo();
+    return devices.length;
+  },
+
+  async getNetbirdCredentials(): Promise<NetbirdCredentials> {
+    if (isTauri) {
+      const res: { token?: string | null; management_url?: string | null } = await invoke('netbird_get_credentials');
+      return { token: res?.token || null, managementUrl: res?.management_url || null };
+    }
+    return {
+      token: localStorage.getItem('drx.netbird.token'),
+      managementUrl: localStorage.getItem('drx.netbird.managementUrl'),
+    };
+  },
+
+  async saveNetbirdCredentials(token: string, managementUrl?: string | null): Promise<void> {
+    if (isTauri) return invoke('netbird_save_credentials', { token, managementUrl: managementUrl || null });
+    localStorage.setItem('drx.netbird.token', token);
+    if (managementUrl) localStorage.setItem('drx.netbird.managementUrl', managementUrl);
+    else localStorage.removeItem('drx.netbird.managementUrl');
   },
 
   // ── Cloud Provider Fleet Sync (Hetzner, DigitalOcean, Proxmox VE) ──

@@ -448,7 +448,7 @@ fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppRes
     let mut out = Vec::new();
     for &tbl in SYNC_TABLES {
         let (id_col, body_cols): (&str, &[&str]) = match tbl {
-            "hosts" => ("id", &["id","label","hostname","port","username","auth_method","grp","tags","color","os","keychain_id","jump_host_id","vault_id","startup_command","updated_at","secret_password","secret_private_key","secret_passphrase"]),
+            "hosts" => ("id", &["id","label","hostname","port","username","auth_method","grp","tags","color","os","keychain_id","jump_host_id","vault_id","startup_command","proxy_command","updated_at","secret_password","secret_private_key","secret_passphrase"]),
             "snippets" => ("id", &["id","name","command","folder","tags","vault_id","updated_at"]),
             "keychain" => ("id", &["id","label","username","auth_method","password","private_key","passphrase","vault_id","updated_at"]),
             "tunnels" => ("id", &["id","label","host_id","forward_type","local_host","local_port","remote_host","remote_port","vault_id","updated_at"]),
@@ -567,9 +567,9 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
     match rec.table.as_str() {
         "hosts" => {
             tx.execute(
-                "INSERT INTO hosts (id,label,hostname,port,username,auth_method,grp,tags,color,os,keychain_id,jump_host_id,vault_id,startup_command,updated_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
-                 ON CONFLICT(id) DO UPDATE SET label=excluded.label,hostname=excluded.hostname,port=excluded.port,username=excluded.username,auth_method=excluded.auth_method,grp=excluded.grp,tags=excluded.tags,color=excluded.color,os=excluded.os,keychain_id=excluded.keychain_id,jump_host_id=excluded.jump_host_id,vault_id=excluded.vault_id,startup_command=excluded.startup_command,updated_at=excluded.updated_at",
+                "INSERT INTO hosts (id,label,hostname,port,username,auth_method,grp,tags,color,os,keychain_id,jump_host_id,vault_id,startup_command,proxy_command,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 ON CONFLICT(id) DO UPDATE SET label=excluded.label,hostname=excluded.hostname,port=excluded.port,username=excluded.username,auth_method=excluded.auth_method,grp=excluded.grp,tags=excluded.tags,color=excluded.color,os=excluded.os,keychain_id=excluded.keychain_id,jump_host_id=excluded.jump_host_id,vault_id=excluded.vault_id,startup_command=excluded.startup_command,proxy_command=excluded.proxy_command,updated_at=excluded.updated_at",
                 rusqlite::params![
                     obj.get("id").and_then(|v|v.as_str()),
                     obj.get("label").and_then(|v|v.as_str()),
@@ -585,6 +585,7 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
                     obj.get("jump_host_id").and_then(|v|v.as_str()),
                     obj.get("vault_id").and_then(|v|v.as_str()),
                     obj.get("startup_command").and_then(|v|v.as_str()),
+                    obj.get("proxy_command").and_then(|v|v.as_str()),
                     obj.get("updated_at").and_then(|v|v.as_i64()).unwrap_or(chrono::Utc::now().timestamp()),
                 ],
             )?;
@@ -1105,7 +1106,7 @@ mod tests {
             c.execute_batch("\
                 CREATE TABLE hosts(id TEXT PRIMARY KEY,label TEXT,hostname TEXT,port INTEGER,username TEXT,
                   auth_method TEXT,grp TEXT,tags TEXT,color TEXT,os TEXT,keychain_id TEXT,
-                  jump_host_id TEXT,vault_id TEXT,startup_command TEXT,updated_at INTEGER);
+                  jump_host_id TEXT,vault_id TEXT,startup_command TEXT,proxy_command TEXT,updated_at INTEGER);
                 CREATE TABLE secrets(host_id TEXT PRIMARY KEY,password TEXT,private_key TEXT,passphrase TEXT);
                 CREATE TABLE keychain(id TEXT PRIMARY KEY,label TEXT,username TEXT,auth_method TEXT,
                   password TEXT,private_key TEXT,passphrase TEXT,vault_id TEXT,updated_at INTEGER);
