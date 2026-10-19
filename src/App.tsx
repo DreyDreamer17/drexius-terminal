@@ -136,8 +136,21 @@ function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mo
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.tabs)) return null;
+    const tabs = (parsed.tabs as Tab[]).map((tab) => {
+      if (tab.kind === 'sftp' || !Array.isArray(tab.panes)) return tab;
+      return {
+        ...tab,
+        panes: tab.panes.map((pane) => {
+          try {
+            const latestSid = localStorage.getItem('drx.pane.sid.' + pane.id);
+            if (latestSid) return { ...pane, sessionId: latestSid };
+          } catch {}
+          return pane;
+        }),
+      };
+    });
     return {
-      tabs: parsed.tabs as Tab[],
+      tabs,
       activeTabId: typeof parsed.activeTabId === 'string' ? parsed.activeTabId : null,
       mobilePage: typeof parsed.mobilePage === 'string' ? (parsed.mobilePage as MobilePage) : 'terminals',
     };
@@ -262,27 +275,38 @@ export default function App() {
     } catch {}
   }, [unlocked, tabs, activeTabId, mobilePage]);
 
-  // Reconcile open tabs with live Rust SSH sessions (e.g. if WebView reloaded
-  // while Rust kept sessions alive via SessionForegroundService).
+  // Reconcile open tabs with live Rust SSH sessions once on startup/unlock
+  // (e.g. if WebView reloaded while Rust kept sessions alive via SessionForegroundService).
+  // Must NOT re-run on routine `hosts` refreshes (focus/sync), otherwise a pane that
+  // reconnected under a new sessionId while its initial `pane.sessionId` prop was older
+  // would cause the new sessionId to be mistaken for an unattached session and spawn a duplicate tab.
+  const reconciledSessionsRef = useRef(false);
   useEffect(() => {
-    if (!unlocked || !isTauri || hosts.length === 0) return;
+    if (!unlocked) {
+      reconciledSessionsRef.current = false;
+      return;
+    }
+    if (!isTauri || hosts.length === 0 || reconciledSessionsRef.current) return;
+    reconciledSessionsRef.current = true;
     let cancelled = false;
     bridge.listSshSessions().then((liveSessions) => {
       if (cancelled || liveSessions.length === 0) return;
       setTabs((prevTabs) => {
         let changed = false;
         const claimedSessionIds = new Set<string>();
+        const claimedPaneIds = new Set<string>();
         const nextTabs = prevTabs.map((tab) => {
           if (tab.kind === 'sftp') return tab;
           let tabChanged = false;
           const nextPanes = tab.panes.map((pane) => {
-            const storedSid =
-              pane.sessionId ||
-              (() => {
-                try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
-              })();
+            const liveSid = registry.get(pane.id)?.sessionId;
+            const storageSid = (() => {
+              try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
+            })();
+            const storedSid = liveSid || storageSid || pane.sessionId;
             if (storedSid && liveSessions.some((s) => s.sessionId === storedSid)) {
               claimedSessionIds.add(storedSid);
+              claimedPaneIds.add(pane.id);
               if (pane.sessionId !== storedSid) {
                 tabChanged = true;
                 changed = true;
@@ -301,7 +325,9 @@ export default function App() {
           for (let ti = 0; ti < nextTabs.length; ti++) {
             const t = nextTabs[ti];
             if (t.kind === 'sftp') continue;
-            const pi = t.panes.findIndex((p) => !p.isLocal && p.hostId === sess.hostId && !p.sessionId);
+            const pi = t.panes.findIndex(
+              (p) => !p.isLocal && p.hostId === sess.hostId && !claimedPaneIds.has(p.id)
+            );
             if (pi !== -1) {
               const pane = t.panes[pi];
               try { localStorage.setItem('drx.pane.sid.' + pane.id, sess.sessionId); } catch {}
@@ -309,6 +335,7 @@ export default function App() {
               updatedPanes[pi] = { ...pane, sessionId: sess.sessionId };
               nextTabs[ti] = { ...t, panes: updatedPanes };
               claimedSessionIds.add(sess.sessionId);
+              claimedPaneIds.add(pane.id);
               matchedExistingPane = true;
               changed = true;
               break;

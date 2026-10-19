@@ -97,6 +97,31 @@ const COMMON_SHELL_COMMANDS = [
 ];
 const COMMON_SHELL_COMMANDS_LOWER = COMMON_SHELL_COMMANDS.map((c) => c.toLowerCase());
 
+/** Strips a recognised shell prompt from the start of a logical line; null if none matched. */
+function stripShellPrompt(line: string): string | null {
+  // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
+  const userHost = line.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s+)(.*)$/);
+  if (userHost && userHost[1] !== undefined) return userHost[1];
+
+  // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
+  const bracketed = line.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s+)(.*)$/);
+  if (bracketed && bracketed[1] !== undefined) return bracketed[1];
+
+  // 3. Modern prompt glyphs: ❯, ➜, λ, » (Starship, Pure, Oh-My-Zsh)
+  const glyph = line.match(/^.*?[❯➜λ»]\s*(.*)$/);
+  if (glyph && glyph[1] !== undefined) return glyph[1];
+
+  // 4. Secondary continuation prompt (PS2): "> command"
+  const ps2 = line.match(/^>\s+(.*)$/);
+  if (ps2 && ps2[1] !== undefined) return ps2[1];
+
+  // 5. Simple prompt: "$ ", "# ", "% " at prompt start (WITHOUT matching spaces in command body)
+  const simple = line.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/:*]*?[\$#%]\s+)(.*)$/);
+  if (simple && simple[1] !== undefined) return simple[1];
+
+  return null;
+}
+
 /** How many times an interrupted *auto-resume* is retried with backoff before the
  *  failure is surfaced as an error dialog. Chosen for phone reality: after an
  *  unlock the radio can need a few attempts before DNS/TCP works again. */
@@ -291,72 +316,64 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, []);
 
-  const getCurrentCommandLine = useCallback((): string => {
+  /**
+   * Reads the logical command line the cursor is on (across wrapped rows) from the screen.
+   * `text` is the whole command (including anything to the right of the cursor), `atEnd`
+   * is false when the cursor has been moved back into the middle of the command — in that
+   * case no autosuggestion may be shown or accepted, since the "suffix" is already typed.
+   */
+  const readCommandLine = useCallback((): { text: string | null; atEnd: boolean } | null => {
     const term = termRef.current;
-    if (!term) return lineRef.current;
+    if (!term) return null;
 
     try {
       const buffer = term.buffer.active;
-      if (buffer.type === 'alternate') return '';
+      if (buffer.type === 'alternate') return { text: '', atEnd: false };
 
       const lineIndex = buffer.cursorY + buffer.baseY;
-      const lineObj = buffer.getLine(lineIndex);
-      if (!lineObj) return lineRef.current;
+      const cursorRow = buffer.getLine(lineIndex);
+      if (!cursorRow) return null;
 
-      // Find the first line of the logical command (walk backwards while lines are marked wrapped)
+      // Logical line = first row (walk back while rows are wrapped) .. last wrapped continuation row
       let startY = lineIndex;
-      while (startY > 0 && buffer.getLine(startY)?.isWrapped) {
-        startY--;
+      while (startY > 0 && buffer.getLine(startY)?.isWrapped) startY--;
+      let endY = lineIndex;
+      while (endY + 1 < buffer.length && buffer.getLine(endY + 1)?.isWrapped) endY++;
+
+      let before = '';
+      for (let y = startY; y < lineIndex; y++) before += buffer.getLine(y)?.translateToString(false) ?? '';
+      before += cursorRow.translateToString(false, 0, buffer.cursorX);
+
+      let after = cursorRow.translateToString(false, buffer.cursorX);
+      for (let y = lineIndex + 1; y <= endY; y++) after += buffer.getLine(y)?.translateToString(false) ?? '';
+
+      let atEnd = after.trim() === '';
+      // zsh RPROMPT (e.g. a clock) sits right-aligned on the cursor row behind a wide gap: not part of the command.
+      if (
+        !atEnd &&
+        endY === lineIndex &&
+        /^\s{2,}\S/.test(after) &&
+        cursorRow.translateToString(true).length >= term.cols - 2
+      ) {
+        atEnd = true;
       }
 
-      // Reconstruct the full logical line from startY through lineIndex up to cursorX
-      let upToCursor = '';
-      for (let y = startY; y < lineIndex; y++) {
-        const row = buffer.getLine(y);
-        if (row) {
-          upToCursor += row.translateToString(true);
-        }
-      }
-      const currentRow = buffer.getLine(lineIndex);
-      if (currentRow) {
-        upToCursor += currentRow.translateToString(false, 0, buffer.cursorX);
-      }
-
-      // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
-      const userHost = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s+)(.*)$/);
-      if (userHost && userHost[1] !== undefined) {
-        return userHost[1];
-      }
-
-      // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
-      const bracketed = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s+)(.*)$/);
-      if (bracketed && bracketed[1] !== undefined) {
-        return bracketed[1];
-      }
-
-      // 3. Modern prompt glyphs: ❯, ➜, λ, » (Starship, Pure, Oh-My-Zsh)
-      const glyph = upToCursor.match(/^.*?[❯➜λ»]\s*(.*)$/);
-      if (glyph && glyph[1] !== undefined) {
-        return glyph[1];
-      }
-
-      // 4. Secondary continuation prompt (PS2): "> command"
-      const ps2 = upToCursor.match(/^>\s+(.*)$/);
-      if (ps2 && ps2[1] !== undefined) {
-        return ps2[1];
-      }
-
-      // 5. Simple prompt: "$ ", "# ", "% " at prompt start (WITHOUT matching spaces in command body)
-      const simple = upToCursor.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/:*]*?[\$#%]\s+)(.*)$/);
-      if (simple && simple[1] !== undefined) {
-        return simple[1];
-      }
+      // At the end, keep text exactly up to the cursor (preserves a typed trailing space).
+      const logical = atEnd ? before : (before + after).trimEnd();
+      return { text: stripShellPrompt(logical), atEnd };
     } catch {
-      /* fallback */
+      return null;
     }
-
-    return lineRef.current;
   }, []);
+
+  const getCurrentCommandLine = useCallback((): string => {
+    return readCommandLine()?.text ?? lineRef.current;
+  }, [readCommandLine]);
+
+  /** True when the cursor sits at the end of the command being edited (nothing typed to its right). */
+  const isCursorAtCommandEnd = useCallback((): boolean => {
+    return readCommandLine()?.atEnd ?? true;
+  }, [readCommandLine]);
 
   // Set when the line was changed by something we can't see in keystrokes
   // (Tab completion, history navigation, paste, cursor movement...).
@@ -369,6 +386,13 @@ export const TerminalPane = memo(function TerminalPane({
     const prefix = (overrideText !== undefined ? overrideText : lineRef.current) || '';
 
     if (prefix.trim().length < 2) {
+      setSuggestion(null);
+      setGhostPos(null);
+      return;
+    }
+    // Cursor moved back into the command (←, Home, Ctrl+A...): the text to its right is
+    // already typed, so a ghost suffix would overlap it and accepting would duplicate it.
+    if (!isCursorAtCommandEnd()) {
       setSuggestion(null);
       setGhostPos(null);
       return;
@@ -407,7 +431,7 @@ export const TerminalPane = memo(function TerminalPane({
       full: bestMatch,
       suffix: bestMatch.slice(prefix.length),
     });
-  }, []);
+  }, [isCursorAtCommandEnd]);
 
   // After Tab / history navigation / paste / cursor movement, the real line only
   // exists on screen. Wait for the server echo to land, then re-read it once.
@@ -424,11 +448,18 @@ export const TerminalPane = memo(function TerminalPane({
     }, 120);
   }, [getCurrentCommandLine, updateSuggestion]);
 
-  const acceptSuggestion = useCallback(() => {
+  /** Types the ghost suffix. Returns false (and drops the ghost) when it can't apply, so the key reaches the shell. */
+  const acceptSuggestion = useCallback((): boolean => {
     const s = suggestionRef.current;
     const sid = sessionRef.current;
-    if (!s || !s.suffix || !sid) return;
+    if (!s || !s.suffix || !sid) return false;
+    if (!isCursorAtCommandEnd()) {
+      setSuggestion(null);
+      setGhostPos(null);
+      return false;
+    }
 
+    smartWriterRef.current?.notifyUserInput(s.suffix, true);
     if (isSerial) {
       bridge.writeSerial(sid, s.suffix);
     } else if (isLocal) {
@@ -440,12 +471,20 @@ export const TerminalPane = memo(function TerminalPane({
     setSuggestion(null);
     setGhostPos(null);
     termRef.current?.focus();
-  }, [isSerial, isLocal]);
+    return true;
+  }, [isSerial, isLocal, isCursorAtCommandEnd]);
 
   const updateGhostPos = useCallback(() => {
     // If no suggestion is active, skip measuring and avoid re-renders (fixes H4 render storm)
     if (!suggestionRef.current) {
       setGhostPos((prev) => (prev !== null ? null : prev));
+      return;
+    }
+
+    // Cursor left the end of the command (moved back with ←, Home...): drop the ghost.
+    if (!isCursorAtCommandEnd()) {
+      setSuggestion(null);
+      setGhostPos(null);
       return;
     }
 
@@ -503,7 +542,7 @@ export const TerminalPane = memo(function TerminalPane({
       }
       return { x, y, cellHeight };
     });
-  }, []);
+  }, [isCursorAtCommandEnd]);
 
   useEffect(() => {
     if (suggestion) {
@@ -520,6 +559,7 @@ export const TerminalPane = memo(function TerminalPane({
     (text: string) => {
       const sid = sessionRef.current;
       if (sid && text) {
+        smartWriterRef.current?.notifyUserInput(text, true);
         if (isSerial) bridge.writeSerial(sid, text);
         else if (isLocal) bridge.writeLocalPty(sid, text);
         else bridge.write(sid, text);
@@ -535,6 +575,7 @@ export const TerminalPane = memo(function TerminalPane({
       const sid = sessionRef.current;
       if (sid && cmd) {
         const payload = executeImmediately ? cmd + '\n' : cmd;
+        smartWriterRef.current?.notifyUserInput(payload, !executeImmediately);
         if (isSerial) bridge.writeSerial(sid, payload);
         else if (isLocal) bridge.writeLocalPty(sid, payload);
         else bridge.write(sid, payload);
@@ -745,15 +786,25 @@ export const TerminalPane = memo(function TerminalPane({
           }
         };
 
-        const existingSshSid =
+        let existingSshSid =
           sessionRef.current ||
-          pane.sessionId ||
           (() => {
             try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
-          })();
+          })() ||
+          pane.sessionId;
         if (existingSshSid) {
           suppressConnectBanner = true;
-          const attached = await bridge.attach(existingSshSid, initCols, initRows, onSshEvent);
+          let attached = await bridge.attach(existingSshSid, initCols, initRows, onSshEvent);
+          if (!attached) {
+            const fallbackSid =
+              (() => {
+                try { return localStorage.getItem('drx.pane.sid.' + pane.id); } catch { return null; }
+              })() || pane.sessionId;
+            if (fallbackSid && fallbackSid !== existingSshSid) {
+              existingSshSid = fallbackSid;
+              attached = await bridge.attach(existingSshSid, initCols, initRows, onSshEvent);
+            }
+          }
           suppressConnectBanner = false;
           if (attached) {
             if (dead()) return;
@@ -765,7 +816,11 @@ export const TerminalPane = memo(function TerminalPane({
             update({ status: 'connected', sessionId: existingSshSid });
             return;
           }
-          try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
+          try {
+            if (localStorage.getItem('drx.pane.sid.' + pane.id) === existingSshSid) {
+              localStorage.removeItem('drx.pane.sid.' + pane.id);
+            }
+          } catch {}
         }
 
         term.write(
@@ -839,8 +894,7 @@ export const TerminalPane = memo(function TerminalPane({
   /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
   const sendAccessoryKey = useCallback((data: string) => {
     // If an autosuggestion is active and Tab or Right Arrow is pressed -> accept suggestion!
-    if (suggestionRef.current && (data === '\t' || data === '\x1b[C' || data === '\x1bOC')) {
-      acceptSuggestion();
+    if (suggestionRef.current && (data === '\t' || data === '\x1b[C' || data === '\x1bOC') && acceptSuggestion()) {
       return;
     }
 
@@ -1228,6 +1282,7 @@ export const TerminalPane = memo(function TerminalPane({
     const handleHelperPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData('text/plain');
       if (text) {
+        smartWriterRef.current?.notifyUserInput(text, true);
         bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
       }
     };
@@ -1380,6 +1435,7 @@ export const TerminalPane = memo(function TerminalPane({
         pasteLockRef.current = true;
         bridge.readClipboard().then((txt) => {
           if (txt) {
+            smartWriterRef.current?.notifyUserInput(txt, true);
             term.paste(txt);
             bridge.addClipboardHistory(txt, 'System Clipboard').catch(() => {});
           }
@@ -1403,8 +1459,7 @@ export const TerminalPane = memo(function TerminalPane({
 
 
       // ArrowRight or Tab -> Accept autosuggestion
-      if (suggestionRef.current && (e.key === 'ArrowRight' || e.key === 'Tab') && e.type === 'keydown') {
-        acceptSuggestion();
+      if (suggestionRef.current && (e.key === 'ArrowRight' || e.key === 'Tab') && e.type === 'keydown' && acceptSuggestion()) {
         return false;
       }
 
@@ -1446,6 +1501,7 @@ export const TerminalPane = memo(function TerminalPane({
         modifiersRef.current = { ctrl: false, alt: false };
         setModifiers(modifiersRef.current);
       }
+      smartWriterRef.current?.notifyUserInput(data);
       const sid = sessionRef.current;
       if (!sid) return;
       if (isSerial) {
@@ -1465,6 +1521,8 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       // Track submitted lines for snapshot, command history, and autosuggestion
+      // (sampled before the shell echoes this input, i.e. where the cursor was when the key was pressed)
+      const editingMidLine = !isCursorAtCommandEnd();
       for (const ch of data) {
         if (ch === '\r' || ch === '\n') {
           // Keystrokes are the truth. Only fall back to the screen if the line was
@@ -1518,6 +1576,12 @@ export const TerminalPane = memo(function TerminalPane({
           setSuggestion(null);
           setGhostPos(null);
         } else if (ch === '\t') {
+          scheduleResync();
+        } else if (ch === '\x01' || ch === '\x02' || ch === '\x05' || ch === '\x06') {
+          // Readline/zle cursor movement (Ctrl+A/B/E/F): the line didn't change but the cursor did.
+          scheduleResync();
+        } else if (editingMidLine && (ch === '\x7f' || ch === '\x08' || ch === '\x17' || ch >= ' ')) {
+          // Typing/deleting in the middle of the command: appending to lineRef would be wrong.
           scheduleResync();
         } else if (ch === '\x7f' || ch === '\x08') {
           lineRef.current = lineRef.current.slice(0, -1);
@@ -1577,6 +1641,7 @@ export const TerminalPane = memo(function TerminalPane({
       term,
       send: (d) => {
         if (sessionRef.current) {
+          smartWriterRef.current?.notifyUserInput(d);
           if (isSerial) bridge.writeSerial(sessionRef.current, d);
           else if (isLocal) bridge.writeLocalPty(sessionRef.current, d);
           else bridge.write(sessionRef.current, d);
@@ -1944,6 +2009,7 @@ export const TerminalPane = memo(function TerminalPane({
         try {
           const text = await bridge.readClipboard();
           if (text) {
+            smartWriterRef.current?.notifyUserInput(text, true);
             if (termRef.current) {
               termRef.current.paste(text);
             } else {

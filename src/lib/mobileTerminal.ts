@@ -127,7 +127,8 @@ export const TERMINAL_FONT_MAX = 22;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface TerminalLike {
-  write(data: string | Uint8Array): void;
+  cols?: number;
+  write(data: string | Uint8Array, callback?: () => void): void;
   buffer: {
     active: {
       type: string;
@@ -135,15 +136,78 @@ export interface TerminalLike {
       cursorY: number;
       baseY: number;
       length: number;
-      getLine(y: number): { isWrapped: boolean } | undefined;
+      getLine(y: number): {
+        isWrapped: boolean;
+        translateToString?(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
+      } | undefined;
     };
   };
 }
 
 /**
+ * Strips ANSI escape sequences from a string to measure its printable character width.
+ */
+function visibleLength(text: string): number {
+  const clean = text.replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|[A-Za-z0-9=<>])/g, '');
+  let len = 0;
+  for (const _ch of clean) len++;
+  return len;
+}
+
+/**
+ * Replaces trailing padding spaces on standalone-`\r` progress lines with `\x1b[K`
+ * (Erase in Line) so CLI tools that pad lines to 70-80 columns with spaces do not
+ * needlessly wrap onto a blank second row on narrow mobile screens.
+ */
+function replaceTrailingSpacesWithEraseLine(part: string): string {
+  if (!part || isCursorNavigationAfterCr(part) || isShellPromptLine(part)) return part;
+  if (!part.includes('\n')) {
+    if (/^[ ]+$/.test(part)) return '\x1b[K';
+    return part.replace(/(?<=\S)[ ]+$/, '\x1b[K');
+  }
+  return part.replace(/^([^\r\n]*?\S)[ ]+(\r?\n)/, '$1\x1b[K$2');
+}
+
+/**
+ * Detects whether the root row of a wrapped logical line is an interactive
+ * shell prompt (e.g. `user@host:~$ `, `[user@host ~]$ `, `❯ `, `> `).
+ * Wrapped commands being edited at a shell prompt must never be rewound/cleared
+ * as if they were CLI progress bars.
+ */
+export function isShellPromptLine(text: string): boolean {
+  if (!text) return false;
+  // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
+  if (/^(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^$#%>]*[$#%>]\s/.test(text)) return true;
+  // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
+  if (/^(?:\([^)]+\)\s*)?\[[^\]]+\]\s*[$#%>]\s/.test(text)) return true;
+  // 3. Shell name or path prompt: bash-5.2$, sh-5.1#, ~/dir $, /etc #
+  if (/^(?:\([^)]+\)\s*)?(?:(?:ba|z|da|k|c|tc|fi)?sh(?:-[0-9.]+)?|~|\/[a-zA-Z0-9_.\-/]*)[^$#%\r\n]{0,40}[$#%]\s/.test(text)) return true;
+  // 4. PowerShell / Windows cmd prompt: PS C:\Users> or C:\Users>
+  if (/^(?:PS\s+)?[A-Za-z]:\\[^>]*>\s*/.test(text)) return true;
+  // 5. Multi-line box-drawing prompt (Kali, Arch, Starship): ┌── / └─❯
+  if (/^[┌└╭╰─│]/.test(text)) return true;
+  // 6. Modern prompt glyphs: ❯, ➜, λ, »
+  if (/^.{0,64}[❯➜λ»]\s/.test(text)) return true;
+  // 7. Bare prompt or secondary continuation prompt (PS2): "$ ", "# ", "% ", "> "
+  if (/^[$#%>]\s/.test(text)) return true;
+  return false;
+}
+
+/**
+ * Detects whether text immediately following a standalone `\r` begins with an
+ * ANSI/VT100 cursor-positioning sequence (as emitted by GNU Readline when
+ * moving across wrapped command lines) rather than a line-overwrite progress update.
+ */
+export function isCursorNavigationAfterCr(afterCr: string): boolean {
+  if (!afterCr) return false;
+  return /^\x1b(?:\[\d*(?:;\d+)*[ABCDEFGHfsu]|M|7|8)/.test(afterCr);
+}
+
+/**
  * Counts how many rows above the cursor are wrapped continuation lines.
- * Returns 0 if the cursor is on the first row of a logical line, or if the terminal
- * is in alternate screen buffer (e.g. htop, vim).
+ * Returns 0 if the cursor is on the first row of a logical line, if the terminal
+ * is in alternate screen buffer (e.g. htop, vim), or if the wrapped block starts
+ * with an interactive shell prompt.
  */
 export function getWrappedRowsAbove(term: TerminalLike): number {
   try {
@@ -157,6 +221,11 @@ export function getWrappedRowsAbove(term: TerminalLike): number {
       count++;
       lineIdx--;
     }
+    if (count > 0) {
+      const rootLine = buf.getLine(lineIdx);
+      const rootText = rootLine?.translateToString?.(true) ?? '';
+      if (isShellPromptLine(rootText)) return 0;
+    }
     return count;
   } catch {
     return 0;
@@ -166,62 +235,157 @@ export function getWrappedRowsAbove(term: TerminalLike): number {
 /**
  * Streams terminal output while rewriting standalone Carriage Returns (`\r` without `\n`)
  * so that CLI progress bars (speedtest, curl, wget, npm, pip, docker) that wrap on narrow
- * mobile screens update in place instead of duplicating and scrolling down the terminal.
+ * mobile screens update in place instead of duplicating and scrolling down the terminal,
+ * while never interfering with interactive shell command editing, pasting, or arrow navigation.
  */
 export class SmartTerminalWriter {
   private term: TerminalLike;
   private pendingCr = false;
-  private crTimer: ReturnType<typeof setTimeout> | null = null;
   private decoder: TextDecoder | null = null;
+  private editingPrompt = false;
+  private suppressRewindUntil = 0;
+  private inFlightWrappedRows: number | null = null;
+  private inFlightCol = 0;
+  private writeSeq = 0;
 
   constructor(term: TerminalLike) {
     this.term = term;
   }
 
+  /**
+   * Notifies the writer of user input so interactive prompt editing (typing,
+   * pasting, arrow-key cursor movement, backspace) never triggers progress-bar
+   * line rewinding, while submitting a command with Enter re-enables it.
+   */
+  notifyUserInput(data: string, isPaste = false) {
+    if (!data) return;
+    if (isPaste || data.startsWith('\x1b[200~')) {
+      this.editingPrompt = true;
+      this.suppressRewindUntil = Date.now() + 800;
+      this._flushPlainCr();
+      return;
+    }
+    if (data === '\x03' || data === '\x04' || data === '\x1a') {
+      this.editingPrompt = true;
+      this.suppressRewindUntil = Date.now() + 400;
+      this._flushPlainCr();
+      return;
+    }
+    if (data.endsWith('\r') || data.endsWith('\n')) {
+      this.editingPrompt = false;
+      this.suppressRewindUntil = 0;
+      return;
+    }
+    this.editingPrompt = true;
+    this.suppressRewindUntil = Date.now() + 800;
+    this._flushPlainCr();
+  }
+
+  private _flushPlainCr() {
+    if (this.pendingCr) {
+      this.pendingCr = false;
+      this.term.write('\r');
+    }
+  }
+
   write(data: string | Uint8Array) {
     let chunk = typeof data === 'string' ? data : (this.decoder ??= new TextDecoder()).decode(data);
-    if (this.crTimer) {
-      clearTimeout(this.crTimer);
-      this.crTimer = null;
-    }
+    if (!chunk) return;
 
     if (this.pendingCr) {
       this.pendingCr = false;
-      if (chunk.startsWith('\n')) {
-        this.term.write('\r\n' + chunk.slice(1));
-        return;
-      } else {
-        this._emitStandaloneCR();
-      }
+      chunk = '\r' + chunk;
     }
 
-    if (chunk.endsWith('\r')) {
+    if (this.editingPrompt || Date.now() < this.suppressRewindUntil) {
+      this.term.write(chunk);
+      return;
+    }
+
+    // Replace trailing padding spaces immediately before a standalone \r with \x1b[K
+    if (chunk.includes('\r')) {
+      chunk = chunk.replace(/(?<=\S)[ ]+(?=\r(?!\n))/g, '\x1b[K');
+    }
+
+    while (chunk.endsWith('\r')) {
       this.pendingCr = true;
       chunk = chunk.slice(0, -1);
-      this.crTimer = setTimeout(() => this.flush(), 25);
-      if (!chunk) return;
     }
+    if (!chunk) return;
 
     if (!chunk.includes('\r')) {
-      this.term.write(chunk);
+      this._writeTracked(chunk, false);
+      if (this.term.write.length < 2) this.inFlightWrappedRows = null;
       return;
     }
 
     const parts = chunk.split(/\r(?!\n)/);
     for (let i = 0; i < parts.length; i++) {
+      let part = parts[i];
       if (i > 0) {
-        this._emitStandaloneCR();
+        // Collapse consecutive standalone CRs (`\r\r`) so we only rewind once
+        if (part.length === 0 && i < parts.length - 1) continue;
+        this._emitStandaloneCR(part);
+        part = replaceTrailingSpacesWithEraseLine(part);
       }
-      if (parts[i].length > 0) {
-        this.term.write(parts[i]);
+      if (part.length > 0) {
+        this._writeTracked(part, i > 0);
       }
+    }
+    if (this.term.write.length < 2) {
+      this.inFlightWrappedRows = null;
     }
   }
 
-  private _emitStandaloneCR() {
-    const wrapped = getWrappedRowsAbove(this.term);
+  private _writeTracked(part: string, afterStandaloneCr: boolean) {
+    const cols = this.term.cols ?? 0;
+    if (cols > 0) {
+      if (part.includes('\n')) {
+        const afterLastNewline = part.slice(part.lastIndexOf('\n') + 1);
+        this.inFlightCol = visibleLength(afterLastNewline);
+        this.inFlightWrappedRows = this.inFlightCol > cols ? Math.floor((this.inFlightCol - 1) / cols) : 0;
+      } else if (afterStandaloneCr) {
+        this.inFlightCol = visibleLength(part);
+        this.inFlightWrappedRows = this.inFlightCol > cols ? Math.floor((this.inFlightCol - 1) / cols) : 0;
+      } else if (this.inFlightWrappedRows !== null) {
+        this.inFlightCol += visibleLength(part);
+        this.inFlightWrappedRows = this.inFlightCol > cols ? Math.floor((this.inFlightCol - 1) / cols) : 0;
+      }
+    }
+
+    if (this.term.write.length >= 2) {
+      const seq = ++this.writeSeq;
+      this.term.write(part, () => {
+        if (this.writeSeq === seq) {
+          this.inFlightWrappedRows = null;
+        }
+      });
+    } else {
+      this.term.write(part);
+    }
+  }
+
+  private _emitStandaloneCR(nextText = '') {
+    if (isCursorNavigationAfterCr(nextText) || isShellPromptLine(nextText)) {
+      this.term.write('\r');
+      return;
+    }
+    const wrapped = this.inFlightWrappedRows !== null
+      ? this.inFlightWrappedRows
+      : getWrappedRowsAbove(this.term);
+    this.inFlightWrappedRows = 0;
+    this.inFlightCol = 0;
     if (wrapped > 0) {
-      this.term.write(`\x1b[${wrapped}A\r\x1b[J`);
+      if (this.term.write.length >= 2) {
+        const seq = ++this.writeSeq;
+        this.term.write(`\x1b[${wrapped}A\r\x1b[J`, () => {
+          if (this.writeSeq === seq) {
+            this.inFlightWrappedRows = null;
+          }
+        });
+      } else {
+        this.term.write(`\x1b[${wrapped}A\r\x1b[J`);
+      }
     } else {
       this.term.write('\r');
     }
@@ -235,9 +399,7 @@ export class SmartTerminalWriter {
   }
 
   dispose() {
-    if (this.crTimer) {
-      clearTimeout(this.crTimer);
-      this.crTimer = null;
-    }
+    this.pendingCr = false;
+    this.inFlightWrappedRows = null;
   }
 }

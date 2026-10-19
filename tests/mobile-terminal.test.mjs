@@ -51,26 +51,58 @@ test('accessory emits standard terminal key sequences', () => {
   });
 });
 
-test('getWrappedRowsAbove detects continuation rows correctly', () => {
-  const makeTerm = (linesWrapped, cursorY, type = 'normal') => ({
+test('getWrappedRowsAbove detects continuation rows and ignores wrapped shell prompts', () => {
+  const makeTerm = (lines, cursorY, type = 'normal') => ({
     buffer: {
       active: {
         type,
         cursorX: 5,
         cursorY,
         baseY: 0,
-        length: linesWrapped.length,
+        length: lines.length,
         getLine(y) {
-          return linesWrapped[y] !== undefined ? { isWrapped: linesWrapped[y] } : undefined;
+          const entry = lines[y];
+          if (!entry) return undefined;
+          return {
+            isWrapped: entry.isWrapped,
+            translateToString: () => entry.text ?? '',
+          };
         },
       },
     },
   });
 
-  assert.equal(getWrappedRowsAbove(makeTerm([false, false, false], 2)), 0);
-  assert.equal(getWrappedRowsAbove(makeTerm([false, true, true], 2)), 2);
-  assert.equal(getWrappedRowsAbove(makeTerm([false, true, false], 2)), 0);
-  assert.equal(getWrappedRowsAbove(makeTerm([false, true, true], 2, 'alternate')), 0);
+  assert.equal(getWrappedRowsAbove(makeTerm([
+    { isWrapped: false, text: '  Download:  13.19 Mbps' },
+    { isWrapped: false, text: '  Upload:     8.42 Mbps' },
+  ], 1)), 0);
+
+  assert.equal(getWrappedRowsAbove(makeTerm([
+    { isWrapped: false, text: '  Download:  13.19 Mbps (data used: 15.8 MB)     ' },
+    { isWrapped: true, text: '                                                 ' },
+    { isWrapped: true, text: '   254.08 ms' },
+  ], 2)), 2);
+
+  assert.equal(getWrappedRowsAbove(makeTerm([
+    { isWrapped: false, text: '  Download:  13.19 Mbps' },
+    { isWrapped: true, text: '  continuation' },
+  ], 1, 'alternate')), 0);
+
+  // Wrapped interactive shell prompts must NEVER be treated as progress bars
+  for (const prompt of [
+    'stephen@dreycore:~$ echo "very long command that wraps onto next line"',
+    '(venv) [root@prod-db /var/log]# tail -f syslog',
+    'bash-5.2$ export PATH="/usr/local/bin:$PATH"',
+    '~/projects/nexus $ npm run build',
+    '❯ git commit -m "long commit message"',
+    '> continued multiline string',
+  ]) {
+    assert.equal(getWrappedRowsAbove(makeTerm([
+      { isWrapped: false, text: prompt },
+      { isWrapped: true, text: 'more wrapped command text' },
+      { isWrapped: true, text: 'even more wrapped command text' },
+    ], 2)), 0, `Prompt should not rewind: ${prompt}`);
+  }
 });
 
 test('SmartTerminalWriter rewinds cursor and clears on standalone CR for wrapped progress bars', () => {
@@ -86,7 +118,10 @@ test('SmartTerminalWriter rewinds cursor and clears on standalone CR for wrapped
         baseY: 0,
         length: 3,
         getLine(y) {
-          return { isWrapped: y > 0 }; // lines 1 and 2 are wrapped from line 0
+          return {
+            isWrapped: y > 0,
+            translateToString: () => (y === 0 ? '  Download:  13.19 Mbps [=========>          ]' : '   padding'),
+          };
         },
       },
     },
@@ -97,10 +132,86 @@ test('SmartTerminalWriter rewinds cursor and clears on standalone CR for wrapped
   writer.write('Progress: done\r\n');
   assert.deepEqual(written, ['Progress: done\r\n']);
 
-  // Standalone CR should rewind wrapped rows
+  // Standalone CR at start of chunk should rewind wrapped rows
   written.length = 0;
-  writer.write('\rDownload: 50%');
-  assert.deepEqual(written, ['\x1b[2A\r\x1b[J', 'Download: 50%']);
+  writer.write('\r  Download:  50.00 Mbps');
+  assert.deepEqual(written, ['\x1b[2A\r\x1b[J', '  Download:  50.00 Mbps']);
+
+  // Trailing CR held across chunks (like speedtest/curl) converts trailing padding spaces to \x1b[K
+  written.length = 0;
+  writer.write('  Download:  60.00 Mbps   \r');
+  assert.deepEqual(written, ['  Download:  60.00 Mbps\x1b[K']);
+  writer.write('  Download:  75.00 Mbps   \r');
+  assert.deepEqual(written, ['  Download:  60.00 Mbps\x1b[K', '\x1b[2A\r\x1b[J', '  Download:  75.00 Mbps\x1b[K']);
+  writer.write('\n');
+  assert.deepEqual(written, ['  Download:  60.00 Mbps\x1b[K', '\x1b[2A\r\x1b[J', '  Download:  75.00 Mbps\x1b[K', '\r\n']);
+
+  // Coalesced multi-CR burst in a single chunk tracks in-flight wrapped rows so no intermediate tick is left behind
+  written.length = 0;
+  mockTerm.cols = 45;
+  writer.write(
+    '\r    Download:   927.95 Mbps [===================-  ] 89%    ' +
+    '\r    Download:   928.19 Mbps [====================\\] 97%    ' +
+    '\r    Download:   928.13 Mbps (data used: 410.9 MB)          \r\n'
+  );
+  assert.deepEqual(written, [
+    '\x1b[2A\r\x1b[J',
+    '    Download:   927.95 Mbps [===================-  ] 89%\x1b[K',
+    '\x1b[1A\r\x1b[J',
+    '    Download:   928.19 Mbps [====================\\] 97%\x1b[K',
+    '\x1b[1A\r\x1b[J',
+    '    Download:   928.13 Mbps (data used: 410.9 MB)\x1b[K\r\n',
+  ]);
 
   writer.dispose();
 });
+
+test('SmartTerminalWriter never rewinds or clears during paste, arrow navigation, or Readline redraws', () => {
+  const written = [];
+  const mockTerm = {
+    written,
+    write(d) { written.push(d); },
+    buffer: {
+      active: {
+        type: 'normal',
+        cursorX: 0,
+        cursorY: 2,
+        baseY: 0,
+        length: 3,
+        getLine(y) {
+          return {
+            isWrapped: y > 0,
+            translateToString: () => 'some wrapped line without standard prompt',
+          };
+        },
+      },
+    },
+  };
+
+  const writer = new SmartTerminalWriter(mockTerm);
+
+  // 1. Readline Left Arrow across wrapped line boundary emits \r\x1b[A\x1b[53C
+  writer.write('\r\x1b[A\x1b[53C');
+  assert.deepEqual(written, ['\r', '\x1b[A\x1b[53C']);
+
+  // 2. Pasting or typing suppresses rewind until command is submitted with Enter
+  written.length = 0;
+  writer.notifyUserInput('echo hello world', true);
+  writer.write('\rredrawing pasted command line');
+  assert.deepEqual(written, ['\rredrawing pasted command line']);
+
+  // 3. Pressing Left Arrow key (\x1b[D) suppresses rewind
+  written.length = 0;
+  writer.notifyUserInput('\x1b[D');
+  writer.write('\rredrawing after left arrow');
+  assert.deepEqual(written, ['\rredrawing after left arrow']);
+
+  // 4. Submitting command with Enter (\r) re-enables progress bar rewinding
+  written.length = 0;
+  writer.notifyUserInput('\r');
+  writer.write('\r  Download:  99.99 Mbps');
+  assert.deepEqual(written, ['\x1b[2A\r\x1b[J', '  Download:  99.99 Mbps']);
+
+  writer.dispose();
+});
+
