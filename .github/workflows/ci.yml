@@ -61,7 +61,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # relay.py is stdlib-only (hmac/json/argparse), so no pip install step.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
