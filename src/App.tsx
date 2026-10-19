@@ -796,6 +796,41 @@ export default function App() {
     openHost(h);
   }, [mobile, tabs, openHost, focusPane]);
 
+  const openTermuxPreset = useCallback(() => {
+    const existing = hosts.find(
+      (h) =>
+        h.port === 8022 &&
+        (h.hostname.trim() === '127.0.0.1' || h.hostname.trim().toLowerCase() === 'localhost')
+    );
+    if (existing) {
+      setSessionSheet(false);
+      setQuick(false);
+      resumeOrOpenHost(existing);
+      return;
+    }
+    setSessionSheet(false);
+    setQuick(false);
+    setModal({
+      host: {
+        id: uid(),
+        label: 'Termux (Local)',
+        hostname: '127.0.0.1',
+        port: 8022,
+        username: 'termux',
+        authMethod: 'password',
+        keychainId: null,
+        jumpHostId: null,
+        group: 'Local',
+        tags: ['termux', 'local'],
+        color: '#4ade80',
+        hasSecret: false,
+        os: 'android',
+        vaultId: activeVaultId === 'all' ? 'personal' : activeVaultId,
+        startupCommand: '',
+      },
+    });
+  }, [hosts, resumeOrOpenHost, activeVaultId]);
+
   useEffect(() => {
     if (activeTabId && !tabs.some((t) => t.id === activeTabId)) {
       setActiveTabId(tabs[tabs.length - 1]?.id ?? null);
@@ -1780,6 +1815,7 @@ export default function App() {
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
                     onOpenTailscale={() => setShowTailscale(true)}
+                    onOpenTermuxPreset={openTermuxPreset}
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
@@ -1839,6 +1875,7 @@ export default function App() {
               hosts={hosts}
               onOpen={openHost}
               onLocal={openLocalTerminal}
+              onTermux={openTermuxPreset}
               onNew={() => setModal({ host: null })}
               onSshConfig={() => setShowSshConfig(true)}
             />
@@ -1921,6 +1958,7 @@ export default function App() {
                           onOpenSessions: () => setSessionSheet(true),
                           onConnectHost: () => navigateMobile('hosts'),
                           onLocalTerminal: openLocalTerminal,
+                          onTermuxPreset: openTermuxPreset,
                           onSftp: () => openSftpTab(p.isLocal || p.kind === 'serial' ? undefined : h.id),
                           onSerial: () => setShowSerial(true),
                           onAssistant: () => setTerminalDrawer('assistant'),
@@ -2374,6 +2412,7 @@ export default function App() {
         </div>
         <button className="nx-settings-row mt-4 rounded-xl" style={{ background: `${theme.accent}1a`, color: theme.accent }} onClick={() => navigateMobile('hosts')}><Plus size={18} /> Connect to a host</button>
         <button className="nx-settings-row" onClick={() => { openLocalTerminal(); setSessionSheet(false); }}><TerminalIcon size={18} /> Open local terminal</button>
+        <button className="nx-settings-row" onClick={() => { setSessionSheet(false); openTermuxPreset(); }}><TerminalIcon size={18} className="text-emerald-400" /> Termux (Local :8022)</button>
       </MobileSheet>}
 
       {/* Quick Connect Floating Palette */}
@@ -2474,7 +2513,26 @@ export default function App() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-medium text-slate-200 group-hover:text-white">Local Terminal</div>
-                    <div className="text-[10px] text-slate-500">bash / zsh shell</div>
+                    <div className="text-[10px] text-slate-500">{mobile ? 'Android /system/bin/sh' : 'bash / zsh shell'}</div>
+                  </div>
+                </button>
+              )}
+
+              {/* Termux Local Bridge Option */}
+              {(!quickFilter || 'termux local 8022'.includes(quickFilter.toLowerCase())) && (
+                <button
+                  onClick={() => {
+                    openTermuxPreset();
+                    setQuick(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-white/10 group transition"
+                >
+                  <div className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400 transition">
+                    <TerminalIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-slate-200 group-hover:text-white">Termux (Local :8022)</div>
+                    <div className="text-[10px] text-slate-500">127.0.0.1:8022 · full userland</div>
                   </div>
                 </button>
               )}
@@ -2671,12 +2729,14 @@ function Welcome({
   hosts,
   onOpen,
   onLocal,
+  onTermux,
   onNew,
   onSshConfig,
 }: {
   hosts: Host[];
   onOpen: (h: Host) => void;
   onLocal: () => void;
+  onTermux?: () => void;
   onNew: () => void;
   onSshConfig: () => void;
 }) {
@@ -2705,6 +2765,11 @@ function Welcome({
           <button onClick={onLocal} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20 transition">
             <TerminalIcon className="h-3.5 w-3.5" />Open Local Terminal
           </button>
+          {onTermux && (
+            <button onClick={onTermux} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-400/20 transition">
+              <TerminalIcon className="h-3.5 w-3.5" />Termux (Local :8022)
+            </button>
+          )}
           <button onClick={onNew} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 px-4 py-2 text-xs text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200 transition">
             <Plus className="h-3.5 w-3.5" />Add a new host
           </button>

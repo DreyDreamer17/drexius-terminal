@@ -212,6 +212,7 @@ const OS_MAP: &[(&str, &[&str])] = &[
     ("alpine", &["alpine"]),
     ("amazon", &["amazon"]),
     ("suse", &["opensuse", "suse"]),
+    ("android", &["android", "termux"]),
     ("macos", &["darwin", "macos", "mac"]),
     ("windows", &["windows", "mingw", "msys", "cygwin"]),
     ("linux", &["linux", "gnu/linux"]),
@@ -259,13 +260,13 @@ fn parse_banner_os(banner: Option<&str>) -> Option<String> {
 }
 
 /// Best-effort remote OS detection on an already-authenticated (blocking) session.
-/// Opens a short-lived exec channel: `cat /etc/os-release; uname -s`.
+/// Opens a short-lived exec channel: `cat /etc/os-release; uname -o; uname -s`.
 /// Never fails the connection — returns None on any error/timeout.
 fn detect_remote_os(sess: &Session, banner: Option<&str>) -> Option<String> {
     let mut ch = sess.channel_session().ok()?;
     // Short timeout so a hung exec doesn't stall connect.
     let _ = sess.set_timeout(4000);
-    ch.exec("cat /etc/os-release 2>/dev/null; echo ---; uname -s 2>/dev/null").ok()?;
+    ch.exec("cat /etc/os-release 2>/dev/null; echo ---; uname -o 2>/dev/null; uname -s 2>/dev/null").ok()?;
     let mut out = String::new();
     let _ = (&mut ch).take(64 * 1024).read_to_string(&mut out);
     let _ = ch.wait_close();
@@ -939,13 +940,13 @@ fn track_command(line: &mut String, bytes: &[u8], mut on_submit: impl FnMut(&str
 
 /// Streaming parser for `ESC ] 7 ; file://host/path (BEL | ESC \)`.
 #[derive(Default)]
-struct Osc7Parser {
+pub(crate) struct Osc7Parser {
     state: u8,
     acc: Vec<u8>,
 }
 
 impl Osc7Parser {
-    fn feed(&mut self, data: &[u8]) -> Option<String> {
+    pub(crate) fn feed(&mut self, data: &[u8]) -> Option<String> {
         let mut found = None;
         for &b in data {
             self.state = match (self.state, b) {
@@ -1056,5 +1057,12 @@ mod tests {
         let mut got = vec![];
         track_command(&mut line, b"ls -lx\x7fa\r", |c| got.push(c.to_string()));
         assert_eq!(got, vec!["ls -la"]);
+    }
+
+    #[test]
+    fn android_os_detected_before_generic_linux() {
+        assert_eq!(parse_os_release("---\nAndroid\nLinux\n"), Some("android".into()));
+        assert_eq!(parse_os_release("ID=termux"), Some("android".into()));
+        assert_eq!(parse_os_release("---\nGNU/Linux\nLinux\n"), Some("linux".into()));
     }
 }

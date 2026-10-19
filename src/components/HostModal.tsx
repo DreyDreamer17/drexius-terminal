@@ -1,6 +1,6 @@
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { useEffect, useState } from 'react';
-import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key, Server } from 'lucide-react';
+import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key, Server, Terminal, Copy, Check } from 'lucide-react';
 import type { AuthMethod, Host, HostSecret, KeychainItem, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { OS_OPTIONS } from '../lib/os';
@@ -74,7 +74,27 @@ export function HostModal({
   const [tags, setTags] = useState(h.tags.join(', '));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [copiedSetup, setCopiedSetup] = useState(false);
   const keyType = detectKeyType(privateKey);
+
+  const isTermuxLocal =
+    h.port === 8022 &&
+    (h.hostname.trim() === '127.0.0.1' || h.hostname.trim().toLowerCase() === 'localhost');
+
+  const applyTermuxPreset = () => {
+    setH((prev) => ({
+      ...prev,
+      label: prev.label.trim() || 'Termux (Local)',
+      hostname: '127.0.0.1',
+      port: 8022,
+      username: prev.username && prev.username !== 'root' ? prev.username : 'termux',
+      authMethod: 'password',
+      group: prev.group || 'Local',
+      os: 'android',
+      color: '#4ade80',
+    }));
+    setTags((prev) => (prev.trim() ? prev : 'termux, local'));
+  };
 
   useEffect(() => {
     bridge.listKeychain().then(setKeychain).catch(() => {});
@@ -194,6 +214,57 @@ export function HostModal({
           </button>
         </div>
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
+          {!host && !isTermuxLocal && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-3 py-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-300">
+                  <Terminal className="h-3.5 w-3.5 shrink-0" />
+                  <span>Using Termux on this device?</span>
+                </div>
+                <p className="truncate text-[10.5px] text-slate-400">
+                  100% local loopback workstation (127.0.0.1:8022 · works offline)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={applyTermuxPreset}
+                className="shrink-0 rounded-lg border border-emerald-400/35 bg-emerald-400/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-400/25 transition"
+              >
+                Fill Termux Preset
+              </button>
+            </div>
+          )}
+          {isTermuxLocal && (
+            <div className="rounded-xl border border-emerald-500/25 bg-emerald-950/25 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                  <Terminal className="h-3.5 w-3.5" />
+                  Termux Local Bridge · 100% On-Device (Loopback)
+                </span>
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 font-mono text-[9.5px] text-emerald-300">
+                  127.0.0.1:8022
+                </span>
+              </div>
+              <p className="text-[11px] leading-relaxed text-slate-300">
+                Run this once inside Termux to enable its local SSH daemon (works completely offline, even in Airplane Mode):
+              </p>
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/50 px-2.5 py-1.5 font-mono text-[11px] text-emerald-200">
+                <code className="truncate">pkg install openssh &amp;&amp; passwd &amp;&amp; sshd</code>
+                <button
+                  type="button"
+                  onClick={() => {
+                    bridge.writeClipboard('pkg install openssh && passwd && sshd').catch(() => {});
+                    setCopiedSetup(true);
+                    setTimeout(() => setCopiedSetup(false), 1800);
+                  }}
+                  className="flex shrink-0 items-center gap-1 rounded border border-white/10 bg-white/5 px-2 py-0.5 font-sans text-[10px] text-slate-300 hover:bg-white/10 hover:text-white transition"
+                >
+                  {copiedSetup ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                  <span>{copiedSetup ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
             <div><label className={label}>Label</label><input className={input} value={h.label} onChange={(e) => set('label', e.target.value)} placeholder="prod-web-01" /></div>
             <div><label className={label}>Color</label>

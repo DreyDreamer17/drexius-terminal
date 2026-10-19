@@ -159,6 +159,7 @@ export interface MobileSessionBarActions {
   onOpenSessions: () => void;
   onConnectHost: () => void;
   onLocalTerminal: () => void;
+  onTermuxPreset?: () => void;
   onSftp: () => void;
   onDocker?: () => void;
   onSerial: () => void;
@@ -2270,6 +2271,9 @@ export const TerminalPane = memo(function TerminalPane({
                   <div role="menu" aria-label="New connection" className="nx-connect-menu" onKeyDown={e => { if (e.key === 'Escape') setConnectMenu(false); }}>
                     <button type="button" role="menuitem" onClick={pick(mobileBar?.onConnectHost)}><Server size={18} style={{ color: accent }} /> Connect to host</button>
                     <button type="button" role="menuitem" onClick={pick(mobileBar?.onLocalTerminal)}><TerminalIcon size={18} style={{ color: accent }} /> Local terminal</button>
+                    {mobileBar?.onTermuxPreset && (
+                      <button type="button" role="menuitem" onClick={pick(mobileBar.onTermuxPreset)}><TerminalIcon size={18} className="text-emerald-400" /> Termux (Local :8022)</button>
+                    )}
                     <button type="button" role="menuitem" onClick={pick(mobileBar?.onSftp)}><HardDrive size={18} style={{ color: accent }} /> Connect via SFTP</button>
                     <button type="button" role="menuitem" onClick={pick(mobileBar?.onSerial)}><Unplug size={18} style={{ color: accent }} /> Connect via Serial</button>
                   </div>

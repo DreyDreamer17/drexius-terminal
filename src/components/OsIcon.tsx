@@ -79,6 +79,20 @@ function LinuxMark({ size, color }: { size: number; color: string }) {
   );
 }
 
+function AndroidMark({ size, color }: { size: number; color: string }) {
+  const s = S(size);
+  return (
+    <svg viewBox="0 0 24 24" style={{ ...s, color }} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4.5 16.5a7.5 7.5 0 0 1 15 0H4.5Z" fill="currentColor" fillOpacity={0.18} />
+      <path d="M4.5 16.5a7.5 7.5 0 0 1 15 0H4.5Z" />
+      <path d="M7.5 6.2 9.4 9.2" />
+      <path d="M16.5 6.2 14.6 9.2" />
+      <circle cx="9.3" cy="13.2" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="14.7" cy="13.2" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function CentMark({ size, color, letter }: { size: number; color: string; letter: string }) {
   return (
     <span style={{ fontSize: size * 0.42, fontWeight: 800, color, lineHeight: 1 }}>{letter}</span>
@@ -96,6 +110,7 @@ const CHROME: Record<OsId, { bg: string; ring: string; fg: string; title: string
   alpine: { bg: '#0d597f1f', ring: '#0d597f60', fg: '#60a5fa', title: 'Alpine' },
   amazon: { bg: '#f59e0b1f', ring: '#f59e0b40', fg: '#fbbf24', title: 'Amazon Linux' },
   suse: { bg: '#73ba251f', ring: '#73ba2540', fg: '#a3e635', title: 'openSUSE' },
+  android: { bg: '#3ddc841f', ring: '#3ddc8440', fg: '#3ddc84', title: 'Android / Termux' },
   linux: { bg: '#64748b1f', ring: '#64748b40', fg: '#94a3b8', title: 'Linux' },
   windows: { bg: '#0078d41f', ring: '#0078d440', fg: '#60a5fa', title: 'Windows' },
   macos: { bg: '#94a3b81f', ring: '#94a3b840', fg: '#e2e8f0', title: 'macOS' },
@@ -119,6 +134,7 @@ export function OsIcon({ os, color, size = 32 }: { os?: string | null; color?: s
       {key === 'fedora' && <FedoraMark size={size} color={c.fg} />}
       {key === 'windows' && <WindowsMark size={size} color={c.fg} />}
       {key === 'macos' && <MacMark size={size} color={c.fg} />}
+      {key === 'android' && <AndroidMark size={size} color={c.fg} />}
       {key === 'linux' && <LinuxMark size={size} color={c.fg} />}
       {key === 'centos' && <CentMark size={size} color={c.fg} letter="C" />}
       {key === 'rocky' && <CentMark size={size} color={c.fg} letter="R" />}

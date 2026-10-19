@@ -2,7 +2,7 @@
 export type OsId =
   | 'ubuntu' | 'debian' | 'arch' | 'fedora' | 'centos'
   | 'rocky' | 'alpine' | 'amazon' | 'suse'
-  | 'linux' | 'windows' | 'macos';
+  | 'android' | 'linux' | 'windows' | 'macos';
 
 export const OS_OPTIONS: { id: OsId | ''; label: string }[] = [
   { id: '', label: 'Auto-detect' },
@@ -15,6 +15,7 @@ export const OS_OPTIONS: { id: OsId | ''; label: string }[] = [
   { id: 'alpine', label: 'Alpine' },
   { id: 'amazon', label: 'Amazon Linux' },
   { id: 'suse', label: 'openSUSE' },
+  { id: 'android', label: 'Android / Termux' },
   { id: 'linux', label: 'Generic Linux' },
   { id: 'windows', label: 'Windows' },
   { id: 'macos', label: 'macOS' },
@@ -33,6 +34,7 @@ export function parseOsFromBanner(banner?: string | null): OsId | null {
   if (s.includes('alpine')) return 'alpine';
   if (s.includes('amazon')) return 'amazon';
   if (s.includes('suse')) return 'suse';
+  if (s.includes('android') || s.includes('termux')) return 'android';
   if (s.includes('windows') || s.includes('mingw') || s.includes('msys')) return 'windows';
   if (s.includes('darwin') || s.includes('macos')) return 'macos';
   return null;

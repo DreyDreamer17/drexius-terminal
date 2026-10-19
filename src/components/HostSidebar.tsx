@@ -44,6 +44,7 @@ interface Props {
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
   onOpenTailscale?: () => void;
+  onOpenTermuxPreset?: () => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
   onClose?: () => void;
   theme?: DrexiusTheme;
@@ -94,6 +95,7 @@ export function HostSidebar({
   onOpenShareModal,
   onOpenSshConfig,
   onOpenTailscale,
+  onOpenTermuxPreset,
   onQuickConnectSsh,
   onClose,
   theme,
@@ -280,6 +282,18 @@ export function HostSidebar({
                   <Plus className="h-3.5 w-3.5" style={{ color: accentColor }} />
                   <span>New Host profile</span>
                 </button>
+                {onOpenTermuxPreset && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onOpenTermuxPreset();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                  >
+                    <TerminalIcon className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Termux (Local :8022)</span>
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     setShowMenu(false);
