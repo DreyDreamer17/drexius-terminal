@@ -313,10 +313,21 @@ struct OpencodeToolState {
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
+struct OpencodeFileDiff {
+    file: Option<String>,
+    patch: Option<String>,
+    additions: Option<u32>,
+    deletions: Option<u32>,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct OpencodeToolMetadata {
     exit: Option<i32>,
     truncated: Option<bool>,
     title: Option<String>,
+    diff: Option<String>,
+    filediff: Option<OpencodeFileDiff>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -334,6 +345,12 @@ struct OpencodeWorkflowPayload {
     exit_code: Option<i32>,
     #[serde(rename = "duration_ms")]
     duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    additions: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deletions: Option<u32>,
     output: String,
 }
 
@@ -346,6 +363,22 @@ fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+fn count_diff_stats(diff_text: &str) -> (u32, u32) {
+    let mut adds = 0u32;
+    let mut dels = 0u32;
+    for line in diff_text.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            adds += 1;
+        } else if line.starts_with('-') {
+            dels += 1;
+        }
+    }
+    (adds, dels)
 }
 
 fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
@@ -369,7 +402,12 @@ fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
     let target = if let Some(input) = &state.input {
         if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
             cmd.to_string()
-        } else if let Some(path) = input.get("filePath").or_else(|| input.get("path")).or_else(|| input.get("file")).and_then(|v| v.as_str()) {
+        } else if let Some(path) = input
+            .get("filePath")
+            .or_else(|| input.get("path"))
+            .or_else(|| input.get("file"))
+            .and_then(|v| v.as_str())
+        {
             path.to_string()
         } else if let Some(pattern) = input.get("pattern").and_then(|v| v.as_str()) {
             pattern.to_string()
@@ -391,6 +429,74 @@ fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
     } else {
         String::new()
     };
+
+    // Extract unified diff and +/- stats from metadata or synthesize from input
+    let mut raw_diff = state
+        .metadata
+        .as_ref()
+        .and_then(|m| {
+            m.diff.clone().or_else(|| {
+                m.filediff
+                    .as_ref()
+                    .and_then(|fd| fd.patch.clone())
+            })
+        });
+
+    if raw_diff.is_none() {
+        if let Some(input) = &state.input {
+            if tool_name == "edit" || tool_name == "edit_file" {
+                let old_s = input.get("oldString").and_then(|v| v.as_str()).unwrap_or("");
+                let new_s = input.get("newString").and_then(|v| v.as_str()).unwrap_or("");
+                if !old_s.is_empty() || !new_s.is_empty() {
+                    let mut synth = String::from("@@ edit @@\n");
+                    for l in old_s.lines() {
+                        synth.push('-');
+                        synth.push_str(l);
+                        synth.push('\n');
+                    }
+                    for l in new_s.lines() {
+                        synth.push('+');
+                        synth.push_str(l);
+                        synth.push('\n');
+                    }
+                    raw_diff = Some(synth);
+                }
+            } else if tool_name == "write" || tool_name == "write_file" {
+                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
+                    let mut synth = String::from("@@ new file @@\n");
+                    for l in content.lines() {
+                        synth.push('+');
+                        synth.push_str(l);
+                        synth.push('\n');
+                    }
+                    raw_diff = Some(synth);
+                }
+            }
+        }
+    }
+
+    let (mut additions, mut deletions) = state
+        .metadata
+        .as_ref()
+        .and_then(|m| m.filediff.as_ref())
+        .map(|fd| (fd.additions, fd.deletions))
+        .unwrap_or((None, None));
+
+    if let Some(ref d) = raw_diff {
+        if additions.is_none() && deletions.is_none() {
+            let (a, del) = count_diff_stats(d);
+            additions = Some(a);
+            deletions = Some(del);
+        }
+    }
+
+    let diff = raw_diff.map(|d| {
+        if d.len() > 16000 {
+            format!("{}\n... [diff truncated at 16000 bytes] ...", safe_truncate_str(&d, 16000))
+        } else {
+            d
+        }
+    });
 
     let raw_output = if let Some(out) = &state.output {
         if let Some(s) = out.as_str() {
@@ -416,6 +522,9 @@ fn format_tool_workflow_block(part: &OpencodeJsonPart) -> Option<String> {
         status: status.to_string(),
         exit_code,
         duration_ms,
+        diff,
+        additions,
+        deletions,
         output,
     };
 
@@ -499,15 +608,17 @@ async fn emit_chunked_stream(
 // The two `__TOP_FALLBACK__` / `__BASH_FALLBACK__` slots are filled per mode:
 // autonomous runs hard-block anything unlisted; assisted runs ask (and the
 // headless `opencode run` auto-rejects asks with model-visible feedback).
-const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
+const READONLY_PERMISSION_CONFIG: &str = r#"{
     "permission": {
-        "*": "__TOP_FALLBACK__",
+        "*": "ask",
         "read": "allow",
         "glob": "allow",
         "grep": "allow",
         "question": "allow",
         "doom_loop": "ask",
         "edit": "deny",
+        "write": "deny",
+        "patch": "deny",
         "webfetch": "deny",
         "websearch": "deny",
         "task": "deny",
@@ -539,12 +650,16 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "~/.local/share/dev.drexius.terminal/*": "deny"
         },
         "bash": {
-            "*": "__BASH_FALLBACK__",
+            "*": "ask",
             "ls *": "allow",
+            "ls": "allow",
             "lsblk *": "allow",
+            "lsblk": "allow",
             "lsof *": "allow",
             "lsusb *": "allow",
+            "lsusb": "allow",
             "lscpu *": "allow",
+            "lscpu": "allow",
             "cat *": "allow",
             "head *": "allow",
             "tail *": "allow",
@@ -553,7 +668,9 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "file *": "allow",
             "du *": "allow",
             "df *": "allow",
+            "df": "allow",
             "tree *": "allow",
+            "tree": "allow",
             "grep *": "allow",
             "egrep *": "allow",
             "fgrep *": "allow",
@@ -565,12 +682,19 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "command -v *": "allow",
             "whoami": "allow",
             "id *": "allow",
+            "id": "allow",
             "date *": "allow",
+            "date": "allow",
             "uname *": "allow",
+            "uname": "allow",
             "hostname *": "allow",
+            "hostname": "allow",
             "uptime *": "allow",
+            "uptime": "allow",
             "free *": "allow",
+            "free": "allow",
             "ps *": "allow",
+            "ps": "allow",
             "top *": "allow",
             "systemctl status *": "allow",
             "systemctl is-active *": "allow",
@@ -583,24 +707,32 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
             "systemctl cat *": "allow",
             "journalctl *": "allow",
             "crontab -l *": "allow",
+            "crontab -l": "allow",
             "docker ps *": "allow",
+            "docker ps": "allow",
             "docker logs *": "allow",
             "docker inspect *": "allow",
             "docker images *": "allow",
+            "docker images": "allow",
             "docker version *": "allow",
             "docker info *": "allow",
             "docker top *": "allow",
             "git status *": "allow",
+            "git status": "allow",
             "git log *": "allow",
+            "git log": "allow",
             "git diff *": "allow",
+            "git diff": "allow",
             "git show *": "allow",
             "git blame *": "allow",
             "git rev-parse *": "allow",
             "git describe *": "allow",
             "git remote -v *": "allow",
+            "git remote -v": "allow",
             "git config --get *": "allow",
             "git config --list *": "allow",
             "git branch *": "allow",
+            "git branch": "allow",
             "echo *": "allow",
             "true": "allow",
             "false": "allow",
@@ -645,23 +777,101 @@ const PERMISSION_CONFIG_TEMPLATE: &str = r#"{
     }
 }"#;
 
+const AUTONOMOUS_PERMISSION_CONFIG: &str = r#"{
+    "permission": {
+        "*": "deny",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "question": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "patch": "allow",
+        "doom_loop": "ask",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "task": "deny",
+        "skill": "deny",
+        "lsp": "deny",
+        "external_directory": {
+            "*": "deny",
+            "/*": "allow",
+            "~/*": "allow",
+            "~/.ssh": "deny",
+            "~/.ssh/*": "deny",
+            "~/.gnupg/*": "deny",
+            "~/.aws/*": "deny",
+            "~/.kube/*": "deny",
+            "~/.docker/*": "deny",
+            "~/.password-store/*": "deny",
+            "~/.netrc": "deny",
+            "~/.git-credentials": "deny",
+            "/*/.ssh/*": "deny",
+            "/*/.gnupg/*": "deny",
+            "/*/.aws/*": "deny",
+            "/*/.kube/*": "deny",
+            "/*/.docker/*": "deny",
+            "/*/.password-store/*": "deny",
+            "/*/.netrc": "deny",
+            "/*/.git-credentials": "deny",
+            "/*/*/drexius.vault*": "deny",
+            "/*/dev.drexius.terminal/*": "deny",
+            "~/.local/share/dev.drexius.terminal/*": "deny"
+        },
+        "bash": {
+            "*": "allow",
+            "rm -rf /": "deny",
+            "rm -rf /*": "deny",
+            "rm -rf ~": "deny",
+            "rm -rf ~/*": "deny",
+            "rm -fr /": "deny",
+            "rm -fr /*": "deny",
+            "rm -fr ~": "deny",
+            "rm -fr ~/*": "deny",
+            "*--no-preserve-root*": "deny",
+            "mkfs*": "deny",
+            "wipefs*": "deny",
+            "shred *": "deny",
+            "dd *of=/dev/*": "deny",
+            "shutdown*": "deny",
+            "reboot*": "deny",
+            "poweroff*": "deny",
+            "halt*": "deny",
+            "init 0*": "deny",
+            "init 6*": "deny",
+            "*~/.ssh*": "deny",
+            "*/.ssh/*": "deny",
+            "*~/.gnupg*": "deny",
+            "*/.gnupg/*": "deny",
+            "*~/.aws*": "deny",
+            "*/.aws/*": "deny",
+            "*~/.kube*": "deny",
+            "*/.kube/*": "deny",
+            "*~/.password-store*": "deny",
+            "*~/.netrc*": "deny",
+            "*~/.git-credentials*": "deny",
+            "*drexius.vault*": "deny",
+            "*dev.drexius.terminal*": "deny"
+        }
+    }
+}"#;
+
 /// Build the OpenCode permission config as a raw JSON string (never via
 /// serde_json — its map ordering would break the last-match-wins sequence).
 fn get_permission_config(autonomous: bool) -> String {
-    let (top, bash) = if autonomous {
-        ("deny", "deny")
+    if autonomous {
+        AUTONOMOUS_PERMISSION_CONFIG.to_string()
     } else {
-        ("ask", "ask")
-    };
-    PERMISSION_CONFIG_TEMPLATE
-        .replace("__TOP_FALLBACK__", top)
-        .replace("__BASH_FALLBACK__", bash)
+        READONLY_PERMISSION_CONFIG.to_string()
+    }
 }
 
 struct OpenCodeStreamState {
     had_reasoning: bool,
     reasoning_done: bool,
+    had_output: bool,
     last_error_msg: Option<String>,
+    raw_error_lines: Vec<String>,
 }
 
 impl OpenCodeStreamState {
@@ -669,8 +879,20 @@ impl OpenCodeStreamState {
         Self {
             had_reasoning: false,
             reasoning_done: false,
+            had_output: false,
             last_error_msg: None,
+            raw_error_lines: Vec::new(),
         }
+    }
+
+    fn combined_error(&self, fallback: &str) -> String {
+        if let Some(ref err) = self.last_error_msg {
+            return err.clone();
+        }
+        if !self.raw_error_lines.is_empty() {
+            return self.raw_error_lines.join("\n");
+        }
+        fallback.to_string()
     }
 
     async fn handle_line(
@@ -684,6 +906,9 @@ impl OpenCodeStreamState {
             return Ok(true);
         }
         let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) else {
+            if self.raw_error_lines.len() < 10 {
+                self.raw_error_lines.push(trimmed.to_string());
+            }
             return Ok(true);
         };
 
@@ -692,12 +917,19 @@ impl OpenCodeStreamState {
                 if let Some(part) = parsed.part {
                     if let Some(text) = part.text {
                         if !text.is_empty() {
-                            if !self.had_reasoning {
+                            if !self.had_reasoning || self.reasoning_done {
+                                let prefix = if self.had_output {
+                                    "\n\n💭 *Thinking…*\n> "
+                                } else {
+                                    "💭 *Thinking…*\n> "
+                                };
                                 self.had_reasoning = true;
+                                self.reasoning_done = false;
                                 let _ = channel.send(AiStreamEvent::Data {
-                                    text: "💭 *Thinking…*\n> ".to_string(),
+                                    text: prefix.to_string(),
                                 });
                             }
+                            self.had_output = true;
                             let formatted = text.replace('\n', "\n> ");
                             if !emit_chunked_stream(&formatted, channel, cancel_rx).await {
                                 return Err(());
@@ -710,6 +942,7 @@ impl OpenCodeStreamState {
                 if let Some(part) = parsed.part {
                     if let Some(text) = part.text {
                         if !text.is_empty() {
+                            self.had_output = true;
                             if self.had_reasoning && !self.reasoning_done {
                                 self.reasoning_done = true;
                                 let _ = channel.send(AiStreamEvent::Data {
@@ -732,6 +965,7 @@ impl OpenCodeStreamState {
                 }
                 if let Some(part) = &parsed.part {
                     if let Some(block) = format_tool_workflow_block(part) {
+                        self.had_output = true;
                         let _ = channel.send(AiStreamEvent::Data { text: block });
                     }
                 }
@@ -743,6 +977,12 @@ impl OpenCodeStreamState {
                     } else if let Some(o) = err_val.as_object() {
                         o.get("message")
                             .and_then(|v| v.as_str())
+                            .or_else(|| {
+                                o.get("data")
+                                    .and_then(|d| d.get("message"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .or_else(|| o.get("name").and_then(|v| v.as_str()))
                             .unwrap_or("Unknown OpenCode error")
                             .to_string()
                     } else {
@@ -758,6 +998,29 @@ impl OpenCodeStreamState {
 
         Ok(true)
     }
+}
+
+/// Build a safe shell `cd` command for remote OpenCode execution that expands `~`
+/// and falls back to `$HOME` if the directory does not exist, preventing
+/// `Error: Failed to change directory to ~` when `--dir` is single-quoted.
+fn build_remote_cd_prefix(cwd: Option<&str>) -> String {
+    let Some(raw) = cwd else {
+        return String::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "~" {
+        return "cd \"$HOME\" 2>/dev/null || true; ".to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if rest.is_empty() {
+            return "cd \"$HOME\" 2>/dev/null || true; ".to_string();
+        }
+        return format!(
+            "cd \"$HOME/\"{} 2>/dev/null || true; ",
+            crate::ssh::shell_quote(rest)
+        );
+    }
+    format!("cd {} 2>/dev/null || true; ", crate::ssh::shell_quote(trimmed))
 }
 
 /// Stream OpenCode execution remotely over SSH.
@@ -794,25 +1057,18 @@ async fn opencode_stream_remote(
         .map_err(|e| format!("Failed to open remote exec channel: {}", e))?;
 
     let perm_json = get_permission_config(autonomous);
-    let dir_flag = if let Some(ref d) = cwd {
-        if !d.trim().is_empty() {
-            format!(" --dir {}", crate::ssh::shell_quote(d.trim()))
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let cd_prefix = build_remote_cd_prefix(cwd.as_deref());
 
     // No `--auto`: it would auto-approve every `ask` rule and defeat
     // `doom_loop: ask` — see PERMISSION_CONFIG_TEMPLATE.
+    // Redirect 2>&1 so CLI errors on stderr are captured and never block.
     let cmd = format!(
         "export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \
+         {cd_prefix}\
          BIN=$(command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\") || echo \"opencode\"); \
-         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure -m {}{}",
+         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure -m {} --dir \"$PWD\" 2>&1",
         crate::ssh::shell_quote(&perm_json),
         crate::ssh::shell_quote(&model),
-        dir_flag,
     );
 
     ch.exec(&cmd)
@@ -825,6 +1081,7 @@ async fn opencode_stream_remote(
         .map_err(|e| format!("Failed to send EOF to remote OpenCode stdin: {}", e))?;
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<Result<String, String>>(100);
+    let (exit_tx, exit_rx) = oneshot::channel::<i32>();
 
     let sid_short = if stream_id.len() >= 8 { &stream_id[..8] } else { &stream_id };
     std::thread::Builder::new()
@@ -852,6 +1109,10 @@ async fn opencode_stream_remote(
                     }
                 }
             }
+            let mut ch = reader.into_inner();
+            let _ = ch.wait_close();
+            let code = ch.exit_status().unwrap_or(0);
+            let _ = exit_tx.send(code);
         })
         .map_err(|e| format!("Failed to spawn reader thread: {}", e))?;
 
@@ -881,17 +1142,49 @@ async fn opencode_stream_remote(
         }
     }
 
+    let exit_code = exit_rx.await.unwrap_or(0);
+
+    if exit_code != 0 {
+        let detail = state.combined_error(&format!("process exited with code {}", exit_code));
+        return Err(format!("Remote OpenCode error ({}): {}", host.label, detail));
+    }
+
     if let Some(err) = state.last_error_msg {
         return Err(format!("Remote OpenCode error: {}", err));
+    }
+
+    if !state.had_output {
+        let detail = state.combined_error("No response returned by OpenCode CLI");
+        return Err(format!("Remote OpenCode ({}): {}", host.label, detail));
     }
 
     Ok(())
 }
 
-/// Stream OpenCode execution locally in isolated scratch workspace.
+fn resolve_local_cwd(cwd: Option<&str>) -> Option<PathBuf> {
+    let raw = cwd?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let candidate = if raw == "~" {
+        dirs::home_dir()?
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Stream OpenCode execution locally in the active local directory or isolated scratch workspace.
 async fn opencode_stream_local(
     prompt: String,
     model: String,
+    cwd: Option<String>,
     autonomous: bool,
     channel: tauri::ipc::Channel<AiStreamEvent>,
     mut cancel_rx: oneshot::Receiver<()>,
@@ -900,9 +1193,14 @@ async fn opencode_stream_local(
         "OpenCode binary not found on this system. Please verify ~/.opencode/bin/opencode or PATH.".to_string()
     })?;
 
-    let workspace = ai_workspace_dir();
-    std::fs::create_dir_all(&workspace)
-        .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", workspace.display()))?;
+    let workspace = if let Some(local_dir) = resolve_local_cwd(cwd.as_deref()) {
+        local_dir
+    } else {
+        let fallback = ai_workspace_dir();
+        std::fs::create_dir_all(&fallback)
+            .map_err(|e| format!("Failed to create OpenCode workspace {}: {e}", fallback.display()))?;
+        fallback
+    };
 
     let perm_json = get_permission_config(autonomous);
 
@@ -912,8 +1210,6 @@ async fn opencode_stream_local(
         .arg("json")
         .arg("--thinking")
         .arg("--pure");
-    // No `--auto`: it would auto-approve every `ask` rule and defeat
-    // `doom_loop: ask` — see PERMISSION_CONFIG_TEMPLATE.
     cmd.arg("-m")
         .arg(&model)
         .env("OPENCODE_CONFIG_CONTENT", &perm_json)
@@ -1005,19 +1301,31 @@ async fn opencode_stream_local(
         .await
         .map_err(|e| format!("OpenCode process wait error: {}", e))?;
 
+    let stderr_str = if let Some(task) = stderr_task {
+        task.await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     if !status.success() {
         let mut err_msg = format!("OpenCode exited with status {}", status);
-        if let Some(err_text) = state.last_error_msg {
-            err_msg = format!("{}: {}", err_msg, err_text);
-        }
-        if let Some(task) = stderr_task {
-            if let Ok(err_buf) = task.await {
-                if !err_buf.trim().is_empty() {
-                    err_msg = format!("{}: {}", err_msg, err_buf.trim());
-                }
-            }
+        let detail = state.combined_error(stderr_str.trim());
+        if !detail.is_empty() {
+            err_msg = format!("{}: {}", err_msg, detail);
         }
         return Err(err_msg);
+    }
+
+    if let Some(err_text) = state.last_error_msg {
+        return Err(format!("OpenCode error: {}", err_text));
+    }
+
+    if !state.had_output {
+        let detail = state.combined_error(stderr_str.trim());
+        if !detail.is_empty() {
+            return Err(format!("OpenCode error: {}", detail));
+        }
+        return Err("OpenCode returned an empty response.".to_string());
     }
 
     Ok(())
@@ -1081,6 +1389,7 @@ pub async fn opencode_stream(
         }
     }
 
-    // Fall back to local OpenCode execution
-    opencode_stream_local(prompt, model, autonomous, channel, cancel_rx).await
+    // Fall back to local OpenCode execution (only pass `cwd` if the target was already local)
+    let local_cwd = if target_host_id.is_none() { cwd } else { None };
+    opencode_stream_local(prompt, model, local_cwd, autonomous, channel, cancel_rx).await
 }

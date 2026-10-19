@@ -17,6 +17,7 @@ import {
   Plus,
   Check,
   ChevronDown,
+  ChevronRight,
   Layers,
   Scale,
   ShieldCheck,
@@ -32,8 +33,6 @@ import {
   Mic,
   ArrowUp,
   CheckCircle2,
-  FileCode,
-  FilePlus,
 } from 'lucide-react';
 import {
   chatStreamMultiProvider,
@@ -291,13 +290,13 @@ export function AIPanel({
     const next = !opencodeAutonomous;
     if (next && !(await confirmDialog({
       title: 'Enable autonomous OpenCode mode?',
-      message: 'The agent will run shell commands and tools without asking, inside ~/DrexiusTerminal/ai-workspace. Common destructive commands are denied, but this is not a sandbox.',
-      confirmLabel: 'Enable',
+      message: 'OpenCode will be allowed to edit and create files, apply patches, and run general shell commands in your active directory. Sensitive credential folders (~/.ssh, ~/.aws, etc.) and destructive commands remain blocked.',
+      confirmLabel: 'Enable Autonomous',
       danger: true,
     }))) return;
     setOpencodeAutonomous(next);
     localStorage.setItem(OPENCODE_AUTONOMOUS_KEY, String(next));
-    toast(next ? 'Autonomous OpenCode mode ON' : 'Autonomous OpenCode mode off');
+    toast(next ? 'Autonomous mode ON (file edits & commands enabled)' : 'Read-only mode ON');
   };
   const attachMenuRef = useRef<HTMLDivElement>(null);
 
@@ -1259,9 +1258,16 @@ export function AIPanel({
         flushTimer = null;
       }
 
+      const wasAborted = abortRef.current?.signal.aborted;
+      const finalContent = acc.trim()
+        ? acc
+        : wasAborted
+        ? '*(Generation stopped)*'
+        : `⚠️ No response received from ${activeConfig.name} (${effectiveCfg.selectedModel}).`;
+
       const finalMsg: Msg = {
         role: 'assistant',
-        content: acc,
+        content: finalContent,
         modelUsed: effectiveCfg.selectedModel,
         keyUsed: usedKeyMask,
         proxyUsed: usedProxyMask,
@@ -1276,7 +1282,20 @@ export function AIPanel({
         flushTimer = null;
       }
       const err = e instanceof Error ? e : new Error(typeof e === 'string' ? e : (e as Error)?.message || String(e));
-      if (err.name !== 'AbortError') {
+      if (err.name === 'AbortError' || abortRef.current?.signal.aborted) {
+        const stoppedMsgs: Msg[] = [
+          ...history,
+          {
+            role: 'assistant',
+            content: acc.trim() ? acc : '*(Generation stopped)*',
+            modelUsed: effectiveCfg.selectedModel,
+            keyUsed: usedKeyMask,
+            proxyUsed: usedProxyMask,
+          },
+        ];
+        setMsgs(stoppedMsgs);
+        msgsRef.current = stoppedMsgs;
+      } else {
         const errMsgs: Msg[] = [
           ...history,
           {
@@ -2279,8 +2298,10 @@ export function AIPanel({
                     {m.offline && <span className="text-amber-400/80">offline heuristic</span>}
                   </div>
                 </div>
-              ) : (
+              ) : busy && i === msgs.length - 1 ? (
                 <Dots />
+              ) : (
+                <span className="italic text-slate-500">*(No response received)*</span>
               )
             ) : (
               m.content
@@ -2371,8 +2392,8 @@ export function AIPanel({
                     type="button"
                     onClick={toggleOpencodeAutonomous}
                     title={opencodeAutonomous
-                      ? `Autonomous: OpenCode may run commands without asking on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
-                      : 'Read-only: OpenCode cannot edit files or run shell commands'}
+                      ? `Autonomous: OpenCode can edit/write files and run commands on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
+                      : 'Read-only: OpenCode can inspect files and run safe read-only commands, but cannot edit files or run mutating commands'}
                     className={cn(
                       'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition cursor-pointer',
                       opencodeAutonomous ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:bg-white/5'
@@ -3053,7 +3074,35 @@ function renderMarkdownText(text: string): React.ReactNode {
       continue;
     }
 
-    // 4. Blockquote
+    // 4. Chain-of-Thought / Thinking Block (auto-collapsed by default)
+    if (trimmed.startsWith('💭') && /thinking/i.test(trimmed)) {
+      const startIdx = i;
+      i++;
+      while (i < lines.length && !lines[i].trim()) {
+        i++;
+      }
+      const quoteLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith('>')) {
+        quoteLines.push(lines[i].trim().replace(/^>\s*/, ''));
+        i++;
+      }
+      // Consume optional blank lines and the trailing `---` separator emitted when thinking finishes
+      let lookahead = i;
+      while (lookahead < lines.length && !lines[lookahead].trim()) {
+        lookahead++;
+      }
+      let isDone = false;
+      if (lookahead < lines.length && /^(?:---|\*\*\*|___)\s*$/.test(lines[lookahead].trim())) {
+        isDone = true;
+        i = lookahead + 1;
+      } else if (lookahead < lines.length) {
+        isDone = true;
+      }
+      elements.push(<ThinkingBlock key={`think-${startIdx}`} lines={quoteLines} done={isDone} />);
+      continue;
+    }
+
+    // 5. Blockquote
     if (trimmed.startsWith('>')) {
       const quoteLines: string[] = [];
       while (i < lines.length && lines[i].trim().startsWith('>')) {
@@ -3070,7 +3119,7 @@ function renderMarkdownText(text: string): React.ReactNode {
       continue;
     }
 
-    // 5. Unordered List
+    // 6. Unordered List
     if (/^[-*+]\s+/.test(trimmed)) {
       const items: string[] = [];
       while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
@@ -3089,7 +3138,7 @@ function renderMarkdownText(text: string): React.ReactNode {
       continue;
     }
 
-    // 6. Ordered List
+    // 7. Ordered List
     if (/^\d+\.\s+/.test(trimmed)) {
       const items: string[] = [];
       while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
@@ -3108,11 +3157,12 @@ function renderMarkdownText(text: string): React.ReactNode {
       continue;
     }
 
-    // 7. Regular Paragraph (gather lines until next block element or blank line)
+    // 8. Regular Paragraph (gather lines until next block element or blank line)
     const pLines: string[] = [];
     while (
       i < lines.length &&
       lines[i].trim() &&
+      !(lines[i].trim().startsWith('💭') && /thinking/i.test(lines[i].trim())) &&
       !lines[i].trim().match(/^#{1,6}\s+/) &&
       !lines[i].trim().match(/^[-*+]\s+/) &&
       !lines[i].trim().match(/^\d+\.\s+/) &&
@@ -3141,6 +3191,63 @@ function renderMarkdownText(text: string): React.ReactNode {
   return <>{elements}</>;
 }
 
+function ThinkingBlock({
+  lines,
+  done,
+}: {
+  lines: string[];
+  done: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isInitialDone = useRef(done);
+  const startTimeRef = useRef<number>(Date.now());
+  const [seconds, setSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (isInitialDone.current) return;
+    if (!done) {
+      const timer = setInterval(() => {
+        setSeconds(Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000)));
+      }, 1000);
+      return () => clearInterval(timer);
+    } else if (seconds === null) {
+      setSeconds(Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000)));
+    }
+  }, [done, seconds]);
+
+  const label = !done
+    ? (seconds ? `Thinking for ${seconds}s` : 'Thinking…')
+    : (seconds ? `Thought for ${seconds}s` : 'Thought process');
+
+  const nonEmptyLines = lines.filter((l) => l.trim().length > 0);
+
+  return (
+    <div className="my-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="group inline-flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer select-none py-0.5"
+        title={expanded ? 'Collapse thoughts' : 'Expand thoughts'}
+      >
+        <span>{label}</span>
+        <ChevronRight
+          className={cn(
+            'h-3 w-3 text-slate-500 group-hover:text-slate-300 transition-transform duration-150',
+            expanded && 'rotate-90'
+          )}
+        />
+      </button>
+      {expanded && nonEmptyLines.length > 0 && (
+        <div className="mt-1 pl-3 border-l-2 border-slate-700/60 text-slate-400 text-xs leading-relaxed space-y-1 select-text">
+          {lines.map((ql, qli) => (
+            <div key={qli}>{ql ? renderInline(ql) : <br />}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface OpenCodeWorkflowData {
   tool: string;
   target: string;
@@ -3148,6 +3255,9 @@ interface OpenCodeWorkflowData {
   exit_code?: number | null;
   duration_ms?: number | null;
   output: string;
+  diff?: string | null;
+  additions?: number | null;
+  deletions?: number | null;
 }
 
 function OpenCodeWorkflowCard({
@@ -3159,155 +3269,182 @@ function OpenCodeWorkflowCard({
 }) {
   const isBash = data.tool === 'bash';
   const isRead = data.tool === 'read' || data.tool === 'read_file';
-  const isEdit = data.tool === 'edit' || data.tool === 'edit_file';
+  const isEdit =
+    data.tool === 'edit' ||
+    data.tool === 'edit_file' ||
+    data.tool === 'patch' ||
+    data.tool === 'apply_patch' ||
+    data.tool === 'multiedit';
   const isWrite = data.tool === 'write' || data.tool === 'write_file';
   const isError =
     data.status === 'error' ||
     data.status === 'failed' ||
     (typeof data.exit_code === 'number' && data.exit_code !== 0);
 
-  // Auto-expand on error or when bash command produced concise output (<= 14 lines)
-  const outputLines = data.output ? data.output.trim().split('\n').length : 0;
-  const [expanded, setExpanded] = useState(isError || (isBash && outputLines > 0 && outputLines <= 14));
+  const hasDiff = Boolean(data.diff && data.diff.trim());
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
-    bridge.writeClipboard(data.output || data.target);
+    bridge.writeClipboard(data.diff || data.output || data.target);
     setCopied(true);
-    toast('Output copied to clipboard');
+    toast(hasDiff ? 'Diff copied to clipboard' : 'Output copied to clipboard');
     setTimeout(() => setCopied(false), 1500);
   };
-
-  const toolIcon = isBash ? (
-    <TermIcon className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
-  ) : isRead ? (
-    <BookOpen className="h-3.5 w-3.5 text-blue-400 shrink-0" />
-  ) : isEdit ? (
-    <FileCode className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-  ) : isWrite ? (
-    <FilePlus className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-  ) : (
-    <TermIcon className="h-3.5 w-3.5 text-purple-400 shrink-0" />
-  );
 
   const titlePrefix = isBash
     ? 'Executed'
     : isRead
-    ? 'Read file'
+    ? 'Read'
     : isEdit
-    ? 'Edited file'
+    ? 'Edited'
     : isWrite
-    ? 'Wrote file'
-    : `Ran ${data.tool}`;
+    ? 'Wrote'
+    : 'Ran';
 
   const cleanTarget = (data.target || '').trim();
   const isFileTool = isRead || isEdit || isWrite;
   const pathParts = cleanTarget.split(/[/\\]/);
   const fileName = isFileTool && pathParts.length > 1 ? pathParts[pathParts.length - 1] : cleanTarget;
-  const dirPath = isFileTool && pathParts.length > 1 ? pathParts.slice(0, -1).join('/') : '';
+
+  const diffLines: string[] = (() => {
+    if (!data.diff) return [];
+    const raw = data.diff.replace(/\r\n/g, '\n').split('\n');
+    const filtered = raw.filter(
+      (line) =>
+        !line.startsWith('Index: ') &&
+        !line.startsWith('===') &&
+        !line.startsWith('--- ') &&
+        !line.startsWith('+++ ') &&
+        !line.startsWith('\\ No newline')
+    );
+    return filtered.length > 0 ? filtered : raw;
+  })();
+
+  const hoverTitle = [
+    `${titlePrefix} ${cleanTarget}`,
+    typeof data.exit_code === 'number' ? `exit ${data.exit_code}` : null,
+    typeof data.duration_ms === 'number' ? `${data.duration_ms}ms` : null,
+    expanded ? 'click to collapse' : 'click to expand',
+  ]
+    .filter(Boolean)
+    .join(' • ');
 
   return (
-    <div className={cn(
-      "my-2.5 overflow-hidden rounded-xl border bg-[#0c1017] shadow-lg transition",
-      isError ? "border-rose-500/30" : "border-white/10"
-    )}>
-      {/* Header Bar */}
-      <div
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center justify-between gap-2 px-3 py-2 bg-white/[0.03] hover:bg-white/[0.06] cursor-pointer transition select-none border-b border-white/5"
+    <div className="my-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="group inline-flex flex-wrap items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer select-none py-0.5 text-left"
+        title={hoverTitle}
       >
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          {toolIcon}
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 text-xs">
-            <span className="text-slate-400 font-medium shrink-0">{titlePrefix}:</span>
-            <span className="font-mono font-semibold text-slate-100 truncate flex items-center gap-1" title={cleanTarget}>
-              {isFileTool && dirPath ? (
-                <>
-                  <span className="text-cyan-200 shrink-0">{fileName}</span>
-                  <span className="text-[10px] font-normal text-slate-400 opacity-75 truncate max-w-[200px] sm:max-w-[280px]">
-                    ({dirPath})
-                  </span>
-                </>
-              ) : (
-                cleanTarget
-              )}
-            </span>
-          </div>
-        </div>
+        <span className="text-slate-400">{titlePrefix}</span>
 
-        <div className="flex items-center gap-2 shrink-0">
-          {typeof data.duration_ms === 'number' && (
-            <span className="text-[10px] font-mono text-slate-500">
-              {data.duration_ms}ms
-            </span>
-          )}
-          {typeof data.exit_code === 'number' && (
-            <span
-              className={cn(
-                'rounded px-1.5 py-0.2 text-[9.5px] font-mono font-semibold border',
-                data.exit_code === 0
-                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                  : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
-              )}
-            >
-              exit {data.exit_code}
-            </span>
-          )}
-          <span
-            className={cn(
-              'flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold border',
-              isError
-                ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-            )}
-          >
-            {isError ? (
-              <>
-                <AlertCircle className="h-2.5 w-2.5" /> Failed
-              </>
-            ) : (
-              <>
-                <Check className="h-2.5 w-2.5" /> Completed
-              </>
-            )}
+        <span className="font-mono text-slate-200 font-medium truncate max-w-[260px] sm:max-w-[400px]">
+          {isFileTool ? fileName : cleanTarget}
+        </span>
+
+        {(hasDiff || isEdit || isWrite) && (
+          <span className="text-[10.5px] font-mono text-amber-300/80">
+            diff
           </span>
-          <ChevronDown
-            className={cn('h-3.5 w-3.5 text-slate-400 transition-transform duration-200', expanded && 'rotate-180')}
-          />
-        </div>
-      </div>
+        )}
 
-      {/* Expandable Output Drawer */}
+        {(typeof data.additions === 'number' || typeof data.deletions === 'number') && (
+          <span className="text-[10px] font-mono">
+            <span className="text-emerald-400">+{data.additions ?? 0}</span>
+            <span className="text-slate-600">/</span>
+            <span className="text-rose-400">-{data.deletions ?? 0}</span>
+          </span>
+        )}
+
+        {isError ? (
+          <X className="h-3 w-3 text-rose-400 shrink-0" />
+        ) : (
+          <Check className="h-3 w-3 text-emerald-400 shrink-0" />
+        )}
+
+        <ChevronRight
+          className={cn(
+            'h-3 w-3 text-slate-500 group-hover:text-slate-300 transition-transform duration-150 shrink-0',
+            expanded && 'rotate-90'
+          )}
+        />
+      </button>
+
+      {/* Expandable Output / Diff Drawer */}
       {expanded && (
-        <div className="relative border-t border-black/40 bg-[#06080d]">
-          <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-3 py-1.5 text-[10.5px]">
-            <span className="font-mono text-slate-400 font-semibold uppercase tracking-wider">
-              {isBash ? 'Terminal Output' : isError ? 'Error Detail' : 'Tool Result'}
+        <div className="mt-1 mb-2 overflow-hidden rounded-lg border border-white/10 bg-[#06080d] shadow-md text-xs">
+          <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-2.5 py-1 text-[10.5px]">
+            <span className="font-mono text-slate-400 font-medium uppercase tracking-wider text-[9.5px]">
+              {hasDiff ? 'File Diff' : isBash ? 'Terminal Output' : isError ? 'Error Detail' : 'Tool Result'}
             </span>
             <button
               type="button"
               onClick={copy}
-              className="flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
             >
               {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-              <span>{copied ? 'Copied' : 'Copy'}</span>
+              <span>{copied ? 'Copied' : hasDiff ? 'Copy Diff' : 'Copy'}</span>
             </button>
           </div>
-          <pre
-            className={cn(
-              'max-h-80 overflow-x-auto overflow-y-auto p-3 font-mono text-[11px] leading-relaxed selection:bg-cyan-500/30',
-              isError ? 'text-rose-300 bg-rose-950/20' : 'text-slate-300'
-            )}
-          >
-            {data.output && data.output.trim() ? (
-              data.output
-            ) : (
-              <span className="italic text-slate-500">
-                {isError ? '(operation failed with no error output)' : '(no output produced)'}
-              </span>
-            )}
-          </pre>
+          {hasDiff ? (
+            <div className="max-h-96 overflow-x-auto overflow-y-auto py-1 font-mono text-[11px] leading-relaxed selection:bg-cyan-500/30">
+              {diffLines.map((line, idx) => {
+                if (line.startsWith('@@')) {
+                  return (
+                    <div
+                      key={idx}
+                      className="bg-cyan-500/10 text-cyan-300/80 px-2.5 py-0.5 text-[10px] border-y border-cyan-500/15 select-none whitespace-pre"
+                    >
+                      {line}
+                    </div>
+                  );
+                }
+                if (line.startsWith('+')) {
+                  return (
+                    <div
+                      key={idx}
+                      className="bg-emerald-500/15 text-emerald-200 border-l-2 border-emerald-400 px-2 py-0.5 whitespace-pre"
+                    >
+                      {line}
+                    </div>
+                  );
+                }
+                if (line.startsWith('-')) {
+                  return (
+                    <div
+                      key={idx}
+                      className="bg-rose-500/15 text-rose-200 border-l-2 border-rose-400 px-2 py-0.5 whitespace-pre"
+                    >
+                      {line}
+                    </div>
+                  );
+                }
+                return (
+                  <div key={idx} className="text-slate-400 px-2.5 py-0.5 whitespace-pre">
+                    {line || ' '}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <pre
+              className={cn(
+                'max-h-80 overflow-x-auto overflow-y-auto p-2.5 font-mono text-[11px] leading-relaxed selection:bg-cyan-500/30',
+                isError ? 'text-rose-300 bg-rose-950/20' : 'text-slate-300'
+              )}
+            >
+              {data.output && data.output.trim() ? (
+                data.output
+              ) : (
+                <span className="italic text-slate-500">
+                  {isError ? '(operation failed with no error output)' : '(no output produced)'}
+                </span>
+              )}
+            </pre>
+          )}
         </div>
       )}
     </div>
