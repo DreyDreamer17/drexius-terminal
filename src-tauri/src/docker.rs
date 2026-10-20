@@ -76,7 +76,7 @@ fn exec_on_target(
 }
 
 /// Lists all Docker containers (running and stopped) on the target host.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn docker_list_containers(
     host_id: String,
     vault: State<'_, Vault>,
@@ -121,7 +121,7 @@ pub fn docker_list_containers(
 }
 
 /// Executes a container lifecycle action (start, stop, restart, pause, unpause).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn docker_container_action(
     host_id: String,
     container_id: String,
@@ -138,7 +138,7 @@ pub fn docker_container_action(
 }
 
 /// Fetches the last N lines of logs for a container.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn docker_container_logs(
     host_id: String,
     container_id: String,

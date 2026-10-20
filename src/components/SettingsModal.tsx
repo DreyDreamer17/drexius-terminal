@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { useMobile } from '../hooks/useMobile';
 import {
   Settings,
   Sliders,
@@ -25,6 +26,8 @@ import {
   Rows2,
   Minus,
   Plus,
+  PanelBottom,
+  Terminal,
 } from 'lucide-react';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import {
@@ -35,6 +38,7 @@ import {
 } from '../lib/settings';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { CustomSelect } from './CustomSelect';
+import { ToggleSwitch } from './ToggleSwitch';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -70,7 +74,7 @@ interface Props {
   toast: (msg: string) => void;
 }
 
-type SettingsTab = 'general' | 'shortcuts' | 'appearance' | 'security' | 'sync';
+type SettingsTab = 'general' | 'shortcuts' | 'appearance' | 'security' | 'sync' | 'terminal';
 
 export function SettingsModal({
   onClose,
@@ -104,8 +108,42 @@ export function SettingsModal({
   onRequestStoragePermission,
   toast,
 }: Props) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const mobile = useMobile();
+
+  const availableTabs = useMemo(() => {
+    if (mobile) {
+      return [
+        { id: 'appearance' as SettingsTab, label: 'Appearance', icon: Palette },
+        { id: 'terminal' as SettingsTab, label: 'Terminal', icon: Terminal },
+        { id: 'security' as SettingsTab, label: 'Security', icon: Shield },
+        { id: 'sync' as SettingsTab, label: 'Sync & Mesh', icon: RefreshCw },
+      ];
+    }
+    return [
+      { id: 'general' as SettingsTab, label: 'Customization', icon: Sliders },
+      { id: 'shortcuts' as SettingsTab, label: 'Shortcuts', icon: Keyboard },
+      { id: 'appearance' as SettingsTab, label: 'Appearance', icon: Palette },
+      { id: 'security' as SettingsTab, label: 'Security', icon: Shield },
+      { id: 'sync' as SettingsTab, label: 'Sync & Mesh', icon: RefreshCw },
+    ];
+  }, [mobile]);
+
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => (mobile ? 'appearance' : 'general'));
+
+  useEffect(() => {
+    if (mobile && (activeTab === 'general' || activeTab === 'shortcuts')) {
+      setActiveTab('appearance');
+    }
+  }, [mobile]);
+
   const [editingShortcutId, setEditingShortcutId] = useState<string | null>(null);
+  const [recordedKeys, setRecordedKeys] = useState<string>('');
+  const tabListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const activeBtn = tabListRef.current?.querySelector<HTMLButtonElement>('[data-active="true"]');
+    activeBtn?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }, [activeTab]);
 
   const activeTheme =
     theme || THEMES.find((t) => t.id === themeId) || THEMES[0];
@@ -121,11 +159,9 @@ export function SettingsModal({
     e.preventDefault();
     e.stopPropagation();
 
-    // Ignore solitary modifier presses
-    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
-
     if (e.key === 'Escape') {
       setEditingShortcutId(null);
+      setRecordedKeys('');
       return;
     }
 
@@ -134,9 +170,24 @@ export function SettingsModal({
     if (e.altKey) parts.push('Alt');
     if (e.shiftKey) parts.push('Shift');
 
+    // While only modifier keys (Control, Shift, Alt, Meta) are held down, update visual feedback
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+      setRecordedKeys(parts.join('+'));
+      return;
+    }
+
     let keyPart = e.key;
-    if (keyPart === ' ') keyPart = 'Space';
-    else if (keyPart.length === 1) keyPart = keyPart.toUpperCase();
+    if (keyPart === ' ') {
+      keyPart = 'Space';
+    } else if (keyPart.startsWith('Arrow')) {
+      // Keep ArrowLeft, ArrowRight, ArrowUp, ArrowDown
+    } else if (e.code && e.code.startsWith('Key')) {
+      keyPart = e.code.slice(3).toUpperCase();
+    } else if (e.code && e.code.startsWith('Digit')) {
+      keyPart = e.code.slice(5);
+    } else if (keyPart.length === 1) {
+      keyPart = keyPart.toUpperCase();
+    }
 
     parts.push(keyPart);
     const newKeyCombo = parts.join('+');
@@ -150,7 +201,18 @@ export function SettingsModal({
     };
     onShortcutsChange(next);
     setEditingShortcutId(null);
-    toast(`Shortcut updated: ${shortcuts[id]?.label} → ${newKeyCombo}`);
+    setRecordedKeys('');
+    toast(`Shortcut updated: ${shortcuts[id]?.label || id} → ${newKeyCombo}`);
+  };
+
+  const handleShortcutKeyUp = (e: React.KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const parts: string[] = [];
+    if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    setRecordedKeys(parts.join('+'));
   };
 
   const resetShortcutsToDefault = () => {
@@ -174,13 +236,22 @@ export function SettingsModal({
 
   return (
     <ResponsiveOverlay
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 max-md:p-0 max-md:items-end backdrop-blur-sm"
+      portal
+      className={cn(
+        "fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm",
+        mobile ? "!p-0 !items-stretch !justify-stretch !inset-0 !top-0 !h-[100dvh]" : "p-4"
+      )}
       onClose={onClose}
       label="General Settings"
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="nx-sheet relative flex flex-col w-full max-w-3xl max-h-[85vh] max-md:max-h-[92dvh] rounded-2xl border shadow-2xl overflow-hidden text-slate-200"
+        className={cn(
+          "relative flex flex-col w-full text-slate-200 overflow-hidden shadow-2xl transition-all",
+          mobile
+            ? "h-[100dvh] max-h-[100dvh] rounded-none border-none"
+            : "nx-sheet max-w-4xl max-h-[85vh] rounded-2xl border"
+        )}
         style={
           {
             backgroundColor: bgColor,
@@ -189,7 +260,7 @@ export function SettingsModal({
           } as React.CSSProperties
         }
       >
-        <SheetHandle onClose={onClose} />
+        {!mobile && <SheetHandle onClose={onClose} />}
 
         {/* Ambient Top Glow */}
         <div
@@ -200,7 +271,10 @@ export function SettingsModal({
         />
 
         {/* Header */}
-        <div className="relative border-b border-white/10 px-4 sm:px-6 py-3.5 shrink-0 bg-white/[0.02]">
+        <div className={cn(
+          "relative border-b border-white/10 shrink-0 bg-white/[0.02]",
+          mobile ? "px-4 pt-[calc(0.75rem+env(safe-area-inset-top,0px))] pb-3" : "px-4 sm:px-6 py-3.5"
+        )}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div
@@ -217,50 +291,67 @@ export function SettingsModal({
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-base sm:text-lg font-semibold tracking-wide text-white">
-                    General Settings
+                    Settings
                   </h2>
-                  <span
-                    className="rounded-full px-2 py-0.5 text-[10px] font-semibold border"
-                    style={{
-                      backgroundColor: `${accentColor}15`,
-                      borderColor: `${accentColor}30`,
-                      color: accentColor,
-                    }}
-                  >
-                    Customization & Splits
-                  </span>
+                  {!mobile && (
+                    <span
+                      className="rounded-full px-2 py-0.5 text-[10px] font-semibold border"
+                      style={{
+                        backgroundColor: `${accentColor}15`,
+                        borderColor: `${accentColor}30`,
+                        color: accentColor,
+                      }}
+                    >
+                      Customization & Splits
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400">
-                  Configure UI visibility, keyboard splits, terminal behavior, and security
+                  {mobile
+                    ? 'Theme colors, font size, terminal behavior, security and sync'
+                    : 'Configure UI visibility, keyboard splits, terminal behavior, and security'}
                 </p>
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition"
-              title="Close Settings"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            {mobile ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-bold text-black transition shadow active:scale-95 cursor-pointer"
+                style={{ backgroundColor: accentColor }}
+              >
+                Done
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+                title="Close Settings"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
 
           {/* Navigation Tabs */}
-          <div className="flex items-center gap-1.5 mt-3.5 overflow-x-auto no-scrollbar">
-            {[
-              { id: 'general', label: 'UI Customization', icon: Sliders },
-              { id: 'shortcuts', label: 'Shortcuts & Splits', icon: Keyboard },
-              { id: 'appearance', label: 'Appearance & Themes', icon: Palette },
-              { id: 'security', label: 'Security & Vault', icon: Shield },
-              { id: 'sync', label: 'Sync & Integrations', icon: RefreshCw },
-            ].map((tab) => {
+          <div
+            ref={tabListRef}
+            className="flex items-center gap-1.5 mt-3.5 overflow-x-auto no-scrollbar scroll-smooth px-0.5"
+          >
+            {availableTabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
-                  onClick={() => setActiveTab(tab.id as SettingsTab)}
+                  type="button"
+                  data-active={isActive}
+                  onClick={(e) => {
+                    setActiveTab(tab.id);
+                    e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+                  }}
                   className={cn(
                     'flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition shrink-0 border select-none',
                     isActive
@@ -286,153 +377,348 @@ export function SettingsModal({
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-          {/* TAB 1: UI CUSTOMIZATION & GENERAL */}
-          {activeTab === 'general' && (
-            <div className="space-y-6">
-              {/* Feature Visibility Toggles */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      UI Element Visibility
-                    </h3>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Hide features you do not use for a clean, minimal terminal workspace (like Ghostty)
-                    </p>
+        <div className={cn(
+          "flex-1 overflow-y-auto",
+          mobile ? "p-4 space-y-4 pb-[calc(2.5rem+env(safe-area-inset-bottom,0px))]" : "p-4 sm:p-6 space-y-6"
+        )}>
+          {/* TAB 1: UI CUSTOMIZATION (DESKTOP) & TERMINAL BEHAVIOR (BOTH) */}
+          {(activeTab === 'general' || activeTab === 'terminal') && (
+            <div className={cn(mobile ? "space-y-4" : "space-y-6")}>
+              {/* Feature Visibility Toggles (Desktop only) */}
+              {!mobile && (
+                <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">
+                        UI Element Visibility
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Hide features you do not use for a clean, minimal terminal workspace
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetUiPrefsToDefault}
+                      className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Reset</span>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={resetUiPrefsToDefault}
-                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    <span>Reset</span>
-                  </button>
-                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   {/* Serial Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showSerial}
-                      onChange={(e) => updatePref('showSerial', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Radio className="h-3.5 w-3.5 text-amber-400" />
-                        <span className="text-xs font-semibold text-white">Hardware Serial Terminal</span>
+                  <div
+                    onClick={() => updatePref('showSerial', !uiPrefs.showSerial)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showSerial
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showSerial ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Radio className="h-4 w-4 text-amber-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        UART & RS-232 connection button in toolbar and hosts sidebar
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Hardware Serial Terminal</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          UART & RS-232 connection button in toolbar and hosts sidebar
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showSerial}
+                      onChange={(val) => updatePref('showSerial', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
 
                   {/* Docker Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showDocker}
-                      onChange={(e) => updatePref('showDocker', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Boxes className="h-3.5 w-3.5 text-cyan-400" />
-                        <span className="text-xs font-semibold text-white">Docker Containers</span>
+                  <div
+                    onClick={() => updatePref('showDocker', !uiPrefs.showDocker)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showDocker
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showDocker ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Boxes className="h-4 w-4 text-cyan-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Container explorer and logs monitor in top bar and rail
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Docker Containers</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Container explorer and logs monitor in top bar and rail
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showDocker}
+                      onChange={(val) => updatePref('showDocker', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
 
                   {/* AI Assistant Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showAi}
-                      onChange={(e) => updatePref('showAi', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="h-3.5 w-3.5 text-fuchsia-400" />
-                        <span className="text-xs font-semibold text-white">AI Copilot Assistant</span>
+                  <div
+                    onClick={() => updatePref('showAi', !uiPrefs.showAi)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showAi
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showAi ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Sparkles className="h-4 w-4 text-fuchsia-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Multi-provider AI relay workspace side drawer
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">AI Copilot Assistant</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Multi-provider AI relay workspace side drawer and top bar button
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showAi}
+                      onChange={(val) => updatePref('showAi', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
 
                   {/* SFTP Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showSftp}
-                      onChange={(e) => updatePref('showSftp', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <HardDrive className="h-3.5 w-3.5 text-emerald-400" />
-                        <span className="text-xs font-semibold text-white">SFTP File Browser</span>
+                  <div
+                    onClick={() => updatePref('showSftp', !uiPrefs.showSftp)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showSftp
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showSftp ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <HardDrive className="h-4 w-4 text-emerald-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Dual-pane graphical SFTP browser button in title bar
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">SFTP File Browser</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Dual-pane graphical SFTP browser button in title bar
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showSftp}
+                      onChange={(val) => updatePref('showSftp', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
 
                   {/* Snippets Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showSnippets}
-                      onChange={(e) => updatePref('showSnippets', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Code2 className="h-3.5 w-3.5 text-indigo-400" />
-                        <span className="text-xs font-semibold text-white">Snippets & Scripts</span>
+                  <div
+                    onClick={() => updatePref('showSnippets', !uiPrefs.showSnippets)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showSnippets
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showSnippets ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Code2 className="h-4 w-4 text-indigo-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Quick script snippets manager in sidebar rail
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Snippets & Scripts</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Quick script snippets manager in sidebar rail
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showSnippets}
+                      onChange={(val) => updatePref('showSnippets', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
 
                   {/* Tunnels Toggle */}
-                  <label className="flex items-start gap-3 rounded-lg border border-white/5 bg-white/[0.02] p-3 hover:bg-white/[0.04] cursor-pointer transition">
-                    <input
-                      type="checkbox"
-                      checked={uiPrefs.showTunnels}
-                      onChange={(e) => updatePref('showTunnels', e.target.checked)}
-                      className="mt-0.5 rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Network className="h-3.5 w-3.5 text-amber-400" />
-                        <span className="text-xs font-semibold text-white">Port Forwarding & Tunnels</span>
+                  <div
+                    onClick={() => updatePref('showTunnels', !uiPrefs.showTunnels)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showTunnels
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showTunnels ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Network className="h-4 w-4 text-amber-400" />
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Local, remote, and dynamic SOCKS5 tunnel manager
-                      </p>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Port Forwarding & Tunnels</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Local, remote, and dynamic SOCKS5 tunnel manager
+                        </p>
+                      </div>
                     </div>
-                  </label>
+                    <ToggleSwitch
+                      checked={uiPrefs.showTunnels}
+                      onChange={(val) => updatePref('showTunnels', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Local Shell Toggle */}
+                  <div
+                    onClick={() => updatePref('showLocalTerminal', !uiPrefs.showLocalTerminal)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showLocalTerminal
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showLocalTerminal ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Terminal className="h-4 w-4 text-cyan-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Local Shell (Top Bar)</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Quick local terminal launcher button in the top header
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showLocalTerminal}
+                      onChange={(val) => updatePref('showLocalTerminal', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Theme Switcher Toggle */}
+                  <div
+                    onClick={() => updatePref('showThemeButton', !uiPrefs.showThemeButton)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showThemeButton
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showThemeButton ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Palette className="h-4 w-4 text-purple-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Theme Switcher (Top Bar)</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Palette icon button for quick theme/font adjustments in the top header
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showThemeButton}
+                      onChange={(val) => updatePref('showThemeButton', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Status Bar Toggle Button */}
+                  <div
+                    onClick={() => updatePref('showStatusBarToggle', !uiPrefs.showStatusBarToggle)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showStatusBarToggle
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showStatusBarToggle ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <PanelBottom className="h-4 w-4 text-blue-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Status Bar Quick Toggle (Top Bar)</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Header button to quickly show or hide the bottom status bar
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showStatusBarToggle}
+                      onChange={(val) => updatePref('showStatusBarToggle', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
                 </div>
               </div>
+              )}
 
               {/* Terminal Behavior */}
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-white">
-                  Terminal Behavior & Emulation
-                </h3>
+                <div>
+                  <h3 className="text-sm font-semibold text-white">
+                    {mobile ? 'Terminal & Shell Behavior' : 'Terminal Behavior & Emulation'}
+                  </h3>
+                  {mobile && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Configure command suggestions, cursor animation, and scrollback history
+                    </p>
+                  )}
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {/* Cursor Style */}
@@ -464,15 +750,20 @@ export function SettingsModal({
                     <label className="text-xs font-medium text-slate-300">
                       Cursor Animation
                     </label>
-                    <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 cursor-pointer">
-                      <span className="text-xs text-slate-300">Blinking Cursor</span>
-                      <input
-                        type="checkbox"
+                    <div
+                      onClick={() => updatePref('cursorBlink', !uiPrefs.cursorBlink)}
+                      className={cn(
+                        'flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer transition select-none',
+                        uiPrefs.cursorBlink ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <span className="text-xs font-medium text-white">Blinking Cursor</span>
+                      <ToggleSwitch
                         checked={uiPrefs.cursorBlink}
-                        onChange={(e) => updatePref('cursorBlink', e.target.checked)}
-                        className="rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
+                        onChange={(val) => updatePref('cursorBlink', val)}
+                        accentColor={accentColor}
                       />
-                    </label>
+                    </div>
                   </div>
 
                   {/* Scrollback Buffer */}
@@ -500,23 +791,66 @@ export function SettingsModal({
                     <label className="text-xs font-medium text-slate-300">
                       Safety Protections
                     </label>
-                    <label className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2 cursor-pointer">
-                      <span className="text-xs text-slate-300">Confirm before closing active panes</span>
-                      <input
-                        type="checkbox"
+                    <div
+                      onClick={() => updatePref('confirmClosePane', !uiPrefs.confirmClosePane)}
+                      className={cn(
+                        'flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer transition select-none',
+                        uiPrefs.confirmClosePane ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <span className="text-xs font-medium text-white">Confirm before closing active panes</span>
+                      <ToggleSwitch
                         checked={uiPrefs.confirmClosePane}
-                        onChange={(e) => updatePref('confirmClosePane', e.target.checked)}
-                        className="rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
+                        onChange={(val) => updatePref('confirmClosePane', val)}
+                        accentColor={accentColor}
                       />
+                    </div>
+                  </div>
+
+                  {/* Inline Ghost Autosuggestions */}
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <label className="text-xs font-medium text-slate-300">
+                      Ghost Text Autosuggestions
                     </label>
+                    <div
+                      onClick={() => updatePref('ghostSuggestions', !uiPrefs.ghostSuggestions)}
+                      className={cn(
+                        'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                        uiPrefs.ghostSuggestions
+                          ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                          : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                      )}
+                    >
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                          style={{
+                            backgroundColor: uiPrefs.ghostSuggestions ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                          }}
+                        >
+                          <Sparkles className="h-4 w-4 text-cyan-400" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-semibold text-white">Real-time Inline Ghost Suggestions</div>
+                          <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                            Display Fish/Zsh-style inline command completions from history and catalog (press Tab or → to complete). Turn off for raw shell Tab completion only.
+                          </p>
+                        </div>
+                      </div>
+                      <ToggleSwitch
+                        checked={uiPrefs.ghostSuggestions}
+                        onChange={(val) => updatePref('ghostSuggestions', val)}
+                        accentColor={accentColor}
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 2: SHORTCUTS & SPLIT NAVIGATION */}
-          {activeTab === 'shortcuts' && (
+          {/* TAB 2: SHORTCUTS & SPLIT NAVIGATION (DESKTOP ONLY) */}
+          {!mobile && activeTab === 'shortcuts' && (
             <div className="space-y-6">
               {/* Ghostty Split Navigation Banner */}
               <div
@@ -535,7 +869,7 @@ export function SettingsModal({
                   </div>
                   <div className="space-y-1">
                     <h4 className="text-sm font-semibold text-white">
-                      Directional Split Navigation (Ghostty / tmux style)
+                      Directional Split Navigation
                     </h4>
                     <p className="text-xs text-slate-300 leading-relaxed">
                       Move seamlessly between split terminal panes using directional arrow keys without touching your mouse.
@@ -586,21 +920,45 @@ export function SettingsModal({
 
                             <div>
                               {isEditing ? (
-                                <div
-                                  tabIndex={0}
-                                  autoFocus
+                                <button
+                                  type="button"
+                                  ref={(el) => {
+                                    if (el) el.focus();
+                                  }}
+                                  data-shortcut-recorder="true"
                                   onKeyDown={(e) => handleShortcutKeyDown(e, item.id)}
-                                  onBlur={() => setEditingShortcutId(null)}
-                                  className="px-3 py-1 rounded-lg border border-cyan-400 bg-cyan-500/20 text-xs font-mono text-cyan-200 animate-pulse outline-none cursor-pointer"
+                                  onKeyUp={handleShortcutKeyUp}
+                                  onBlur={() => {
+                                    setEditingShortcutId(null);
+                                    setRecordedKeys('');
+                                  }}
+                                  className="group flex items-center gap-2 px-3 py-1 rounded-lg border border-cyan-400 bg-cyan-500/20 text-xs font-mono text-cyan-200 outline-none shadow-[0_0_12px_rgba(34,211,238,0.25)] select-none cursor-pointer"
                                 >
-                                  Press new shortcut keys… (Esc to cancel)
-                                </div>
+                                  <span className="animate-pulse">
+                                    {recordedKeys ? `${recordedKeys} + …` : 'Press shortcut keys…'}
+                                  </span>
+                                  <span
+                                    onMouseDown={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setEditingShortcutId(null);
+                                      setRecordedKeys('');
+                                    }}
+                                    className="text-[10px] text-slate-400 hover:text-white underline cursor-pointer ml-1"
+                                    title="Cancel shortcut rebinding"
+                                  >
+                                    (Esc)
+                                  </span>
+                                </button>
                               ) : (
                                 <button
                                   type="button"
-                                  onClick={() => setEditingShortcutId(item.id)}
+                                  onClick={() => {
+                                    setEditingShortcutId(item.id);
+                                    setRecordedKeys('');
+                                  }}
                                   title="Click to rebind"
-                                  className="group flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10 transition"
+                                  className="group flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10 transition cursor-pointer"
                                 >
                                   <kbd className="font-mono text-xs font-semibold text-slate-200 group-hover:text-cyan-300 transition">
                                     {item.keys}
@@ -671,39 +1029,56 @@ export function SettingsModal({
                 </div>
               </div>
 
-              {/* Workspace Layout Elements */}
-              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-3">
-                <h3 className="text-sm font-semibold text-white">Layout Elements</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <label className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.02] p-3 cursor-pointer">
-                    <span className="text-xs text-slate-300">Left Icon Rail</span>
-                    <input
-                      type="checkbox"
-                      checked={showRail}
-                      onChange={(e) => onShowRailChange(e.target.checked)}
-                      className="rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.02] p-3 cursor-pointer">
-                    <span className="text-xs text-slate-300">Bottom Status Bar</span>
-                    <input
-                      type="checkbox"
-                      checked={showStatusBar}
-                      onChange={(e) => onShowStatusBarChange(e.target.checked)}
-                      className="rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                  </label>
-                  <label className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.02] p-3 cursor-pointer">
-                    <span className="text-xs text-slate-300">Zen Mode (Fullscreen)</span>
-                    <input
-                      type="checkbox"
-                      checked={zen}
-                      onChange={(e) => onZenChange(e.target.checked)}
-                      className="rounded border-white/20 text-cyan-500 focus:ring-0 cursor-pointer"
-                    />
-                  </label>
+              {/* Workspace Layout Elements (Desktop only) */}
+              {!mobile && (
+                <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-3">
+                  <h3 className="text-sm font-semibold text-white">Layout Elements</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div
+                      onClick={() => onShowRailChange(!showRail)}
+                      className={cn(
+                        'flex items-center justify-between rounded-xl border p-3 cursor-pointer transition select-none',
+                        showRail ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <span className="text-xs font-medium text-white">Left Icon Rail</span>
+                      <ToggleSwitch
+                        checked={showRail}
+                        onChange={onShowRailChange}
+                        accentColor={accentColor}
+                      />
+                    </div>
+                    <div
+                      onClick={() => onShowStatusBarChange(!showStatusBar)}
+                      className={cn(
+                        'flex items-center justify-between rounded-xl border p-3 cursor-pointer transition select-none',
+                        showStatusBar ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <span className="text-xs font-medium text-white">Bottom Status Bar</span>
+                      <ToggleSwitch
+                        checked={showStatusBar}
+                        onChange={onShowStatusBarChange}
+                        accentColor={accentColor}
+                      />
+                    </div>
+                    <div
+                      onClick={() => onZenChange(!zen)}
+                      className={cn(
+                        'flex items-center justify-between rounded-xl border p-3 cursor-pointer transition select-none',
+                        zen ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <span className="text-xs font-medium text-white">Zen Mode (Fullscreen)</span>
+                      <ToggleSwitch
+                        checked={zen}
+                        onChange={onZenChange}
+                        accentColor={accentColor}
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Themes Gallery */}
               <div className="space-y-3">
@@ -814,7 +1189,6 @@ export function SettingsModal({
                     <CustomSelect
                       value={autoLockMinutes}
                       onChange={(val) => onAutoLockChange(Number(val))}
-                      dropUp={true}
                       options={[
                         { value: 0, label: 'Never (Manual Lock Only)' },
                         { value: 5, label: '5 minutes' },
@@ -991,25 +1365,32 @@ export function SettingsModal({
               </div>
             </div>
           )}
+          {mobile && (
+            <div className="pt-4 pb-6 text-center select-none">
+              <span className="text-[11px] text-slate-500 font-mono tracking-wide">
+                Drexius Terminal v0.1.0
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* Footer */}
-        <div className="border-t border-white/10 px-4 sm:px-6 py-3 bg-white/[0.02] flex items-center justify-between">
-          <div className="text-[11px] text-slate-500 flex items-center gap-2">
-            <span>Drexius Terminal v0.1.0</span>
-            <span>·</span>
-            <span>Tauri 2 + React 19 + xterm.js 6</span>
+        {/* Footer (Desktop only) */}
+        {!mobile && (
+          <div className="border-t border-white/10 px-4 sm:px-6 py-3 bg-white/[0.02] flex items-center justify-between">
+            <div className="text-[11px] text-slate-500 font-mono">
+              Drexius Terminal v0.1.0
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold text-black hover:brightness-110 active:scale-95 transition shadow"
+              style={{ backgroundColor: accentColor }}
+            >
+              Done
+            </button>
           </div>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-lg text-xs font-semibold text-black hover:brightness-110 active:scale-95 transition shadow"
-            style={{ backgroundColor: accentColor }}
-          >
-            Done
-          </button>
-        </div>
+        )}
       </div>
     </ResponsiveOverlay>
   );

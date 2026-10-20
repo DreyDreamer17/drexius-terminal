@@ -13,8 +13,6 @@ import {
   RefreshCw,
   FolderPlus,
   FilePlus,
-  Upload,
-  Download,
   Trash2,
   AlertTriangle,
   Edit2,
@@ -22,6 +20,8 @@ import {
   Loader2,
   Server,
   ArrowRight,
+  ArrowLeft,
+  ArrowLeftRight,
   Check,
   FileSpreadsheet,
   FileImage,
@@ -103,66 +103,83 @@ interface SftpTabProps {
 
 export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }: SftpTabProps) {
   const mobile = useMobile();
-  const [mobileSide, setMobileSide] = useState<'remote' | 'local'>('remote');
-  const [fileActions, setFileActions] = useState<{ entry: FileEntry; side: 'local' | 'remote' } | null>(null);
+  const [mobileSide, setMobileSide] = useState<'left' | 'right'>('right');
+  const [fileActions, setFileActions] = useState<{ entry: FileEntry; side: 'left' | 'right' } | null>(null);
   const [permissions, setPermissions] = useState<FileEntry | null>(null);
 
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent || '#22d3ee';
   const bgColor = activeTheme.xterm.background || '#090d16';
 
-  // ── Local Filesystem State ──
-  const [localPath, setLocalPath] = useState<string>('');
-  const [localEntries, setLocalEntries] = useState<FileEntry[]>([]);
-  const [localLoading, setLocalLoading] = useState<boolean>(false);
-  const [localFilter, setLocalFilter] = useState<string>('');
-  const [showLocalSearch, setShowLocalSearch] = useState<boolean>(false);
-  const [showLocalHidden, setShowLocalHidden] = useState<boolean>(false);
-  const [localSelected, setLocalSelected] = useState<string | null>(null);
-  const [localHistory, setLocalHistory] = useState<string[]>([]);
-  const [localHistoryIdx, setLocalHistoryIdx] = useState<number>(-1);
-  const [showLocalActions, setShowLocalActions] = useState<boolean>(false);
+  // ── LEFT PANE STATE (Defaults to Local Machine: hostId = null) ──
+  const [leftHostId, setLeftHostId] = useState<string | null>(tab.sftpLeftHostId ?? null);
+  const [leftSessionId, setLeftSessionId] = useState<string | null>(tab.sftpLeftSessionId ?? null);
+  const leftSessionRef = useRef<string | null>(tab.sftpLeftSessionId ?? null);
+  const [leftConnecting, setLeftConnecting] = useState<boolean>(false);
+  const [leftPath, setLeftPath] = useState<string>('');
+  const [leftEntries, setLeftEntries] = useState<FileEntry[]>([]);
+  const [leftLoading, setLeftLoading] = useState<boolean>(false);
+  const [leftFilter, setLeftFilter] = useState<string>('');
+  const [showLeftSearch, setShowLeftSearch] = useState<boolean>(false);
+  const [showLeftHidden, setShowLeftHidden] = useState<boolean>(false);
+  const [leftSelected, setLeftSelected] = useState<string | null>(null);
+  const [leftHistory, setLeftHistory] = useState<string[]>([]);
+  const [leftHistoryIdx, setLeftHistoryIdx] = useState<number>(-1);
+  const [showLeftActions, setShowLeftActions] = useState<boolean>(false);
 
-  // ── Remote SFTP State ──
-  const [remoteHostId, setRemoteHostId] = useState<string | null>(tab.sftpHostId || null);
-  const [remoteSessionId, setRemoteSessionId] = useState<string | null>(tab.sftpSessionId || null);
-  const remoteSessionRef = useRef<string | null>(tab.sftpSessionId || null);
+  // ── RIGHT PANE STATE (Defaults to remote host if provided, else null) ──
+  const initialRightHostId = tab.sftpRightHostId ?? tab.sftpHostId ?? null;
+  const initialRightSessionId = tab.sftpRightSessionId ?? tab.sftpSessionId ?? null;
+  const [rightHostId, setRightHostId] = useState<string | null>(initialRightHostId);
+  const [rightSessionId, setRightSessionId] = useState<string | null>(initialRightSessionId);
+  const rightSessionRef = useRef<string | null>(initialRightSessionId);
+  const [rightConnecting, setRightConnecting] = useState<boolean>(false);
+  const [rightPath, setRightPath] = useState<string>('');
+  const [rightEntries, setRightEntries] = useState<FileEntry[]>([]);
+  const [rightLoading, setRightLoading] = useState<boolean>(false);
+  const [rightFilter, setRightFilter] = useState<string>('');
+  const [showRightSearch, setShowRightSearch] = useState<boolean>(false);
+  const [showRightHidden, setShowRightHidden] = useState<boolean>(false);
+  const [rightSelected, setRightSelected] = useState<string | null>(null);
+  const [rightHistory, setRightHistory] = useState<string[]>([]);
+  const [rightHistoryIdx, setRightHistoryIdx] = useState<number>(-1);
+  const [showRightActions, setShowRightActions] = useState<boolean>(false);
+
+  // Keep references in sync for async callbacks
+  const leftHostIdRef = useRef(leftHostId);
+  leftHostIdRef.current = leftHostId;
+  const rightHostIdRef = useRef(rightHostId);
+  rightHostIdRef.current = rightHostId;
+
+  // ── Connection & Lifecycle Refs ──
   const mountedRef = useRef(true);
-  const connectingRef = useRef(false);
-  const connectGenerationRef = useRef(0);
-  // The tab owns its SFTP session. Close it when the tab is removed, even if
-  // the user never clicked Disconnect (and avoid leaking in-flight connects).
+  const connectGenerationRef = useRef({ left: 0, right: 0 });
+  const [connectingHostId, setConnectingHostId] = useState<string | null>(null);
+  const [connectingSide, setConnectingSide] = useState<'left' | 'right' | null>(null);
+
+  // The tab owns its SFTP sessions. Close them when the tab unmounts.
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      // React StrictMode immediately re-runs effects in development without
-      // actually removing the tab. Defer the close one tick so that rehearsal
-      // cleanup does not tear down a live session.
       setTimeout(() => {
         if (mountedRef.current) return;
-        connectGenerationRef.current++;
-        if (remoteSessionRef.current) {
-          bridge.sftpClose(remoteSessionRef.current).catch(() => {});
-          remoteSessionRef.current = null;
+        connectGenerationRef.current.left++;
+        connectGenerationRef.current.right++;
+        if (leftSessionRef.current) {
+          bridge.sftpClose(leftSessionRef.current).catch(() => {});
+          leftSessionRef.current = null;
+        }
+        if (rightSessionRef.current) {
+          bridge.sftpClose(rightSessionRef.current).catch(() => {});
+          rightSessionRef.current = null;
         }
       }, 0);
     };
   }, []);
-  const [remoteConnecting, setRemoteConnecting] = useState<boolean>(false);
-  const [remotePath, setRemotePath] = useState<string>('');
-  const [remoteEntries, setRemoteEntries] = useState<FileEntry[]>([]);
-  const [remoteLoading, setRemoteLoading] = useState<boolean>(false);
-  const [remoteFilter, setRemoteFilter] = useState<string>('');
-  const [showRemoteSearch, setShowRemoteSearch] = useState<boolean>(false);
-  const [showRemoteHidden, setShowRemoteHidden] = useState<boolean>(false);
-  const [remoteSelected, setRemoteSelected] = useState<string | null>(null);
-  const [remoteHistory, setRemoteHistory] = useState<string[]>([]);
-  const [remoteHistoryIdx, setRemoteHistoryIdx] = useState<number>(-1);
-  const [showRemoteActions, setShowRemoteActions] = useState<boolean>(false);
 
   // ── Modals & Dialogs ──
-  const [showHostPicker, setShowHostPicker] = useState<boolean>(false);
+  const [hostPickerSide, setHostPickerSide] = useState<'left' | 'right' | null>(null);
   const [hostPickerSearch, setHostPickerSearch] = useState<string>('');
   const [transferStatus, setTransferStatus] = useState<{
     type: 'upload' | 'download';
@@ -171,12 +188,12 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   } | null>(null);
 
   // Text file editor
-  const [editingFile, setEditingFile] = useState<EditorFile | null>(null);
+  const [editingFile, setEditingFile] = useState<(EditorFile & { side: 'left' | 'right' }) | null>(null);
 
   // New file, new folder & rename dialogs
   const [promptDialog, setPromptDialog] = useState<{
     type: 'newFile' | 'newFolder' | 'rename';
-    side: 'local' | 'remote';
+    side: 'left' | 'right';
     title: string;
     currentVal: string;
     targetPath?: string;
@@ -185,236 +202,442 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   // Delete confirmation dialog
   const [deleteConfirm, setDeleteConfirm] = useState<{
     entry: FileEntry;
-    side: 'local' | 'remote';
+    side: 'left' | 'right';
     deleting?: boolean;
   } | null>(null);
 
-  const remoteHost = useMemo(() => {
-    return hosts.find((h) => h.id === remoteHostId) || null;
-  }, [hosts, remoteHostId]);
+  const leftHost = useMemo(() => {
+    return hosts.find((h) => h.id === leftHostId) || null;
+  }, [hosts, leftHostId]);
 
-  // ── Load Local Directory ──
-  const loadLocal = useCallback(
-    async (path?: string, recordHistory = true) => {
-      setLocalLoading(true);
+  const rightHost = useMemo(() => {
+    return hosts.find((h) => h.id === rightHostId) || null;
+  }, [hosts, rightHostId]);
+
+  // ── Generic Pane Loader ──
+  const loadPane = useCallback(
+    async (
+      side: 'left' | 'right',
+      targetPath?: string,
+      recordHistory = true,
+      overrideHostId?: string | null,
+      overrideSid?: string | null
+    ) => {
+      const isLeft = side === 'left';
+      const effectiveHostId = overrideHostId !== undefined ? overrideHostId : (isLeft ? leftHostIdRef.current : rightHostIdRef.current);
+      const effectiveSid = overrideSid !== undefined ? overrideSid : (isLeft ? leftSessionRef.current : rightSessionRef.current);
+
+      if (isLeft) setLeftLoading(true);
+      else setRightLoading(true);
+
       try {
-        const res = await bridge.localFsList(path);
-        setLocalPath(res.currentPath);
-        setLocalEntries(res.entries);
-        if (recordHistory) {
-          setLocalHistory((prev) => {
-            const next = prev.slice(0, localHistoryIdx + 1);
-            return [...next, res.currentPath];
-          });
-          setLocalHistoryIdx((prev) => prev + 1);
+        if (!effectiveHostId) {
+          // Local Filesystem
+          const res = await bridge.localFsList(targetPath);
+          if (isLeft) {
+            setLeftPath(res.currentPath);
+            setLeftEntries(res.entries);
+            if (recordHistory) {
+              setLeftHistory((prev) => [...prev.slice(0, leftHistoryIdx + 1), res.currentPath]);
+              setLeftHistoryIdx((prev) => prev + 1);
+            }
+          } else {
+            setRightPath(res.currentPath);
+            setRightEntries(res.entries);
+            if (recordHistory) {
+              setRightHistory((prev) => [...prev.slice(0, rightHistoryIdx + 1), res.currentPath]);
+              setRightHistoryIdx((prev) => prev + 1);
+            }
+          }
+        } else {
+          // Remote SFTP
+          if (!effectiveSid) return;
+          const currentP = isLeft ? leftPath : rightPath;
+          const p = targetPath ?? currentP;
+          const list = await bridge.sftpList(effectiveSid, p);
+          if (isLeft) {
+            setLeftPath(p);
+            setLeftEntries(list);
+            if (recordHistory) {
+              setLeftHistory((prev) => [...prev.slice(0, leftHistoryIdx + 1), p]);
+              setLeftHistoryIdx((prev) => prev + 1);
+            }
+          } else {
+            setRightPath(p);
+            setRightEntries(list);
+            if (recordHistory) {
+              setRightHistory((prev) => [...prev.slice(0, rightHistoryIdx + 1), p]);
+              setRightHistoryIdx((prev) => prev + 1);
+            }
+          }
         }
       } catch (err) {
         toast(isBridgeError(err) ? err.message : String(err));
       } finally {
-        setLocalLoading(false);
+        if (isLeft) setLeftLoading(false);
+        else setRightLoading(false);
       }
     },
-    [localHistoryIdx, toast]
+    [leftHistoryIdx, rightHistoryIdx, leftPath, rightPath, toast]
   );
 
-  // Initialize local path on mount
-  useEffect(() => {
-    loadLocal('', true);
-  }, []);
+  // ── Connect Remote Host to a Side ──
+  const connectHost = useCallback(
+    async (side: 'left' | 'right', hostId: string) => {
+      const isLeft = side === 'left';
+      if (isLeft ? leftConnecting : rightConnecting) return;
+      const targetHost = hosts.find((h) => h.id === hostId);
+      const hostLabel = targetHost?.label || 'Host';
 
-  // ── Remote SFTP Connect & Load ──
-  const connectRemote = useCallback(
-    async (hostId: string) => {
-      if (connectingRef.current) return;
-      connectingRef.current = true;
-      const generation = ++connectGenerationRef.current;
-      setRemoteConnecting(true);
+      const gen = isLeft
+        ? ++connectGenerationRef.current.left
+        : ++connectGenerationRef.current.right;
+      if (isLeft) {
+        setLeftConnecting(true);
+        setLeftHostId(hostId);
+      } else {
+        setRightConnecting(true);
+        setRightHostId(hostId);
+      }
+      setConnectingSide(side);
+      setConnectingHostId(hostId);
+
       let sid: string | null = null;
       try {
         sid = await bridge.sftpConnect(hostId);
-        // Do not replace a working session until the new one can list files.
         const list = await bridge.sftpList(sid, '');
-        if (!mountedRef.current || generation !== connectGenerationRef.current) {
+        if (!mountedRef.current) {
           await bridge.sftpClose(sid);
           return;
         }
-        const previous = remoteSessionRef.current;
-        remoteSessionRef.current = sid;
-        if (previous && previous !== sid) bridge.sftpClose(previous).catch(() => {});
-        setRemoteSessionId(sid);
-        setRemoteHostId(hostId);
-        onUpdateTab({
-          sftpHostId: hostId,
-          sftpSessionId: sid,
-          title: `SFTP: ${hosts.find((h) => h.id === hostId)?.label || 'Remote'}`,
-        });
-        setRemoteEntries(list);
-        const initialRemotePath =
-          list[0]?.path.slice(0, list[0].path.lastIndexOf('/')) || bridge.homeFor(sid) || '/';
-        setRemotePath(initialRemotePath);
-        setRemoteHistory([initialRemotePath]);
-        setRemoteHistoryIdx(0);
-        setShowHostPicker(false);
-        toast(`Connected to ${hosts.find((h) => h.id === hostId)?.label || 'Host'}`);
+        const currentGen = isLeft ? connectGenerationRef.current.left : connectGenerationRef.current.right;
+        if (gen !== currentGen) {
+          await bridge.sftpClose(sid);
+          return;
+        }
+
+        const initialP = list[0]?.path.slice(0, list[0].path.lastIndexOf('/')) || bridge.homeFor(sid) || '/';
+
+        if (isLeft) {
+          const prev = leftSessionRef.current;
+          leftSessionRef.current = sid;
+          if (prev && prev !== sid) bridge.sftpClose(prev).catch(() => {});
+          setLeftSessionId(sid);
+          setLeftEntries(list);
+          setLeftPath(initialP);
+          setLeftHistory([initialP]);
+          setLeftHistoryIdx(0);
+          onUpdateTab({
+            sftpLeftHostId: hostId,
+            sftpLeftSessionId: sid,
+            title: rightHostId ? `SFTP: ${hostLabel} ↔ ${hosts.find((h) => h.id === rightHostId)?.label || 'Remote'}` : `SFTP: ${hostLabel}`,
+          });
+        } else {
+          const prev = rightSessionRef.current;
+          rightSessionRef.current = sid;
+          if (prev && prev !== sid) bridge.sftpClose(prev).catch(() => {});
+          setRightSessionId(sid);
+          setRightEntries(list);
+          setRightPath(initialP);
+          setRightHistory([initialP]);
+          setRightHistoryIdx(0);
+          onUpdateTab({
+            sftpRightHostId: hostId,
+            sftpRightSessionId: sid,
+            sftpHostId: hostId,
+            sftpSessionId: sid,
+            title: leftHostId ? `SFTP: ${hosts.find((h) => h.id === leftHostId)?.label || 'Local'} ↔ ${hostLabel}` : `SFTP: ${hostLabel}`,
+          });
+        }
+        setHostPickerSide(null);
+        toast(`Connected to ${hostLabel}`);
       } catch (err) {
         if (sid) await bridge.sftpClose(sid);
-        if (mountedRef.current && generation === connectGenerationRef.current) {
+        if (mountedRef.current) {
           toast(isBridgeError(err) ? err.message : `Connection failed: ${err}`);
         }
       } finally {
-        connectingRef.current = false;
-        if (mountedRef.current) setRemoteConnecting(false);
-      }
-    },
-    [hosts, onUpdateTab, toast]
-  );
-
-  const disconnectRemote = useCallback(() => {
-    connectGenerationRef.current++;
-    const sid = remoteSessionRef.current;
-    remoteSessionRef.current = null;
-    if (sid) bridge.sftpClose(sid).catch(() => {});
-    setRemoteSessionId(null);
-    setRemoteHostId(null);
-    setRemoteEntries([]);
-    setRemotePath('');
-    setRemoteHistory([]);
-    setRemoteHistoryIdx(-1);
-    onUpdateTab({ sftpHostId: null, sftpSessionId: null, title: 'SFTP' });
-  }, [onUpdateTab]);
-
-  // If tab already had a hostId on launch but no session, connect automatically
-  useEffect(() => {
-    if (tab.sftpHostId && !remoteSessionId && !remoteConnecting) {
-      connectRemote(tab.sftpHostId);
-    }
-  }, [tab.sftpHostId]);
-
-  const loadRemote = useCallback(
-    async (p: string, recordHistory = true) => {
-      if (!remoteSessionId) return;
-      setRemoteLoading(true);
-      try {
-        const list = await bridge.sftpList(remoteSessionId, p);
-        setRemoteEntries(list);
-        setRemotePath(p);
-        if (recordHistory) {
-          setRemoteHistory((prev) => {
-            const next = prev.slice(0, remoteHistoryIdx + 1);
-            return [...next, p];
-          });
-          setRemoteHistoryIdx((prev) => prev + 1);
+        if (mountedRef.current) {
+          if (isLeft) setLeftConnecting(false);
+          else setRightConnecting(false);
+          setConnectingSide(null);
+          setConnectingHostId(null);
         }
-      } catch (err) {
-        toast(isBridgeError(err) ? err.message : String(err));
-      } finally {
-        setRemoteLoading(false);
       }
     },
-    [remoteSessionId, remoteHistoryIdx, toast]
+    [hosts, leftConnecting, rightConnecting, leftHostId, rightHostId, onUpdateTab, toast]
   );
+
+  // ── Switch Side to Local Filesystem ──
+  const switchToLocal = useCallback(
+    async (side: 'left' | 'right') => {
+      setHostPickerSide(null);
+      if (side === 'left') {
+        connectGenerationRef.current.left++;
+        if (leftSessionRef.current) {
+          bridge.sftpClose(leftSessionRef.current).catch(() => {});
+          leftSessionRef.current = null;
+        }
+        setLeftSessionId(null);
+        setLeftHostId(null);
+        onUpdateTab({
+          sftpLeftHostId: null,
+          sftpLeftSessionId: null,
+          title: rightHostId ? `SFTP: ${hosts.find((h) => h.id === rightHostId)?.label || 'Remote'}` : 'Files: Local',
+        });
+        await loadPane('left', '', true, null, null);
+        toast('Left pane switched to Local Machine');
+      } else {
+        connectGenerationRef.current.right++;
+        if (rightSessionRef.current) {
+          bridge.sftpClose(rightSessionRef.current).catch(() => {});
+          rightSessionRef.current = null;
+        }
+        setRightSessionId(null);
+        setRightHostId(null);
+        onUpdateTab({
+          sftpRightHostId: null,
+          sftpRightSessionId: null,
+          sftpHostId: null,
+          sftpSessionId: null,
+          title: leftHostId ? `SFTP: ${hosts.find((h) => h.id === leftHostId)?.label || 'Remote'}` : 'Files: Local',
+        });
+        await loadPane('right', '', true, null, null);
+        toast('Right pane switched to Local Machine');
+      }
+    },
+    [hosts, leftHostId, rightHostId, loadPane, onUpdateTab, toast]
+  );
+
+  // ── Disconnect a Remote Side ──
+  const disconnectSide = useCallback(
+    (side: 'left' | 'right') => {
+      const isLeft = side === 'left';
+      if (isLeft) {
+        connectGenerationRef.current.left++;
+        const sid = leftSessionRef.current;
+        leftSessionRef.current = null;
+        if (sid) bridge.sftpClose(sid).catch(() => {});
+        setLeftSessionId(null);
+        setLeftHostId(null);
+        setLeftEntries([]);
+        setLeftPath('');
+        setLeftHistory([]);
+        setLeftHistoryIdx(-1);
+        onUpdateTab({ sftpLeftHostId: null, sftpLeftSessionId: null });
+      } else {
+        connectGenerationRef.current.right++;
+        const sid = rightSessionRef.current;
+        rightSessionRef.current = null;
+        if (sid) bridge.sftpClose(sid).catch(() => {});
+        setRightSessionId(null);
+        setRightHostId(null);
+        setRightEntries([]);
+        setRightPath('');
+        setRightHistory([]);
+        setRightHistoryIdx(-1);
+        onUpdateTab({ sftpRightHostId: null, sftpRightSessionId: null, sftpHostId: null, sftpSessionId: null });
+      }
+      toast(`${isLeft ? 'Left' : 'Right'} pane disconnected`);
+    },
+    [onUpdateTab, toast]
+  );
+
+  // ── Swap Left and Right Panes ──
+  const handleSwapPanes = useCallback(() => {
+    const oldLeftHost = leftHostId;
+    const oldRightHost = rightHostId;
+    const oldLeftSid = leftSessionId;
+    const oldRightSid = rightSessionId;
+
+    setLeftHostId(oldRightHost);
+    setRightHostId(oldLeftHost);
+    setLeftSessionId(oldRightSid);
+    setRightSessionId(oldLeftSid);
+    leftSessionRef.current = oldRightSid;
+    rightSessionRef.current = oldLeftSid;
+
+    const oldLeftPath = leftPath;
+    const oldRightPath = rightPath;
+    const oldLeftEntries = leftEntries;
+    const oldRightEntries = rightEntries;
+
+    setLeftPath(oldRightPath);
+    setRightPath(oldLeftPath);
+    setLeftEntries(oldRightEntries);
+    setRightEntries(oldLeftEntries);
+
+    const oldLeftHist = leftHistory;
+    const oldRightHist = rightHistory;
+    const oldLeftIdx = leftHistoryIdx;
+    const oldRightIdx = rightHistoryIdx;
+
+    setLeftHistory(oldRightHist);
+    setRightHistory(oldLeftHist);
+    setLeftHistoryIdx(oldRightIdx);
+    setRightHistoryIdx(oldLeftIdx);
+
+    setLeftSelected(null);
+    setRightSelected(null);
+    setLeftFilter('');
+    setRightFilter('');
+
+    onUpdateTab({
+      sftpLeftHostId: oldRightHost,
+      sftpLeftSessionId: oldRightSid,
+      sftpRightHostId: oldLeftHost,
+      sftpRightSessionId: oldLeftSid,
+      sftpHostId: oldLeftHost,
+      sftpSessionId: oldLeftSid,
+    });
+    toast('Swapped left and right panes');
+  }, [
+    leftHostId,
+    rightHostId,
+    leftSessionId,
+    rightSessionId,
+    leftPath,
+    rightPath,
+    leftEntries,
+    rightEntries,
+    leftHistory,
+    rightHistory,
+    leftHistoryIdx,
+    rightHistoryIdx,
+    onUpdateTab,
+    toast,
+  ]);
+
+  // ── Initialize on Mount ──
+  useEffect(() => {
+    // Left pane initializes to local if not remote
+    if (tab.sftpLeftHostId) {
+      connectHost('left', tab.sftpLeftHostId);
+    } else {
+      loadPane('left', '', true, null, null);
+    }
+
+    // Right pane connects if hostId provided
+    const targetRight = tab.sftpRightHostId || tab.sftpHostId;
+    if (targetRight && !rightSessionId && !rightConnecting) {
+      connectHost('right', targetRight);
+    }
+  }, []);
 
   // ── Navigation Handlers ──
-  const navigateLocalBack = () => {
-    if (localHistoryIdx > 0) {
-      const prev = localHistory[localHistoryIdx - 1];
-      setLocalHistoryIdx((i) => i - 1);
-      loadLocal(prev, false);
+  const navigateBack = (side: 'left' | 'right') => {
+    const isLeft = side === 'left';
+    const hist = isLeft ? leftHistory : rightHistory;
+    const idx = isLeft ? leftHistoryIdx : rightHistoryIdx;
+    if (idx > 0) {
+      const prev = hist[idx - 1];
+      if (isLeft) setLeftHistoryIdx((i) => i - 1);
+      else setRightHistoryIdx((i) => i - 1);
+      loadPane(side, prev, false);
     }
   };
 
-  const navigateLocalForward = () => {
-    if (localHistoryIdx < localHistory.length - 1) {
-      const next = localHistory[localHistoryIdx + 1];
-      setLocalHistoryIdx((i) => i + 1);
-      loadLocal(next, false);
-    }
-  };
-
-  const navigateRemoteBack = () => {
-    if (remoteHistoryIdx > 0) {
-      const prev = remoteHistory[remoteHistoryIdx - 1];
-      setRemoteHistoryIdx((i) => i - 1);
-      loadRemote(prev, false);
-    }
-  };
-
-  const navigateRemoteForward = () => {
-    if (remoteHistoryIdx < remoteHistory.length - 1) {
-      const next = remoteHistory[remoteHistoryIdx + 1];
-      setRemoteHistoryIdx((i) => i + 1);
-      loadRemote(next, false);
+  const navigateForward = (side: 'left' | 'right') => {
+    const isLeft = side === 'left';
+    const hist = isLeft ? leftHistory : rightHistory;
+    const idx = isLeft ? leftHistoryIdx : rightHistoryIdx;
+    if (idx < hist.length - 1) {
+      const next = hist[idx + 1];
+      if (isLeft) setLeftHistoryIdx((i) => i + 1);
+      else setRightHistoryIdx((i) => i + 1);
+      loadPane(side, next, false);
     }
   };
 
   // Breadcrumbs parsing
-  const localCrumbs = useMemo(() => {
-    if (!localPath) return [];
-    const parts = localPath.split('/').filter(Boolean);
+  const leftCrumbs = useMemo(() => {
+    if (!leftPath) return [];
+    const parts = leftPath.split('/').filter(Boolean);
     return parts.map((part, index) => ({
       name: part,
       fullPath: '/' + parts.slice(0, index + 1).join('/'),
     }));
-  }, [localPath]);
+  }, [leftPath]);
 
-  const remoteCrumbs = useMemo(() => {
-    if (!remotePath) return [];
-    const parts = remotePath.split('/').filter(Boolean);
+  const rightCrumbs = useMemo(() => {
+    if (!rightPath) return [];
+    const parts = rightPath.split('/').filter(Boolean);
     return parts.map((part, index) => ({
       name: part,
       fullPath: '/' + parts.slice(0, index + 1).join('/'),
     }));
-  }, [remotePath]);
+  }, [rightPath]);
 
-  // ── File Transfers (Local <-> Remote) ──
-  const handleUpload = async (localEntry: FileEntry) => {
-    if (!remoteSessionId || !remotePath) {
-      toast('Please connect to a host first');
+  // ── Unified File Transfer (Local ↔ Remote, Remote ↔ Remote, Local ↔ Local) ──
+  const handleTransfer = async (entry: FileEntry, fromSide: 'left' | 'right') => {
+    const toSide = fromSide === 'left' ? 'right' : 'left';
+    const fromIsRemote = fromSide === 'left' ? !!leftHostId : !!rightHostId;
+    const toIsRemote = toSide === 'left' ? !!leftHostId : !!rightHostId;
+    const fromSid = fromSide === 'left' ? leftSessionId : rightSessionId;
+    const toSid = toSide === 'left' ? leftSessionId : rightSessionId;
+    const toPath = toSide === 'left' ? leftPath : rightPath;
+
+    const toLabel = toSide === 'left'
+      ? (hosts.find((h) => h.id === leftHostId)?.label || 'Local')
+      : (hosts.find((h) => h.id === rightHostId)?.label || 'Local');
+
+    if (toIsRemote && !toSid) {
+      toast(`Please connect ${toLabel} first`);
       return;
     }
-    const targetRemotePath = `${remotePath.replace(/\/$/, '')}/${localEntry.name}`;
-    setTransferStatus({ type: 'upload', filename: localEntry.name, progress: 0 });
-    try {
-      await bridge.sftpUploadDirect(
-        remoteSessionId,
-        localEntry.path,
-        targetRemotePath,
-        (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
-      );
-      toast(`Uploaded ${localEntry.name}`);
-      await loadRemote(remotePath, false);
-    } catch (err) {
-      toast(isBridgeError(err) ? err.message : `Upload failed: ${err}`);
-    } finally {
-      setTimeout(() => setTransferStatus(null), 400);
-    }
-  };
-
-  const handleDownload = async (remoteEntry: FileEntry) => {
-    if (!remoteSessionId || !localPath) {
-      toast('Invalid local target path');
+    if (!toPath) {
+      toast(`Invalid target path on ${toLabel}`);
       return;
     }
-    const targetLocalPath = `${localPath.replace(/\/$/, '')}/${remoteEntry.name}`;
-    setTransferStatus({ type: 'download', filename: remoteEntry.name, progress: 0 });
+
+    const targetDestPath = `${toPath.replace(/\/$/, '')}/${entry.name}`;
+    setTransferStatus({
+      type: fromIsRemote && !toIsRemote ? 'download' : 'upload',
+      filename: entry.name,
+      progress: 0,
+    });
+
     try {
-      await bridge.sftpDownloadDirect(
-        remoteSessionId,
-        remoteEntry.path,
-        targetLocalPath,
-        (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
-      );
-      toast(`Downloaded ${remoteEntry.name}`);
-      await loadLocal(localPath, false);
+      if (!fromIsRemote && !toIsRemote) {
+        // Local -> Local
+        await bridge.localFsCopy(entry.path, targetDestPath);
+      } else if (!fromIsRemote && toIsRemote) {
+        // Local -> Remote (Upload)
+        await bridge.sftpUploadDirect(
+          toSid!,
+          entry.path,
+          targetDestPath,
+          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+        );
+      } else if (fromIsRemote && !toIsRemote) {
+        // Remote -> Local (Download)
+        await bridge.sftpDownloadDirect(
+          fromSid!,
+          entry.path,
+          targetDestPath,
+          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+        );
+      } else {
+        // Remote -> Remote (Direct Server Transfer)
+        await bridge.sftpTransferRemoteDirect(
+          fromSid!,
+          entry.path,
+          toSid!,
+          targetDestPath,
+          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+        );
+      }
+      toast(`Transferred ${entry.name} to ${toLabel}`);
+      await loadPane(toSide, toPath, false);
     } catch (err) {
-      toast(isBridgeError(err) ? err.message : `Download failed: ${err}`);
+      toast(isBridgeError(err) ? err.message : `Transfer failed: ${err}`);
     } finally {
       setTimeout(() => setTransferStatus(null), 400);
     }
   };
 
   // ── Drag and Drop Between Panes ──
-  const handleDragStart = (e: React.DragEvent, entry: FileEntry, side: 'local' | 'remote') => {
+  const handleDragStart = (e: React.DragEvent, entry: FileEntry, side: 'left' | 'right') => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ side, entry }));
     e.dataTransfer.effectAllowed = 'copy';
   };
@@ -424,50 +647,42 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     e.dataTransfer.dropEffect = 'copy';
   };
 
-  const handleDropOnRemote = async (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent, targetSide: 'left' | 'right') => {
     e.preventDefault();
     const raw = e.dataTransfer.getData('text/plain');
     if (!raw) return;
     try {
       const data = JSON.parse(raw);
-      if (data.side === 'local' && data.entry) {
-        await handleUpload(data.entry);
-      }
-    } catch (_) {}
-  };
-
-  const handleDropOnLocal = async (e: React.DragEvent) => {
-    e.preventDefault();
-    const raw = e.dataTransfer.getData('text/plain');
-    if (!raw) return;
-    try {
-      const data = JSON.parse(raw);
-      if (data.side === 'remote' && data.entry) {
-        await handleDownload(data.entry);
+      if (data.side && data.side !== targetSide && data.entry) {
+        await handleTransfer(data.entry, data.side);
       }
     } catch (_) {}
   };
 
   // ── File Actions (Delete, Rename, New Folder, View/Edit) ──
-  const requestDelete = (entry: FileEntry, side: 'local' | 'remote') => {
+  const requestDelete = (entry: FileEntry, side: 'left' | 'right') => {
     setDeleteConfirm({ entry, side });
   };
 
   const handleExecuteDelete = async () => {
     if (!deleteConfirm) return;
     const { entry, side } = deleteConfirm;
+    const isRemote = side === 'left' ? !!leftHostId : !!rightHostId;
+    const sid = side === 'left' ? leftSessionId : rightSessionId;
+    const currentP = side === 'left' ? leftPath : rightPath;
+
     setDeleteConfirm((prev) => prev && { ...prev, deleting: true });
     try {
-      if (side === 'local') {
+      if (!isRemote) {
         await bridge.localFsRemove(entry.path, entry.isDir);
         toast(`Deleted ${entry.name}`);
         setDeleteConfirm(null);
-        loadLocal(localPath, false);
-      } else if (remoteSessionId) {
-        await bridge.sftpRemove(remoteSessionId, entry.path, entry.isDir);
+        loadPane(side, currentP, false);
+      } else if (sid) {
+        await bridge.sftpRemove(sid, entry.path, entry.isDir);
         toast(`Deleted ${entry.name}`);
         setDeleteConfirm(null);
-        loadRemote(remotePath, false);
+        loadPane(side, currentP, false);
       }
     } catch (err) {
       toast(isBridgeError(err) ? err.message : String(err));
@@ -484,24 +699,24 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         document.activeElement?.tagName === 'TEXTAREA' ||
         editingFile ||
         promptDialog ||
-        showHostPicker ||
+        hostPickerSide ||
         deleteConfirm
       ) {
         return;
       }
 
       if (e.key === 'Delete') {
-        if (remoteSelected) {
-          const entry = remoteEntries.find((r) => r.path === remoteSelected);
+        if (rightSelected) {
+          const entry = rightEntries.find((r) => r.path === rightSelected);
           if (entry) {
             e.preventDefault();
-            requestDelete(entry, 'remote');
+            requestDelete(entry, 'right');
           }
-        } else if (localSelected) {
-          const entry = localEntries.find((l) => l.path === localSelected);
+        } else if (leftSelected) {
+          const entry = leftEntries.find((l) => l.path === leftSelected);
           if (entry) {
             e.preventDefault();
-            requestDelete(entry, 'local');
+            requestDelete(entry, 'left');
           }
         }
       }
@@ -509,28 +724,21 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [
-    active,
-    remoteSelected,
-    localSelected,
-    remoteEntries,
-    localEntries,
-    editingFile,
-    promptDialog,
-    showHostPicker,
-    deleteConfirm,
-  ]);
+  }, [active, rightSelected, leftSelected, rightEntries, leftEntries, editingFile, promptDialog, hostPickerSide, deleteConfirm]);
 
-  const handleOpenFile = async (entry: FileEntry, isRemote: boolean) => {
+  const handleOpenFile = async (entry: FileEntry, side: 'left' | 'right') => {
     if (entry.isDir) return;
+    const isRemote = side === 'left' ? !!leftHostId : !!rightHostId;
+    const sid = side === 'left' ? leftSessionId : rightSessionId;
     try {
-      if (isRemote && remoteSessionId) {
-        const text = await bridge.sftpReadText(remoteSessionId, entry.path);
+      if (isRemote && sid) {
+        const text = await bridge.sftpReadText(sid, entry.path);
         setEditingFile({
           path: entry.path,
           name: entry.name,
           content: text,
           isRemote: true,
+          side,
         });
       } else if (!isRemote) {
         const text = await bridge.localFsReadText(entry.path);
@@ -539,6 +747,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           name: entry.name,
           content: text,
           isRemote: false,
+          side,
         });
       }
     } catch (err) {
@@ -548,14 +757,18 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
 
   const handleSaveFile = async (newContent: string) => {
     if (!editingFile) return;
-    if (editingFile.isRemote && remoteSessionId) {
-      await bridge.sftpWriteText(remoteSessionId, editingFile.path, newContent);
+    const { side, isRemote } = editingFile;
+    const sid = side === 'left' ? leftSessionId : rightSessionId;
+    const currentP = side === 'left' ? leftPath : rightPath;
+
+    if (isRemote && sid) {
+      await bridge.sftpWriteText(sid, editingFile.path, newContent);
       setEditingFile((prev) => (prev ? { ...prev, content: newContent } : null));
-      loadRemote(remotePath, false);
-    } else if (!editingFile.isRemote) {
+      loadPane(side, currentP, false);
+    } else if (!isRemote) {
       await bridge.localFsWriteText(editingFile.path, newContent);
       setEditingFile((prev) => (prev ? { ...prev, content: newContent } : null));
-      loadLocal(localPath, false);
+      loadPane(side, currentP, false);
     }
   };
 
@@ -565,55 +778,60 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       return;
     }
     const { type, side, targetPath } = promptDialog;
+    const isRemote = side === 'left' ? !!leftHostId : !!rightHostId;
+    const sid = side === 'left' ? leftSessionId : rightSessionId;
+    const currentP = side === 'left' ? leftPath : rightPath;
+
     try {
       if (type === 'newFile') {
         const filename = val.trim();
-        if (side === 'local') {
-          const newPath = `${localPath.replace(/\/$/, '')}/${filename}`;
+        const newPath = `${currentP.replace(/\/$/, '')}/${filename}`;
+        if (!isRemote) {
           await bridge.localFsWriteText(newPath, '');
           toast(`Created file "${filename}"`);
-          await loadLocal(localPath, false);
+          await loadPane(side, currentP, false);
           setEditingFile({
             path: newPath,
             name: filename,
             content: '',
             isRemote: false,
+            side,
           });
-        } else if (remoteSessionId) {
-          const newPath = `${remotePath.replace(/\/$/, '')}/${filename}`;
-          await bridge.sftpWriteText(remoteSessionId, newPath, '');
+        } else if (sid) {
+          await bridge.sftpWriteText(sid, newPath, '');
           toast(`Created file "${filename}"`);
-          await loadRemote(remotePath, false);
+          await loadPane(side, currentP, false);
           setEditingFile({
             path: newPath,
             name: filename,
             content: '',
             isRemote: true,
+            side,
           });
         }
       } else if (type === 'newFolder') {
-        if (side === 'local') {
-          const newDir = `${localPath.replace(/\/$/, '')}/${val.trim()}`;
+        const foldername = val.trim();
+        const newDir = `${currentP.replace(/\/$/, '')}/${foldername}`;
+        if (!isRemote) {
           await bridge.localFsMkdir(newDir);
-          toast(`Created folder "${val.trim()}"`);
-          loadLocal(localPath, false);
-        } else if (remoteSessionId) {
-          const newDir = `${remotePath.replace(/\/$/, '')}/${val.trim()}`;
-          await bridge.sftpMkdir(remoteSessionId, newDir);
-          toast(`Created folder "${val.trim()}"`);
-          loadRemote(remotePath, false);
+          toast(`Created folder "${foldername}"`);
+          loadPane(side, currentP, false);
+        } else if (sid) {
+          await bridge.sftpMkdir(sid, newDir);
+          toast(`Created folder "${foldername}"`);
+          loadPane(side, currentP, false);
         }
       } else if (type === 'rename' && targetPath) {
         const dir = targetPath.slice(0, targetPath.lastIndexOf('/'));
         const newPath = `${dir}/${val.trim()}`;
-        if (side === 'local') {
+        if (!isRemote) {
           await bridge.localFsRename(targetPath, newPath);
           toast(`Renamed to "${val.trim()}"`);
-          loadLocal(localPath, false);
-        } else if (remoteSessionId) {
-          await bridge.sftpRename(remoteSessionId, targetPath, newPath);
+          loadPane(side, currentP, false);
+        } else if (sid) {
+          await bridge.sftpRename(sid, targetPath, newPath);
           toast(`Renamed to "${val.trim()}"`);
-          loadRemote(remotePath, false);
+          loadPane(side, currentP, false);
         }
       }
     } catch (err) {
@@ -623,22 +841,22 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     }
   };
 
-  // Filtered lists
-  const filteredLocal = useMemo(() => {
-    return localEntries.filter((e) => {
-      if (!showLocalHidden && e.name.startsWith('.')) return false;
-      if (localFilter && !e.name.toLowerCase().includes(localFilter.toLowerCase())) return false;
+  // Filtered file lists
+  const filteredLeft = useMemo(() => {
+    return leftEntries.filter((e) => {
+      if (!showLeftHidden && e.name.startsWith('.')) return false;
+      if (leftFilter && !e.name.toLowerCase().includes(leftFilter.toLowerCase())) return false;
       return true;
     });
-  }, [localEntries, showLocalHidden, localFilter]);
+  }, [leftEntries, showLeftHidden, leftFilter]);
 
-  const filteredRemote = useMemo(() => {
-    return remoteEntries.filter((e) => {
-      if (!showRemoteHidden && e.name.startsWith('.')) return false;
-      if (remoteFilter && !e.name.toLowerCase().includes(remoteFilter.toLowerCase())) return false;
+  const filteredRight = useMemo(() => {
+    return rightEntries.filter((e) => {
+      if (!showRightHidden && e.name.startsWith('.')) return false;
+      if (rightFilter && !e.name.toLowerCase().includes(rightFilter.toLowerCase())) return false;
       return true;
     });
-  }, [remoteEntries, showRemoteHidden, remoteFilter]);
+  }, [rightEntries, showRightHidden, rightFilter]);
 
   const filteredHosts = useMemo(() => {
     if (!hostPickerSearch.trim()) return hosts;
@@ -651,6 +869,512 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     );
   }, [hosts, hostPickerSearch]);
 
+  // ── Render Single Pane ──
+  const renderPane = (side: 'left' | 'right') => {
+    const isLeft = side === 'left';
+    const hostId = isLeft ? leftHostId : rightHostId;
+    const host = isLeft ? leftHost : rightHost;
+    const sessionId = isLeft ? leftSessionId : rightSessionId;
+    const connecting = isLeft ? leftConnecting : rightConnecting;
+    const path = isLeft ? leftPath : rightPath;
+    const crumbs = isLeft ? leftCrumbs : rightCrumbs;
+    const entries = isLeft ? filteredLeft : filteredRight;
+    const loading = isLeft ? leftLoading : rightLoading;
+    const filter = isLeft ? leftFilter : rightFilter;
+    const setFilter = isLeft ? setLeftFilter : setRightFilter;
+    const showSearch = isLeft ? showLeftSearch : showRightSearch;
+    const setShowSearch = isLeft ? setShowLeftSearch : setShowRightSearch;
+    const showHidden = isLeft ? showLeftHidden : showRightHidden;
+    const setShowHidden = isLeft ? setShowLeftHidden : setShowRightHidden;
+    const selected = isLeft ? leftSelected : rightSelected;
+    const setSelected = isLeft ? setLeftSelected : setRightSelected;
+    const histIdx = isLeft ? leftHistoryIdx : rightHistoryIdx;
+    const hist = isLeft ? leftHistory : rightHistory;
+    const showActions = isLeft ? showLeftActions : showRightActions;
+    const setShowActions = isLeft ? setShowLeftActions : setShowRightActions;
+
+    const isDisconnectedRemote = hostId !== null && !sessionId && !connecting;
+
+    return (
+      <div
+        key={side}
+        className={cn(
+          "flex flex-1 min-w-0 flex-col bg-transparent relative",
+          mobileSide !== side && "max-md:hidden"
+        )}
+        role="region"
+        aria-label={`${isLeft ? 'Left' : 'Right'} pane files`}
+        onDragOver={handleDragOver}
+        onDrop={(e) => handleDrop(e, side)}
+      >
+        {connecting ? (
+          <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+            <Loader2 className="h-8 w-8 animate-spin text-cyan-400 mb-3" />
+            <h3 className="text-sm font-semibold text-slate-200">
+              Connecting to {hosts.find((h) => h.id === connectingHostId)?.label || host?.label || 'Host'}...
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Authenticating and establishing SFTP session
+            </p>
+          </div>
+        ) : isDisconnectedRemote ? (
+          /* ── DISCONNECTED REMOTE PLACEHOLDER ── */
+          <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+            <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/[0.05] border border-white/10 shadow-xl mb-4">
+              <Folder className="h-8 w-8 text-slate-300" />
+            </div>
+
+            <h2 className="text-base font-semibold text-slate-100 mb-1">
+              Connect to {host?.label || 'host'}
+            </h2>
+            <p className="max-w-xs text-xs text-slate-400 leading-relaxed mb-6">
+              Start by connecting to manage your files with SFTP.
+            </p>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => connectHost(side, hostId)}
+                className="flex items-center gap-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white px-5 py-2.5 text-xs font-semibold shadow-lg transition cursor-pointer"
+              >
+                <span>Connect</span>
+              </button>
+              <button
+                onClick={() => setHostPickerSide(side)}
+                className="flex items-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-700/90 text-slate-100 px-4 py-2.5 text-xs font-medium border border-white/10 transition cursor-pointer"
+              >
+                <span>Switch Host</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* ── ACTIVE BROWSER (LOCAL OR CONNECTED REMOTE) ── */
+          <>
+            {/* Header Toolbar */}
+            <div className="nx-sftp-toolbar flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
+              <div className="flex items-center gap-2 min-w-0">
+                {/* Source Picker Pill Dropdown */}
+                <button
+                  onClick={() => setHostPickerSide(side)}
+                  className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 -ml-1 text-slate-100 hover:bg-white/[0.07] border border-white/5 hover:border-white/15 transition group cursor-pointer"
+                  title={`Switch source for ${side} pane`}
+                >
+                  <div className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 shrink-0">
+                    {host ? <OsIcon os={host.os} color={host.color} size={22} /> : <Laptop className="h-4 w-4" />}
+                  </div>
+                  <span className="font-semibold text-slate-100 text-sm truncate max-w-[120px] sm:max-w-[170px]">
+                    {host?.label || 'Local Machine'}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5 text-slate-400 group-hover:text-slate-200 transition-transform group-hover:translate-y-0.5 shrink-0" />
+                </button>
+
+                {/* Swap Button on Left Pane Toolbar */}
+                {isLeft && (
+                  <button
+                    onClick={handleSwapPanes}
+                    title="Swap left and right panes"
+                    className="hidden md:flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs text-slate-400 hover:bg-white/[0.08] hover:text-white border border-white/5 transition ml-1"
+                  >
+                    <ArrowLeftRight className="h-3.5 w-3.5 text-cyan-400" />
+                    <span className="text-[11px] font-medium">Swap</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {showSearch ? (
+                  <div className="relative flex items-center">
+                    <Search className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                      placeholder="Filter..."
+                      autoFocus
+                      className="h-7 w-36 rounded-lg bg-white/[0.06] pl-8 pr-6 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
+                    />
+                    {filter && (
+                      <button
+                        onClick={() => setFilter('')}
+                        className="absolute right-2 text-slate-400 hover:text-white"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowSearch(true)}
+                    className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                    <span>Filter</span>
+                  </button>
+                )}
+
+                {/* Quick New File Button */}
+                <button
+                  title={`New File on ${host?.label || 'Local'}`}
+                  onClick={() =>
+                    setPromptDialog({
+                      type: 'newFile',
+                      side,
+                      title: `New File (${host?.label || 'Local'})`,
+                      currentVal: 'new-file.txt',
+                    })
+                  }
+                  className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
+                >
+                  <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
+                  <span className="hidden xl:inline">New File</span>
+                </button>
+
+                {/* Quick New Folder Button */}
+                <button
+                  title={`New Folder on ${host?.label || 'Local'}`}
+                  onClick={() =>
+                    setPromptDialog({
+                      type: 'newFolder',
+                      side,
+                      title: `New Folder (${host?.label || 'Local'})`,
+                      currentVal: 'new-folder',
+                    })
+                  }
+                  className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
+                >
+                  <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
+                  <span className="hidden xl:inline">New Folder</span>
+                </button>
+
+                {/* Actions Dropdown */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowActions((v) => !v)}
+                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs font-medium text-slate-300 hover:bg-white/[0.06] hover:text-white border border-white/5 transition"
+                  >
+                    <span>Actions</span>
+                    <ChevronDown className="h-3 w-3 opacity-60" />
+                  </button>
+                  {showActions && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setShowActions(false)} />
+                      <div className="absolute right-0 top-8 z-40 w-48 rounded-xl border border-white/10 bg-[#0e131d] p-1 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
+                            setPromptDialog({
+                              type: 'newFile',
+                              side,
+                              title: `New File (${host?.label || 'Local'})`,
+                              currentVal: 'new-file.txt',
+                            });
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
+                          <span>New File</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
+                            setPromptDialog({
+                              type: 'newFolder',
+                              side,
+                              title: `New Folder (${host?.label || 'Local'})`,
+                              currentVal: 'new-folder',
+                            });
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
+                          <span>New Folder</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
+                            loadPane(side, path, false);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
+                          <span>Refresh</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
+                            setHostPickerSide(side);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <Server className="h-3.5 w-3.5 text-amber-400" />
+                          <span>Switch Source</span>
+                        </button>
+                        <div className="my-1 h-[1px] bg-white/10" />
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
+                            setShowHidden((v) => !v);
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <span>Show Hidden</span>
+                          {showHidden && <Check className="h-3 w-3 text-cyan-400" />}
+                        </button>
+                        {hostId !== null && (
+                          <>
+                            <div className="my-1 h-[1px] bg-white/10" />
+                            <button
+                              onClick={() => {
+                                setShowActions(false);
+                                disconnectSide(side);
+                              }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-rose-400 hover:bg-rose-500/15"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              <span>Disconnect</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Breadcrumbs Bar */}
+            <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-black/10 px-3 text-xs">
+              <div className="flex items-center gap-0.5">
+                <button
+                  disabled={histIdx <= 0}
+                  onClick={() => navigateBack(side)}
+                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  disabled={histIdx >= hist.length - 1}
+                  onClick={() => navigateForward(side)}
+                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
+                <button
+                  onClick={() => loadPane(side, '/')}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
+                >
+                  <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                  <span className="font-mono text-[11px]">/</span>
+                </button>
+                {crumbs.map((crumb, idx) => (
+                  <div key={crumb.fullPath} className="flex items-center gap-1 shrink-0">
+                    <ChevronRight className="h-3 w-3 text-slate-600 shrink-0" />
+                    <button
+                      onClick={() => loadPane(side, crumb.fullPath)}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded px-1.5 py-0.5 transition font-medium',
+                        idx === crumbs.length - 1
+                          ? 'text-slate-100 bg-white/[0.05]'
+                          : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
+                      )}
+                    >
+                      <Folder className="h-3.5 w-3.5 text-sky-400" />
+                      <span>{crumb.name}</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Table Header */}
+            <div className="flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-black/20 px-4 text-[11px] font-medium text-slate-400">
+              <div className="flex-1 min-w-0">Name</div>
+              <div className="w-44 text-left hidden md:block">Date Modified</div>
+              <div className="w-24 text-left hidden md:block">Size</div>
+              <div className="w-20 text-left hidden lg:block">Kind</div>
+            </div>
+
+            {/* File List */}
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.03]">
+              {loading && (
+                <div className="flex items-center justify-center py-12 text-slate-400">
+                  <Loader2 className="h-5 w-5 animate-spin mr-2 text-cyan-400" />
+                  <span>Loading files...</span>
+                </div>
+              )}
+
+              {!loading && path !== '/' && (
+                <div
+                  onClick={() => {
+                    const parentP = path.replace(/\/[^/]+\/?$/, '') || '/';
+                    if (mobile) loadPane(side, parentP);
+                  }}
+                  onDoubleClick={() => {
+                    const parentP = path.replace(/\/[^/]+\/?$/, '') || '/';
+                    loadPane(side, parentP);
+                  }}
+                  className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
+                >
+                  <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                    <Folder className="h-4 w-4 text-sky-400" />
+                    <span className="font-medium text-sm">..</span>
+                  </div>
+                  <div className="w-44 text-slate-500 text-xs hidden md:block">- -</div>
+                  <div className="w-24 text-slate-500 text-xs hidden md:block">- -</div>
+                  <div className="w-20 text-slate-500 text-xs hidden lg:block">folder</div>
+                </div>
+              )}
+
+              {!loading &&
+                entries.map((entry) => {
+                  const isSelected = selected === entry.path;
+                  const Icon = fileIcon(entry);
+                  return (
+                    <div
+                      key={entry.path}
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, entry, side)}
+                      onClick={() => {
+                        setSelected(entry.path);
+                        if (mobile) {
+                          if (entry.isDir) loadPane(side, entry.path);
+                          else setFileActions({ entry, side });
+                        }
+                      }}
+                      onContextMenu={(e) => {
+                        if (mobile) {
+                          e.preventDefault();
+                          setFileActions({ entry, side });
+                        }
+                      }}
+                      onDoubleClick={() => {
+                        if (mobile) return;
+                        if (entry.isDir) {
+                          loadPane(side, entry.path);
+                        } else {
+                          handleOpenFile(entry, side);
+                        }
+                      }}
+                      className={cn(
+                        'flex h-12 items-center px-4 cursor-pointer transition select-none group',
+                        isSelected
+                          ? 'bg-cyan-500/15 border-l-2 border-cyan-400'
+                          : 'hover:bg-white/[0.04] border-l-2 border-transparent'
+                      )}
+                    >
+                      {/* Name + Permissions */}
+                      <div className="flex items-center gap-3 flex-1 min-w-0 pr-3">
+                        <Icon
+                          className={cn('h-4 w-4 shrink-0', entry.isDir ? 'text-sky-400' : 'text-slate-400')}
+                        />
+                        <div className="flex flex-col min-w-0">
+                          <span className="truncate text-xs font-normal text-slate-200 group-hover:text-white">
+                            {entry.name}
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-500">
+                            {fmtPerm(entry.permissions, entry.isDir)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Date Modified */}
+                      <div className="w-44 text-slate-400 text-xs hidden md:block truncate">
+                        {fmtDate(entry.modified)}
+                      </div>
+
+                      {/* Size */}
+                      <div className="w-24 text-slate-400 text-xs hidden md:block font-mono text-[11px]">
+                        {entry.isDir ? '- -' : fmtSize(entry.size)}
+                      </div>
+
+                      {/* Kind */}
+                      <div className="w-20 text-slate-400 text-xs hidden lg:block">
+                        {fmtKind(entry)}
+                      </div>
+
+                      {/* Quick Row Actions on Hover/Select */}
+                      <button
+                        className="nx-touch-button md:hidden"
+                        aria-label={`Actions for ${entry.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFileActions({ entry, side });
+                        }}
+                      >
+                        •••
+                      </button>
+
+                      <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                        {/* Transfer to the other pane button */}
+                        {!entry.isDir && (
+                          <button
+                            title={isLeft ? 'Transfer to Right Pane' : 'Transfer to Left Pane'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleTransfer(entry, side);
+                            }}
+                            className="rounded p-1 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300"
+                          >
+                            {isLeft ? <ArrowRight className="h-3.5 w-3.5" /> : <ArrowLeft className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        {!entry.isDir && (
+                          <button
+                            title="Edit File"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenFile(entry, side);
+                            }}
+                            className="rounded p-1 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300"
+                          >
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        <button
+                          title="Rename"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPromptDialog({
+                              type: 'rename',
+                              side,
+                              title: `Rename ${entry.name}`,
+                              currentVal: entry.name,
+                              targetPath: entry.path,
+                            });
+                          }}
+                          className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          title="Delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            requestDelete(entry, side);
+                          }}
+                          className="rounded p-1 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+              {!loading && !entries.length && (
+                <div className="py-16 text-center text-xs text-slate-500">
+                  {filter ? 'No files match filter' : 'Empty directory'}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       className="nx-sftp relative flex h-full w-full flex-col overflow-hidden text-slate-200 select-none"
@@ -662,7 +1386,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
           <div className="flex flex-col text-xs">
             <span className="font-medium text-slate-100">
-              {transferStatus.type === 'upload' ? 'Uploading' : 'Downloading'} {transferStatus.filename}
+              {transferStatus.type === 'upload' ? 'Transferring' : 'Downloading'} {transferStatus.filename}
             </span>
             <div className="mt-1 h-1.5 w-40 overflow-hidden rounded-full bg-slate-800">
               <div
@@ -677,823 +1401,164 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         </div>
       )}
 
-      <div className="nx-segmented md:hidden" aria-label="File location">
-        <button aria-pressed={mobileSide === 'remote'} onClick={() => setMobileSide('remote')}><Server size={16} /> Remote</button>
-        <button aria-pressed={mobileSide === 'local'} onClick={() => setMobileSide('local')}><Laptop size={16} /> Local</button>
+      {/* ── Mobile Pane Switcher & Swap ── */}
+      <div className="nx-segmented md:hidden flex items-center justify-between gap-1 p-1 bg-black/30 border-b border-white/10" aria-label="File location">
+        <button
+          aria-pressed={mobileSide === 'left'}
+          onClick={() => setMobileSide('left')}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-medium transition",
+            mobileSide === 'left' ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
+          )}
+        >
+          {leftHost ? <OsIcon os={leftHost.os} color={leftHost.color} size={16} /> : <Laptop size={16} />}
+          <span className="truncate">{leftHost?.label || 'Local'}</span>
+        </button>
+
+        <button
+          onClick={handleSwapPanes}
+          title="Swap left and right panes"
+          className="grid h-8 w-8 place-items-center rounded-lg bg-white/5 hover:bg-white/10 text-cyan-400 border border-white/5 transition"
+        >
+          <ArrowLeftRight size={14} />
+        </button>
+
+        <button
+          aria-pressed={mobileSide === 'right'}
+          onClick={() => setMobileSide('right')}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 px-2 text-xs font-medium transition",
+            mobileSide === 'right' ? "bg-white/10 text-white" : "text-slate-400 hover:text-slate-200"
+          )}
+        >
+          {rightHost ? <OsIcon os={rightHost.os} color={rightHost.color} size={16} /> : <Laptop size={16} />}
+          <span className="truncate">{rightHost?.label || (rightHostId ? 'Host' : 'Local')}</span>
+        </button>
       </div>
-      {mobile && active && fileActions && <MobileSheet title={fileActions.entry.name} kicker={fileActions.entry.isDir ? 'Folder' : 'File'} subtitle={fileActions.side === 'remote' ? 'Remote' : 'Local'}
-        icon={fileActions.entry.isDir ? Folder : FileCode} theme={activeTheme} onClose={() => setFileActions(null)}>
-        <p className="mb-3 break-all font-mono text-[11px] leading-relaxed text-slate-500">{fileActions.entry.path}</p>
-        <div className="nx-settings-group">
-          {fileActions.entry.isDir ? <button className="nx-settings-row" onClick={() => { fileActions.side === 'remote' ? loadRemote(fileActions.entry.path) : loadLocal(fileActions.entry.path); setFileActions(null); }}><Folder size={18} /> Open folder</button> : <>
-            <button className="nx-settings-row" onClick={() => { handleOpenFile(fileActions.entry, fileActions.side === 'remote'); setFileActions(null); }}><FileCode size={18} /> Edit</button>
-            <button className="nx-settings-row" disabled={!!transferStatus || !remoteSessionId || !localPath} onClick={() => { fileActions.side === 'remote' ? handleDownload(fileActions.entry) : handleUpload(fileActions.entry); setFileActions(null); }}><Download size={18} />{fileActions.side === 'remote' ? 'Download to Local' : 'Upload to Remote'}</button>
-          </>}
-          <button className="nx-settings-row" onClick={() => { setPromptDialog({ type: 'rename', side: fileActions.side, title: 'Rename', currentVal: fileActions.entry.name, targetPath: fileActions.entry.path }); setFileActions(null); }}><Edit2 size={18} /> Rename</button>
-          <button className="nx-settings-row" onClick={() => { setPermissions(fileActions.entry); setFileActions(null); }}><ShieldCheck size={18} /> Permissions</button>
-          <button className="nx-settings-row text-rose-300" onClick={() => { requestDelete(fileActions.entry, fileActions.side); setFileActions(null); }}><Trash2 size={18} /> Delete…</button>
-        </div>
-        <p className="mt-3 break-all text-xs text-slate-500">Transfer destination: {fileActions.side === 'remote' ? localPath || 'Select a local folder first' : remotePath || 'Connect to a remote host first'}. Change it in the {fileActions.side === 'remote' ? 'Local' : 'Remote'} tab before transferring.</p>
-      </MobileSheet>}
-      {mobile && active && permissions && <MobileSheet title="File permissions" subtitle={permissions.name} icon={ShieldCheck} theme={activeTheme} onClose={() => setPermissions(null)}>
-        <p className="my-1 rounded-xl border border-white/[0.06] bg-black/30 p-4 font-mono text-lg" style={{ color: activeTheme.accent }}>{permissions.permissions == null ? 'Not reported' : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}</p>
-        <p className="mt-3 text-xs leading-relaxed text-slate-400">Read-only metadata. Permission changes are not exposed by the file API; use your terminal to change the mode.</p>
-      </MobileSheet>}
+
+      {/* ── Mobile Action Sheets ── */}
+      {mobile && active && fileActions && (
+        <MobileSheet
+          title={fileActions.entry.name}
+          kicker={fileActions.entry.isDir ? 'Folder' : 'File'}
+          subtitle={fileActions.side === 'left' ? (leftHost?.label || 'Local') : (rightHost?.label || 'Right')}
+          icon={fileActions.entry.isDir ? Folder : FileCode}
+          theme={activeTheme}
+          onClose={() => setFileActions(null)}
+        >
+          <p className="mb-3 break-all font-mono text-[11px] leading-relaxed text-slate-500">
+            {fileActions.entry.path}
+          </p>
+          <div className="nx-settings-group">
+            {fileActions.entry.isDir ? (
+              <button
+                className="nx-settings-row"
+                onClick={() => {
+                  loadPane(fileActions.side, fileActions.entry.path);
+                  setFileActions(null);
+                }}
+              >
+                <Folder size={18} /> Open folder
+              </button>
+            ) : (
+              <>
+                <button
+                  className="nx-settings-row"
+                  onClick={() => {
+                    handleOpenFile(fileActions.entry, fileActions.side);
+                    setFileActions(null);
+                  }}
+                >
+                  <FileCode size={18} /> Edit
+                </button>
+                <button
+                  className="nx-settings-row"
+                  disabled={!!transferStatus}
+                  onClick={() => {
+                    handleTransfer(fileActions.entry, fileActions.side);
+                    setFileActions(null);
+                  }}
+                >
+                  <ArrowRight size={18} /> Transfer to other pane
+                </button>
+              </>
+            )}
+            <button
+              className="nx-settings-row"
+              onClick={() => {
+                setPromptDialog({
+                  type: 'rename',
+                  side: fileActions.side,
+                  title: `Rename ${fileActions.entry.name}`,
+                  currentVal: fileActions.entry.name,
+                  targetPath: fileActions.entry.path,
+                });
+                setFileActions(null);
+              }}
+            >
+              <Edit2 size={18} /> Rename
+            </button>
+            <button
+              className="nx-settings-row"
+              onClick={() => {
+                setPermissions(fileActions.entry);
+                setFileActions(null);
+              }}
+            >
+              <ShieldCheck size={18} /> Permissions
+            </button>
+            <button
+              className="nx-settings-row text-rose-300"
+              onClick={() => {
+                requestDelete(fileActions.entry, fileActions.side);
+                setFileActions(null);
+              }}
+            >
+              <Trash2 size={18} /> Delete…
+            </button>
+          </div>
+        </MobileSheet>
+      )}
+
+      {mobile && active && permissions && (
+        <MobileSheet
+          title="File permissions"
+          subtitle={permissions.name}
+          icon={ShieldCheck}
+          theme={activeTheme}
+          onClose={() => setPermissions(null)}
+        >
+          <p
+            className="my-1 rounded-xl border border-white/[0.06] bg-black/30 p-4 font-mono text-lg"
+            style={{ color: activeTheme.accent }}
+          >
+            {permissions.permissions == null
+              ? 'Not reported'
+              : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}
+          </p>
+          <p className="mt-3 text-xs leading-relaxed text-slate-400">
+            Read-only metadata. Permission changes are not exposed by the file API; use your terminal to change the mode.
+          </p>
+        </MobileSheet>
+      )}
 
       {/* ── Main Dual-Pane View ── */}
       <div className="flex flex-1 min-h-0 min-w-0 md:divide-x divide-white/[0.08]">
-        {/* ==================================================================== */}
-        {/* LEFT PANE: LOCAL FILESYSTEM */}
-        {/* ==================================================================== */}
-        <div
-          className={cn("flex flex-1 min-w-0 flex-col bg-transparent", mobileSide !== 'local' && "max-md:hidden")}
-          role="region" aria-label="Local files"
-          onDragOver={handleDragOver}
-          onDrop={handleDropOnLocal}
-        >
-          {/* Header */}
-          <div className="nx-sftp-toolbar flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
-            <div className="flex items-center gap-2">
-              <div className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-400/30">
-                <Laptop className="h-4 w-4" />
-              </div>
-              <span className="font-medium text-slate-100 text-sm">Local</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {showLocalSearch ? (
-                <div className="relative flex items-center">
-                  <Search className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" />
-                  <input
-                    type="text"
-                    value={localFilter}
-                    onChange={(e) => setLocalFilter(e.target.value)}
-                    placeholder="Filter..."
-                    autoFocus
-                    className="h-7 w-36 rounded-lg bg-white/[0.06] pl-8 pr-6 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
-                  />
-                  {localFilter && (
-                    <button
-                      onClick={() => setLocalFilter('')}
-                      className="absolute right-2 text-slate-400 hover:text-white"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <button
-                  onClick={() => setShowLocalSearch(true)}
-                  className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-                >
-                  <Search className="h-3.5 w-3.5" />
-                  <span>Filter</span>
-                </button>
-              )}
-
-              {/* Quick New File & New Folder Buttons */}
-              <button
-                title="New File"
-                onClick={() =>
-                  setPromptDialog({
-                    type: 'newFile',
-                    side: 'local',
-                    title: 'New Local File',
-                    currentVal: 'new-file.txt',
-                  })
-                }
-                className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-              >
-                <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
-                <span className="hidden xl:inline">New File</span>
-              </button>
-
-              <button
-                title="New Folder"
-                onClick={() =>
-                  setPromptDialog({
-                    type: 'newFolder',
-                    side: 'local',
-                    title: 'New Local Folder',
-                    currentVal: 'new-folder',
-                  })
-                }
-                className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-              >
-                <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
-                <span className="hidden xl:inline">New Folder</span>
-              </button>
-
-              {/* Actions Dropdown */}
-              <div className="relative">
-                <button
-                  onClick={() => setShowLocalActions((v) => !v)}
-                  className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs font-medium text-slate-300 hover:bg-white/[0.06] hover:text-white border border-white/5 transition"
-                >
-                  <span>Actions</span>
-                  <ChevronDown className="h-3 w-3 opacity-60" />
-                </button>
-                {showLocalActions && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={() => setShowLocalActions(false)} />
-                    <div className="absolute right-0 top-8 z-40 w-44 rounded-xl border border-white/10 bg-[#0e131d] p-1 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
-                      <button
-                        onClick={() => {
-                          setShowLocalActions(false);
-                          setPromptDialog({
-                            type: 'newFile',
-                            side: 'local',
-                            title: 'New Local File',
-                            currentVal: 'new-file.txt',
-                          });
-                        }}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                      >
-                        <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
-                        <span>New File</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setShowLocalActions(false);
-                          setPromptDialog({
-                            type: 'newFolder',
-                            side: 'local',
-                            title: 'New Local Folder',
-                            currentVal: 'new-folder',
-                          });
-                        }}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                      >
-                        <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
-                        <span>New Folder</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setShowLocalActions(false);
-                          loadLocal(localPath, false);
-                        }}
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
-                        <span>Refresh</span>
-                      </button>
-                      <div className="my-1 h-[1px] bg-white/10" />
-                      <button
-                        onClick={() => {
-                          setShowLocalActions(false);
-                          setShowLocalHidden((v) => !v);
-                        }}
-                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                      >
-                        <span>Show Hidden</span>
-                        {showLocalHidden && <Check className="h-3 w-3 text-cyan-400" />}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Breadcrumbs Bar */}
-          <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-black/10 px-3 text-xs">
-            <div className="flex items-center gap-0.5">
-              <button
-                disabled={localHistoryIdx <= 0}
-                onClick={navigateLocalBack}
-                className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </button>
-              <button
-                disabled={localHistoryIdx >= localHistory.length - 1}
-                onClick={navigateLocalForward}
-                className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-              >
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
-              <button
-                onClick={() => loadLocal('/')}
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
-              >
-                <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                <span className="font-mono text-[11px]">/</span>
-              </button>
-              {localCrumbs.map((crumb, idx) => (
-                <div key={crumb.fullPath} className="flex items-center gap-1 shrink-0">
-                  <ChevronRight className="h-3 w-3 text-slate-600 shrink-0" />
-                  <button
-                    onClick={() => loadLocal(crumb.fullPath)}
-                    className={cn(
-                      'flex items-center gap-1.5 rounded px-1.5 py-0.5 transition font-medium',
-                      idx === localCrumbs.length - 1
-                        ? 'text-slate-100 bg-white/[0.05]'
-                        : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
-                    )}
-                  >
-                    <Folder className="h-3.5 w-3.5 text-sky-400" />
-                    <span>{crumb.name}</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Table Header */}
-          <div className="flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-black/20 px-4 text-[11px] font-medium text-slate-400">
-            <div className="flex-1 min-w-0">Name</div>
-            <div className="w-44 text-left hidden md:block">Date Modified</div>
-            <div className="w-24 text-left hidden md:block">Size</div>
-            <div className="w-20 text-left hidden lg:block">Kind</div>
-          </div>
-
-          {/* File List */}
-          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.03]">
-            {localLoading && (
-              <div className="flex items-center justify-center py-12 text-slate-400">
-                <Loader2 className="h-5 w-5 animate-spin mr-2 text-cyan-400" />
-                <span>Loading directory...</span>
-              </div>
-            )}
-
-            {!localLoading && localPath !== '/' && (
-              <div
-                onClick={() => { if (mobile) loadLocal(localPath.replace(/\/[^/]+\/?$/, '') || '/'); }}
-                    onDoubleClick={() => loadLocal(localPath.replace(/\/[^/]+\/?$/, '') || '/')}
-                className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
-              >
-                <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                  <Folder className="h-4 w-4 text-sky-400" />
-                  <span className="font-medium text-sm">..</span>
-                </div>
-                <div className="w-44 text-slate-500 text-xs hidden md:block">- -</div>
-                <div className="w-24 text-slate-500 text-xs hidden md:block">- -</div>
-                <div className="w-20 text-slate-500 text-xs hidden lg:block">folder</div>
-              </div>
-            )}
-
-            {!localLoading &&
-              filteredLocal.map((entry) => {
-                const isSelected = localSelected === entry.path;
-                const Icon = fileIcon(entry);
-                return (
-                  <div
-                    key={entry.path}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, entry, 'local')}
-                    onClick={() => {
-                      setLocalSelected(entry.path);
-                      if (mobile) { if (entry.isDir) loadLocal(entry.path); else setFileActions({ entry, side: 'local' }); }
-                    }}
-                    onContextMenu={e => { if (mobile) { e.preventDefault(); setFileActions({ entry, side: 'local' }); } }}
-                    onDoubleClick={() => {
-                      if (mobile) return;
-                      if (entry.isDir) {
-                        loadLocal(entry.path);
-                      } else {
-                        handleOpenFile(entry, false);
-                      }
-                    }}
-                    className={cn(
-                      'flex h-12 items-center px-4 cursor-pointer transition select-none group',
-                      isSelected
-                        ? 'bg-cyan-500/15 border-l-2 border-cyan-400'
-                        : 'hover:bg-white/[0.04] border-l-2 border-transparent'
-                    )}
-                  >
-                    {/* Name + Permissions */}
-                    <div className="flex items-center gap-3 flex-1 min-w-0 pr-3">
-                      <Icon
-                        className={cn(
-                          'h-4 w-4 shrink-0',
-                          entry.isDir ? 'text-sky-400' : 'text-slate-400'
-                        )}
-                      />
-                      <div className="flex flex-col min-w-0">
-                        <span className="truncate text-xs font-normal text-slate-200 group-hover:text-white">
-                          {entry.name}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-500">
-                          {fmtPerm(entry.permissions, entry.isDir)}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Date Modified */}
-                    <div className="w-44 text-slate-400 text-xs hidden md:block truncate">
-                      {fmtDate(entry.modified)}
-                    </div>
-
-                    {/* Size */}
-                    <div className="w-24 text-slate-400 text-xs hidden md:block font-mono text-[11px]">
-                      {entry.isDir ? '- -' : fmtSize(entry.size)}
-                    </div>
-
-                    {/* Kind */}
-                    <div className="w-20 text-slate-400 text-xs hidden lg:block">
-                      {fmtKind(entry)}
-                    </div>
-
-                    {/* Quick Row Actions on Hover/Select */}
-                    <button className="nx-touch-button md:hidden" aria-label={`Actions for ${entry.name}`} onClick={e => { e.stopPropagation(); setFileActions({ entry, side: 'local' }); }}>•••</button>
-                    <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                      {remoteSessionId && !entry.isDir && (
-                        <button
-                          title={`Upload to ${remoteHost?.label || 'Remote'}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleUpload(entry);
-                          }}
-                          className="rounded p-1 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300"
-                        >
-                          <Upload className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                      {!entry.isDir && (
-                        <button
-                          title="Edit File"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenFile(entry, false);
-                          }}
-                          className="rounded p-1 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                      <button
-                        title="Rename"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setPromptDialog({
-                            type: 'rename',
-                            side: 'local',
-                            title: 'Rename File',
-                            currentVal: entry.name,
-                            targetPath: entry.path,
-                          });
-                        }}
-                        className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        title="Delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          requestDelete(entry, 'local');
-                        }}
-                        className="rounded p-1 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-
-            {!localLoading && !filteredLocal.length && (
-              <div className="py-16 text-center text-xs text-slate-500">
-                {localFilter ? 'No files match filter' : 'Empty directory'}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ==================================================================== */}
-        {/* RIGHT PANE: REMOTE SFTP HOST */}
-        {/* ==================================================================== */}
-        <div
-          className={cn("flex flex-1 min-w-0 flex-col bg-transparent relative", mobileSide !== 'remote' && "max-md:hidden")}
-          role="region" aria-label="Remote files"
-          onDragOver={handleDragOver}
-          onDrop={handleDropOnRemote}
-        >
-          {remoteConnecting ? (
-            <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-              <Loader2 className="h-8 w-8 animate-spin text-cyan-400 mb-3" />
-              <h3 className="text-sm font-semibold text-slate-200">
-                Connecting to {remoteHost?.label || 'Host'}...
-              </h3>
-              <p className="text-xs text-slate-500 mt-1">
-                Authenticating and establishing SFTP session
-              </p>
-            </div>
-          ) : !remoteSessionId ? (
-            /* ── DISCONNECTED PLACEHOLDER (Exact Termius style from screenshot) ── */
-            <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-              {/* Rounded Folder Squircle */}
-              <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/[0.05] border border-white/10 shadow-xl mb-4">
-                <Folder className="h-8 w-8 text-slate-300" />
-              </div>
-
-              <h2 className="text-base font-semibold text-slate-100 mb-1">
-                Connect to host
-              </h2>
-              <p className="max-w-xs text-xs text-slate-400 leading-relaxed mb-6">
-                Start by connecting to a saved host to manage your files with SFTP.
-              </p>
-
-              <button
-                onClick={() => setShowHostPicker(true)}
-                className="flex items-center gap-2 rounded-xl bg-slate-800 hover:bg-slate-700/90 text-slate-100 px-5 py-2.5 text-xs font-medium border border-white/10 shadow-lg hover:border-white/20 transition cursor-pointer"
-              >
-                <span>Select host</span>
-              </button>
-            </div>
-          ) : (
-            /* ── CONNECTED REMOTE BROWSER ── */
-            <>
-              {/* Header */}
-              <div className="nx-sftp-toolbar flex h-12 shrink-0 items-center justify-between border-b border-white/[0.08] px-4">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <OsIcon os={remoteHost?.os} color={remoteHost?.color} size={28} />
-                  <span className="font-semibold text-slate-100 text-sm truncate">
-                    {remoteHost?.label || 'Remote Host'}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {showRemoteSearch ? (
-                    <div className="relative flex items-center">
-                      <Search className="absolute left-2.5 h-3.5 w-3.5 text-slate-400" />
-                      <input
-                        type="text"
-                        value={remoteFilter}
-                        onChange={(e) => setRemoteFilter(e.target.value)}
-                        placeholder="Filter..."
-                        autoFocus
-                        className="h-7 w-36 rounded-lg bg-white/[0.06] pl-8 pr-6 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:border-cyan-400/50 focus:outline-none focus:ring-1 focus:ring-cyan-400/30"
-                      />
-                      {remoteFilter && (
-                        <button
-                          onClick={() => setRemoteFilter('')}
-                          className="absolute right-2 text-slate-400 hover:text-white"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowRemoteSearch(true)}
-                      className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-                    >
-                      <Search className="h-3.5 w-3.5" />
-                      <span>Filter</span>
-                    </button>
-                  )}
-
-                  {/* Quick New File & New Folder Buttons */}
-                  <button
-                    title="New Remote File"
-                    onClick={() =>
-                      setPromptDialog({
-                        type: 'newFile',
-                        side: 'remote',
-                        title: 'New Remote File',
-                        currentVal: 'new-file.txt',
-                      })
-                    }
-                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-                  >
-                    <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
-                    <span className="hidden xl:inline">New File</span>
-                  </button>
-
-                  <button
-                    title="New Remote Folder"
-                    onClick={() =>
-                      setPromptDialog({
-                        type: 'newFolder',
-                        side: 'remote',
-                        title: 'New Remote Folder',
-                        currentVal: 'new-folder',
-                      })
-                    }
-                    className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 transition"
-                  >
-                    <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
-                    <span className="hidden xl:inline">New Folder</span>
-                  </button>
-
-                  {/* Actions Dropdown */}
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowRemoteActions((v) => !v)}
-                      className="flex h-7 items-center gap-1 rounded-lg px-2 text-xs font-medium text-slate-300 hover:bg-white/[0.06] hover:text-white border border-white/5 transition"
-                    >
-                      <span>Actions</span>
-                      <ChevronDown className="h-3 w-3 opacity-60" />
-                    </button>
-                    {showRemoteActions && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-30"
-                          onClick={() => setShowRemoteActions(false)}
-                        />
-                        <div className="absolute right-0 top-8 z-40 w-48 rounded-xl border border-white/10 bg-[#0e131d] p-1 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              setPromptDialog({
-                                type: 'newFile',
-                                side: 'remote',
-                                title: 'New Remote File',
-                                currentVal: 'new-file.txt',
-                              });
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <FilePlus className="h-3.5 w-3.5 text-cyan-400" />
-                            <span>New File</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              setPromptDialog({
-                                type: 'newFolder',
-                                side: 'remote',
-                                title: 'New Remote Folder',
-                                currentVal: 'new-folder',
-                              });
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <FolderPlus className="h-3.5 w-3.5 text-sky-400" />
-                            <span>New Folder</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              loadRemote(remotePath, false);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5 text-emerald-400" />
-                            <span>Refresh</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              setShowHostPicker(true);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <Server className="h-3.5 w-3.5 text-amber-400" />
-                            <span>Switch Host</span>
-                          </button>
-                          <div className="my-1 h-[1px] bg-white/10" />
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              setShowRemoteHidden((v) => !v);
-                            }}
-                            className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
-                          >
-                            <span>Show Hidden</span>
-                            {showRemoteHidden && <Check className="h-3 w-3 text-cyan-400" />}
-                          </button>
-                          <div className="my-1 h-[1px] bg-white/10" />
-                          <button
-                            onClick={() => {
-                              setShowRemoteActions(false);
-                              disconnectRemote();
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-rose-400 hover:bg-rose-500/15"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                            <span>Disconnect</span>
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Breadcrumbs Bar */}
-              <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-black/10 px-3 text-xs">
-                <div className="flex items-center gap-0.5">
-                  <button
-                    disabled={remoteHistoryIdx <= 0}
-                    onClick={navigateRemoteBack}
-                    className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    disabled={remoteHistoryIdx >= remoteHistory.length - 1}
-                    onClick={navigateRemoteForward}
-                    className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
-                  <button
-                    onClick={() => loadRemote('/')}
-                    className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
-                  >
-                    <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                    <span className="font-mono text-[11px]">/</span>
-                  </button>
-                  {remoteCrumbs.map((crumb, idx) => (
-                    <div key={crumb.fullPath} className="flex items-center gap-1 shrink-0">
-                      <ChevronRight className="h-3 w-3 text-slate-600 shrink-0" />
-                      <button
-                        onClick={() => loadRemote(crumb.fullPath)}
-                        className={cn(
-                          'flex items-center gap-1.5 rounded px-1.5 py-0.5 transition font-medium',
-                          idx === remoteCrumbs.length - 1
-                            ? 'text-slate-100 bg-white/[0.05]'
-                            : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
-                        )}
-                      >
-                        <Folder className="h-3.5 w-3.5 text-sky-400" />
-                        <span>{crumb.name}</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Table Header */}
-              <div className="flex h-8 shrink-0 items-center border-b border-white/[0.06] bg-black/20 px-4 text-[11px] font-medium text-slate-400">
-                <div className="flex-1 min-w-0">Name</div>
-                <div className="w-44 text-left hidden md:block">Date Modified</div>
-                <div className="w-24 text-left hidden md:block">Size</div>
-                <div className="w-20 text-left hidden lg:block">Kind</div>
-              </div>
-
-              {/* File List */}
-              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.03]">
-                {remoteLoading && (
-                  <div className="flex items-center justify-center py-12 text-slate-400">
-                    <Loader2 className="h-5 w-5 animate-spin mr-2 text-cyan-400" />
-                    <span>Loading remote files...</span>
-                  </div>
-                )}
-
-                {!remoteLoading && remotePath !== '/' && (
-                  <div
-                    onClick={() => { if (mobile) loadRemote(remotePath.replace(/\/[^/]+\/?$/, '') || '/'); }}
-                    onDoubleClick={() => loadRemote(remotePath.replace(/\/[^/]+\/?$/, '') || '/')}
-                    className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
-                  >
-                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                      <Folder className="h-4 w-4 text-sky-400" />
-                      <span className="font-medium text-sm">..</span>
-                    </div>
-                    <div className="w-44 text-slate-500 text-xs hidden md:block">- -</div>
-                    <div className="w-24 text-slate-500 text-xs hidden md:block">- -</div>
-                    <div className="w-20 text-slate-500 text-xs hidden lg:block">folder</div>
-                  </div>
-                )}
-
-                {!remoteLoading &&
-                  filteredRemote.map((entry) => {
-                    const isSelected = remoteSelected === entry.path;
-                    const Icon = fileIcon(entry);
-                    return (
-                      <div
-                        key={entry.path}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, entry, 'remote')}
-                        onClick={() => {
-                      setRemoteSelected(entry.path);
-                      if (mobile) { if (entry.isDir) loadRemote(entry.path); else setFileActions({ entry, side: 'remote' }); }
-                    }}
-                    onContextMenu={e => { if (mobile) { e.preventDefault(); setFileActions({ entry, side: 'remote' }); } }}
-                        onDoubleClick={() => {
-                          if (mobile) return;
-                          if (entry.isDir) {
-                            loadRemote(entry.path);
-                          } else {
-                            handleOpenFile(entry, true);
-                          }
-                        }}
-                        className={cn(
-                          'flex h-12 items-center px-4 cursor-pointer transition select-none group',
-                          isSelected
-                            ? 'bg-cyan-500/15 border-l-2 border-cyan-400'
-                            : 'hover:bg-white/[0.04] border-l-2 border-transparent'
-                        )}
-                      >
-                        {/* Name + Permissions */}
-                        <div className="flex items-center gap-3 flex-1 min-w-0 pr-3">
-                          <Icon
-                            className={cn(
-                              'h-4 w-4 shrink-0',
-                              entry.isDir ? 'text-sky-400' : 'text-slate-400'
-                            )}
-                          />
-                          <div className="flex flex-col min-w-0">
-                            <span className="truncate text-xs font-normal text-slate-200 group-hover:text-white">
-                              {entry.name}
-                            </span>
-                            <span className="font-mono text-[10px] text-slate-500">
-                              {fmtPerm(entry.permissions, entry.isDir)}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Date Modified */}
-                        <div className="w-44 text-slate-400 text-xs hidden md:block truncate">
-                          {fmtDate(entry.modified)}
-                        </div>
-
-                        {/* Size */}
-                        <div className="w-24 text-slate-400 text-xs hidden md:block font-mono text-[11px]">
-                          {entry.isDir ? '- -' : fmtSize(entry.size)}
-                        </div>
-
-                        {/* Kind */}
-                        <div className="w-20 text-slate-400 text-xs hidden lg:block">
-                          {fmtKind(entry)}
-                        </div>
-
-                        {/* Quick Row Actions on Hover/Select */}
-                        <button className="nx-touch-button md:hidden" aria-label={`Actions for ${entry.name}`} onClick={e => { e.stopPropagation(); setFileActions({ entry, side: 'remote' }); }}>•••</button>
-                    <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                          {!entry.isDir && (
-                            <button
-                              title="Download to Local"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDownload(entry);
-                              }}
-                              className="rounded p-1 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                          {!entry.isDir && (
-                            <button
-                              title="Edit File"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenFile(entry, true);
-                              }}
-                              className="rounded p-1 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300"
-                            >
-                              <Edit2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                          <button
-                            title="Rename"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPromptDialog({
-                                type: 'rename',
-                                side: 'remote',
-                                title: 'Rename Remote File',
-                                currentVal: entry.name,
-                                targetPath: entry.path,
-                              });
-                            }}
-                            className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white"
-                          >
-                            <Edit2 className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            title="Delete"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              requestDelete(entry, 'remote');
-                            }}
-                            className="rounded p-1 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                {!remoteLoading && !filteredRemote.length && (
-                  <div className="py-16 text-center text-xs text-slate-500">
-                    {remoteFilter ? 'No files match filter' : 'Empty directory'}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+        {renderPane('left')}
+        {renderPane('right')}
       </div>
 
       {/* ==================================================================== */}
-      {/* HOST PICKER MODAL */}
+      {/* SOURCE & HOST PICKER MODAL (FOR LEFT OR RIGHT PANE) */}
       {/* ==================================================================== */}
-      {showHostPicker && (
+      {hostPickerSide && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
           <div
             className="fixed inset-0"
-            onClick={() => setShowHostPicker(false)}
+            onClick={() => {
+              if (connectingHostId) return;
+              setHostPickerSide(null);
+            }}
           />
           <div
             className="relative flex flex-col w-full max-w-lg max-h-[85vh] rounded-2xl border border-white/10 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
@@ -1528,16 +1593,34 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                   <HardDrive className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-semibold text-white">Select SFTP Host</h3>
+                  <h3 className="text-sm font-semibold text-white">
+                    Select Source for {hostPickerSide === 'left' ? 'Left' : 'Right'} Pane
+                  </h3>
                   <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-                    Connect directly to browse and transfer files
+                    {connectingHostId ? (
+                      <span className="flex items-center gap-1.5 text-cyan-400 font-medium">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Connecting to {hosts.find((h) => h.id === connectingHostId)?.label || 'host'}…
+                      </span>
+                    ) : (
+                      <>
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                        Choose Local Machine or any saved SFTP Host
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setShowHostPicker(false)}
-                className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+                onClick={() => {
+                  if (connectingHostId) return;
+                  setHostPickerSide(null);
+                }}
+                disabled={!!connectingHostId}
+                className={cn(
+                  "rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition",
+                  connectingHostId && "opacity-40 cursor-not-allowed"
+                )}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1551,9 +1634,13 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                   type="text"
                   value={hostPickerSearch}
                   onChange={(e) => setHostPickerSearch(e.target.value)}
+                  disabled={!!connectingHostId}
                   placeholder="Search by label, host, username or tag..."
                   autoFocus
-                  className="h-9 w-full rounded-xl bg-white/[0.05] pl-10 pr-4 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:outline-none focus:ring-1 transition"
+                  className={cn(
+                    "h-9 w-full rounded-xl bg-white/[0.05] pl-10 pr-4 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:outline-none focus:ring-1 transition",
+                    connectingHostId && "opacity-50 cursor-not-allowed"
+                  )}
                   style={{
                     borderColor: hostPickerSearch ? `${accentColor}50` : undefined,
                   }}
@@ -1561,48 +1648,139 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               </div>
             </div>
 
-            {/* Hosts List */}
+            {/* Source & Hosts List */}
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
-              {filteredHosts.map((h) => (
+              {/* Option 1: Local Machine */}
+              {(!hostPickerSearch || 'local machine this computer'.includes(hostPickerSearch.toLowerCase())) && (
                 <div
-                  key={h.id}
-                  onClick={() => connectRemote(h.id)}
-                  className="group flex items-center justify-between rounded-xl p-3 bg-white/[0.03] hover:bg-white/[0.07] border border-white/5 hover:border-white/15 cursor-pointer transition shadow-sm"
+                  onClick={() => {
+                    if (connectingHostId) return;
+                    switchToLocal(hostPickerSide);
+                  }}
+                  className={cn(
+                    "group flex items-center justify-between rounded-xl p-3 border transition shadow-sm cursor-pointer",
+                    (hostPickerSide === 'left' ? !leftHostId : !rightHostId)
+                      ? "bg-cyan-500/15 border-cyan-500/50 ring-1 ring-cyan-500/30 shadow-lg shadow-cyan-500/10"
+                      : "bg-white/[0.03] hover:bg-white/[0.07] border-white/5 hover:border-white/15"
+                  )}
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <OsIcon os={h.os} color={h.color || accentColor} size={34} />
+                    <div className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/30 shrink-0">
+                      <Laptop className="h-5 w-5" />
+                    </div>
                     <div className="flex flex-col min-w-0">
                       <span className="font-semibold text-xs text-slate-100 group-hover:text-white truncate">
-                        {h.label}
+                        Local Machine (This Computer)
                       </span>
                       <span className="text-[11px] font-mono text-slate-400 truncate">
-                        {h.username}@{h.hostname}{h.port !== 22 ? `:${h.port}` : ''}
+                        Browse and transfer files from your local storage
                       </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    {h.tags?.map((t) => (
-                      <span
-                        key={t}
-                        className="rounded-md bg-white/[0.06] border border-white/5 px-1.5 py-0.5 text-[9px] text-slate-400 font-mono"
-                      >
-                        {t}
+                    <span className="rounded-md bg-cyan-500/20 border border-cyan-500/30 px-2 py-0.5 text-[10px] text-cyan-300 font-mono">
+                      LOCAL
+                    </span>
+                    {(hostPickerSide === 'left' ? !leftHostId : !rightHostId) ? (
+                      <span className="rounded-full bg-cyan-400/20 px-2 py-0.5 text-[10px] text-cyan-300 font-medium border border-cyan-400/30">
+                        Active
                       </span>
-                    ))}
-                    <div
-                      className="grid h-8 w-8 place-items-center rounded-xl border transition shadow-sm"
-                      style={{
-                        backgroundColor: `${accentColor}18`,
-                        borderColor: `${accentColor}35`,
-                        color: accentColor,
-                        boxShadow: `0 0 12px ${accentColor}15`,
-                      }}
-                    >
-                      <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
-                    </div>
+                    ) : (
+                      <div
+                        className="grid h-8 w-8 place-items-center rounded-xl border transition shadow-sm group-hover:translate-x-0.5"
+                        style={{
+                          backgroundColor: `${accentColor}18`,
+                          borderColor: `${accentColor}35`,
+                          color: accentColor,
+                          boxShadow: `0 0 12px ${accentColor}15`,
+                        }}
+                      >
+                        <ArrowRight className="h-4 w-4 transition-transform" />
+                      </div>
+                    )}
                   </div>
                 </div>
-              ))}
+              )}
+
+              {/* Saved Hosts Section Header */}
+              <div className="flex items-center gap-2 px-1 pt-2 pb-1 text-[11px] font-medium text-slate-400 uppercase tracking-wider">
+                <Server className="h-3 w-3 text-slate-500" />
+                <span>Saved Remote SFTP Hosts</span>
+              </div>
+
+              {/* Option 2: Remote Hosts List */}
+              {filteredHosts.map((h) => {
+                const isConnectingThis = connectingHostId === h.id && connectingSide === hostPickerSide;
+                const isConnectingAny = connectingHostId !== null;
+                const isActiveOnThisSide = (hostPickerSide === 'left' ? leftHostId : rightHostId) === h.id;
+
+                return (
+                  <div
+                    key={h.id}
+                    onClick={() => {
+                      if (isConnectingAny) return;
+                      connectHost(hostPickerSide, h.id);
+                    }}
+                    className={cn(
+                      "group flex items-center justify-between rounded-xl p-3 border transition shadow-sm",
+                      isConnectingThis
+                        ? "bg-cyan-500/15 border-cyan-500/50 ring-1 ring-cyan-500/30 cursor-wait shadow-lg shadow-cyan-500/10"
+                        : isActiveOnThisSide
+                        ? "bg-cyan-500/15 border-cyan-500/40 ring-1 ring-cyan-500/30"
+                        : isConnectingAny
+                        ? "bg-white/[0.02] border-white/5 opacity-40 cursor-not-allowed pointer-events-none"
+                        : "bg-white/[0.03] hover:bg-white/[0.07] border-white/5 hover:border-white/15 cursor-pointer"
+                    )}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <OsIcon os={h.os} color={h.color || accentColor} size={34} />
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-semibold text-xs text-slate-100 group-hover:text-white truncate">
+                          {h.label}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-400 truncate">
+                          {h.username}@{h.hostname}{h.port !== 22 ? `:${h.port}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {h.tags?.map((t) => (
+                        <span
+                          key={t}
+                          className="rounded-md bg-white/[0.06] border border-white/5 px-1.5 py-0.5 text-[9px] text-slate-400 font-mono"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                      {isConnectingThis ? (
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-medium animate-pulse shadow-sm">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          <span>Connecting…</span>
+                        </div>
+                      ) : isActiveOnThisSide ? (
+                        <span className="rounded-full bg-cyan-400/20 px-2 py-0.5 text-[10px] text-cyan-300 font-medium border border-cyan-400/30">
+                          Active
+                        </span>
+                      ) : (
+                        <div
+                          className={cn(
+                            "grid h-8 w-8 place-items-center rounded-xl border transition shadow-sm",
+                            isConnectingAny ? "opacity-30" : "group-hover:translate-x-0.5"
+                          )}
+                          style={{
+                            backgroundColor: `${accentColor}18`,
+                            borderColor: `${accentColor}35`,
+                            color: accentColor,
+                            boxShadow: `0 0 12px ${accentColor}15`,
+                          }}
+                        >
+                          <ArrowRight className="h-4 w-4 transition-transform" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
 
               {!filteredHosts.length && (
                 <div className="py-12 text-center text-xs text-slate-500">
@@ -1615,14 +1793,11 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       )}
 
       {/* ==================================================================== */}
-      {/* PROMPT MODAL (New folder / Rename) */}
+      {/* PROMPT MODAL (New file / New folder / Rename) */}
       {/* ==================================================================== */}
       {promptDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-          <div
-            className="fixed inset-0"
-            onClick={() => setPromptDialog(null)}
-          />
+          <div className="fixed inset-0" onClick={() => setPromptDialog(null)} />
           <div
             className="relative w-full max-w-sm rounded-2xl border border-white/10 p-5 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
             style={{
@@ -1686,13 +1861,13 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                 <button
                   type="button"
                   onClick={() => setPromptDialog(null)}
-                  className="rounded-xl px-3.5 py-1.5 text-xs text-slate-400 hover:bg-white/10 hover:text-white transition"
+                  className="rounded-xl px-3.5 py-1.5 text-xs text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded-xl border px-4 py-1.5 text-xs font-semibold transition shadow-sm"
+                  className="rounded-xl border px-4 py-1.5 text-xs font-semibold transition shadow-sm cursor-pointer"
                   style={{
                     backgroundColor: `${accentColor}25`,
                     borderColor: `${accentColor}50`,
@@ -1750,7 +1925,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                 <h3 className="font-semibold text-sm text-slate-100 flex items-center gap-2">
                   <span>Delete {deleteConfirm.entry.isDir ? 'Folder' : 'File'}?</span>
                   <span className="text-[10px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 border border-rose-500/30 bg-rose-500/10 text-rose-400">
-                    {deleteConfirm.side === 'remote' ? (remoteHost?.label || 'Remote') : 'Local'}
+                    {deleteConfirm.side === 'left'
+                      ? (leftHost?.label || 'Local')
+                      : (rightHost?.label || 'Local')}
                   </span>
                 </h3>
                 <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
@@ -1813,7 +1990,11 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       {editingFile && (
         <SftpCodeEditor
           file={editingFile}
-          hostLabel={editingFile.isRemote ? (remoteHost?.label || 'Remote Host') : 'Local Machine'}
+          hostLabel={
+            editingFile.isRemote
+              ? ((editingFile.side === 'left' ? leftHost?.label : rightHost?.label) || 'Remote Host')
+              : 'Local Machine'
+          }
           onSave={handleSaveFile}
           onClose={() => setEditingFile(null)}
           toast={toast}

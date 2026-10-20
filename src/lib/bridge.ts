@@ -1067,6 +1067,34 @@ export const bridge = {
     }
   },
 
+  async sftpTransferRemoteDirect(
+    srcSessionId: string,
+    srcPath: string,
+    dstSessionId: string,
+    dstPath: string,
+    onProgress?: (pct: number) => void
+  ): Promise<void> {
+    if (isTauri) {
+      const ch = new Channel<{ transferred: number; total: number }>();
+      if (onProgress) {
+        ch.onmessage = (p) => onProgress(p.total ? p.transferred / p.total : 1);
+      }
+      return invoke('sftp_transfer_remote', {
+        srcSessionId,
+        srcPath,
+        dstSessionId,
+        dstPath,
+        onProgress: ch,
+      });
+    }
+    if (onProgress) {
+      for (let i = 1; i <= 10; i++) {
+        await sleep(30);
+        onProgress(i / 10);
+      }
+    }
+  },
+
   async sftpClose(sessionId: string): Promise<void> {
     if (isTauri) {
       await invoke('sftp_close', { sessionId }).catch(() => {});
@@ -1105,6 +1133,10 @@ export const bridge = {
 
   async localFsRename(from: string, to: string): Promise<void> {
     if (isTauri) return invoke('local_fs_rename', { from, to });
+  },
+
+  async localFsCopy(from: string, to: string): Promise<void> {
+    if (isTauri) return invoke('local_fs_copy', { from, to });
   },
 
   async localFsReadText(path: string): Promise<string> {

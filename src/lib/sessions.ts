@@ -21,6 +21,8 @@ export interface LivePane {
   openHistory?: () => void;
   /** Open the clipboard history modal. */
   openClipboard?: () => void;
+  /** Force refit and repaint of the terminal buffer and renderer. */
+  refresh?: () => void;
 }
 
 const panes = new Map<string, LivePane>();

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   Boxes,
   Play,
@@ -61,7 +61,7 @@ export function DockerModal({
 
   const [selectedHostId, setSelectedHostId] = useState<string>(initialHostId);
   const [containers, setContainers] = useState<DockerContainer[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -88,22 +88,34 @@ export function DockerModal({
     }
   }, [activeHostId, selectableHosts]);
 
-  const fetchContainers = useCallback(async (hId: string) => {
+  const fetchGenRef = useRef(0);
+
+  const fetchContainers = useCallback(async (hId: string, clearFirst = false) => {
+    const gen = ++fetchGenRef.current;
+    if (clearFirst) setContainers([]);
     setLoading(true);
     setError(null);
     try {
       const list = await bridge.dockerListContainers(hId);
+      if (gen !== fetchGenRef.current) return;
       setContainers(list);
     } catch (err: any) {
+      if (gen !== fetchGenRef.current) return;
       setError(err?.message || String(err));
       setContainers([]);
     } finally {
-      setLoading(false);
+      if (gen === fetchGenRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchContainers(selectedHostId);
+    // Defer network query slightly so modal layout & loading spinners paint instantly to the screen
+    const timer = setTimeout(() => {
+      fetchContainers(selectedHostId);
+    }, 40);
+    return () => clearTimeout(timer);
   }, [selectedHostId, fetchContainers]);
 
   const handleAction = async (container: DockerContainer, action: 'start' | 'stop' | 'restart') => {
@@ -186,7 +198,8 @@ export function DockerModal({
 
   return (
     <ResponsiveOverlay
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
+      portal
+      className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-md animate-in fade-in duration-150"
       onClose={onClose}
       label="Docker containers"
     >
@@ -226,7 +239,12 @@ export function DockerModal({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-sm sm:text-base font-semibold tracking-wide text-white truncate">Docker Containers</h2>
-                  {containers.length > 0 && (
+                  {loading ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-semibold border shrink-0 bg-cyan-500/15 border-cyan-500/30 text-cyan-300 animate-pulse">
+                      <Loader2 className="h-3 w-3 animate-spin text-cyan-400" />
+                      <span>Fetching from {selectedHost.label}…</span>
+                    </span>
+                  ) : containers.length > 0 ? (
                     <span
                       className="rounded-full px-2 py-0.5 text-[10px] font-semibold border shrink-0"
                       style={{
@@ -237,7 +255,7 @@ export function DockerModal({
                     >
                       {runningCount} Running{containers.length > 0 ? ` · ${containers.length} Total` : ''}
                     </span>
-                  )}
+                  ) : null}
                 </div>
                 <p className="hidden sm:block text-xs text-slate-400">
                   Inspect, restart, stream logs, and exec into containers on target hosts
@@ -261,8 +279,18 @@ export function DockerModal({
             <div className="relative flex-1 min-w-0">
               <select
                 value={selectedHostId}
-                onChange={(e) => setSelectedHostId(e.target.value)}
-                className="w-full appearance-none flex items-center rounded-xl border border-white/10 bg-white/[0.05] pl-3 pr-8 py-2 sm:py-1.5 text-xs font-medium text-slate-200 hover:border-white/20 hover:bg-white/[0.08] focus:outline-none transition cursor-pointer truncate"
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next !== selectedHostId) {
+                    setContainers([]);
+                    setSelectedHostId(next);
+                  }
+                }}
+                disabled={loading}
+                className={cn(
+                  "w-full appearance-none flex items-center rounded-xl border border-white/10 bg-white/[0.05] pl-3 pr-8 py-2 sm:py-1.5 text-xs font-medium text-slate-200 hover:border-white/20 hover:bg-white/[0.08] focus:outline-none transition truncate",
+                  loading ? "cursor-wait opacity-70" : "cursor-pointer"
+                )}
                 style={{ outlineColor: accentColor }}
               >
                 {selectableHosts.map((h) => (
@@ -271,7 +299,11 @@ export function DockerModal({
                   </option>
                 ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+              {loading ? (
+                <Loader2 className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin text-cyan-400" />
+              ) : (
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+              )}
             </div>
 
             {/* Refresh button */}
@@ -282,8 +314,8 @@ export function DockerModal({
               title="Refresh container list"
               className="flex h-9 sm:h-8 items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white transition disabled:opacity-50 shrink-0"
             >
-              <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-              <span className="hidden xs:inline sm:inline">Refresh</span>
+              <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin text-cyan-400')} />
+              <span className="hidden xs:inline sm:inline">{loading ? 'Fetching…' : 'Refresh'}</span>
             </button>
           </div>
         </div>
@@ -449,7 +481,15 @@ export function DockerModal({
               {loading && containers.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
                   <Loader2 className="h-8 w-8 animate-spin" style={{ color: accentColor }} />
-                  <p className="text-xs">Querying Docker daemon on {selectedHost.label}…</p>
+                  <p className="text-xs font-medium text-slate-300">Connecting to Docker daemon on {selectedHost.label}…</p>
+                  <p className="text-[11px] text-slate-500">Querying containers and runtime state…</p>
+                </div>
+              )}
+
+              {loading && containers.length > 0 && (
+                <div className="flex items-center gap-2.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-2.5 text-xs text-cyan-300 animate-pulse">
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0 text-cyan-400" />
+                  <span className="font-medium">Connecting to Docker daemon & refreshing containers on {selectedHost.label}…</span>
                 </div>
               )}
 
@@ -481,14 +521,16 @@ export function DockerModal({
                 </div>
               )}
 
-              {!loading &&
-                filtered.map((c) => {
-                  const isRunning = c.state === 'running';
-                  const isBusy = !!(
-                    actionLoading[`${c.id}-start`] ||
-                    actionLoading[`${c.id}-stop`] ||
-                    actionLoading[`${c.id}-restart`]
-                  );
+              {filtered.length > 0 && (
+                <div className={cn("space-y-3 transition-opacity", loading && "opacity-50 pointer-events-none")}>
+                  {filtered.map((c) => {
+                    const isRunning = c.state === 'running';
+                    const isBusy = !!(
+                      loading ||
+                      actionLoading[`${c.id}-start`] ||
+                      actionLoading[`${c.id}-stop`] ||
+                      actionLoading[`${c.id}-restart`]
+                    );
 
                   return (
                     <div
@@ -621,9 +663,10 @@ export function DockerModal({
                           {/* Logs */}
                           <button
                             type="button"
+                            disabled={isBusy}
                             onClick={() => openLogs(c)}
                             title="View container logs"
-                            className="flex-1 sm:flex-initial flex h-8 sm:h-7 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white transition"
+                            className="flex-1 sm:flex-initial flex h-8 sm:h-7 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 text-xs text-slate-300 hover:border-white/20 hover:bg-white/[0.08] hover:text-white transition disabled:opacity-50"
                           >
                             <FileText className="h-3.5 w-3.5" />
                             <span>Logs</span>
@@ -633,9 +676,10 @@ export function DockerModal({
                           {isRunning && onOpenTerminalWithCommand && (
                             <button
                               type="button"
+                              disabled={isBusy}
                               onClick={() => handleShellExec(c)}
                               title="Open interactive terminal shell inside container"
-                              className="flex-1 sm:flex-initial flex h-8 sm:h-7 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold text-white transition shadow-sm hover:brightness-110 active:scale-95"
+                              className="flex-1 sm:flex-initial flex h-8 sm:h-7 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold text-white transition shadow-sm hover:brightness-110 active:scale-95 disabled:opacity-50"
                               style={{
                                 backgroundColor: `${accentColor}25`,
                                 borderColor: `${accentColor}45`,
@@ -650,6 +694,8 @@ export function DockerModal({
                     </div>
                   );
                 })}
+                </div>
+              )}
             </div>
           </>
         )}

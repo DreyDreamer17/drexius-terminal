@@ -229,6 +229,10 @@ export interface Tab {
   kind?: TabKind;
   sftpHostId?: string | null;
   sftpSessionId?: string | null;
+  sftpLeftHostId?: string | null;
+  sftpLeftSessionId?: string | null;
+  sftpRightHostId?: string | null;
+  sftpRightSessionId?: string | null;
   panes: Pane[];
   layout: Layout;
   activePaneId: string;

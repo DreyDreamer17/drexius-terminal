@@ -295,6 +295,124 @@ pub async fn sftp_upload(
     .map_err(|e| AppError::Other(e.to_string()))?
 }
 
+#[tauri::command]
+pub async fn sftp_transfer_remote(
+    src_session_id: String,
+    src_path: String,
+    dst_session_id: String,
+    dst_path: String,
+    on_progress: IpcChannel<TransferProgress>,
+    app: tauri::AppHandle,
+) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mgr = app.state::<SftpManager>();
+        let ssh = app.state::<SshManager>();
+        let vault = app.state::<Vault>();
+        let src_conn = mgr.get(&src_session_id, &ssh, &vault)?;
+        let dst_conn = mgr.get(&dst_session_id, &ssh, &vault)?;
+
+        let temp_remote = format!("{}.drexius-{}.part", dst_path, uuid::Uuid::new_v4());
+        let same_conn = Arc::ptr_eq(&src_conn, &dst_conn);
+
+        let mut buf = vec![0u8; CHUNK];
+        let mut done = 0u64;
+        let mut last_emit = Instant::now();
+
+        let (total, loop_result) = if same_conn {
+            let c = src_conn.lock();
+            let mut src = c.sftp.open(Path::new(&src_path))?;
+            let total = src.stat()?.size.unwrap_or(0);
+            let mut dst = c.sftp.create(Path::new(&temp_remote))?;
+            let res: AppResult<()> = (|| {
+                loop {
+                    let n = src.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    dst.write_all(&buf[..n])?;
+                    done += n as u64;
+                    if last_emit.elapsed().as_millis() >= 50 || done == total {
+                        let _ = on_progress.send(TransferProgress { transferred: done, total });
+                        last_emit = Instant::now();
+                    }
+                }
+                dst.flush()?;
+                Ok(())
+            })();
+            (total, res)
+        } else {
+            let c_src = src_conn.lock();
+            let mut src = c_src.sftp.open(Path::new(&src_path))?;
+            let total = src.stat()?.size.unwrap_or(0);
+            let c_dst = dst_conn.lock();
+            let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
+            let res: AppResult<()> = (|| {
+                loop {
+                    let n = src.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    dst.write_all(&buf[..n])?;
+                    done += n as u64;
+                    if last_emit.elapsed().as_millis() >= 50 || done == total {
+                        let _ = on_progress.send(TransferProgress { transferred: done, total });
+                        last_emit = Instant::now();
+                    }
+                }
+                dst.flush()?;
+                Ok(())
+            })();
+            (total, res)
+        };
+
+        if let Err(e) = loop_result {
+            let c_dst = dst_conn.lock();
+            let _ = c_dst.sftp.unlink(Path::new(&temp_remote));
+            return Err(e);
+        }
+
+        let c_dst = dst_conn.lock();
+        let target_path = Path::new(&dst_path);
+        let temp_path = Path::new(&temp_remote);
+        let rename_res = c_dst.sftp.rename(
+            temp_path,
+            target_path,
+            Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
+        );
+        let rename_res = match rename_res {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let backup_remote = format!("{}.drexius-bak.{}", dst_path, uuid::Uuid::new_v4());
+                let backup_path = Path::new(&backup_remote);
+                let had_target = c_dst.sftp.rename(target_path, backup_path, None).is_ok();
+                match c_dst.sftp.rename(temp_path, target_path, None) {
+                    Ok(()) => {
+                        if had_target {
+                            let _ = c_dst.sftp.unlink(backup_path);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        if had_target {
+                            let _ = c_dst.sftp.rename(backup_path, target_path, None);
+                        }
+                        Err(e)
+                    }
+                }
+            }
+        };
+        if let Err(e) = rename_res {
+            let _ = c_dst.sftp.unlink(temp_path);
+            return Err(AppError::from(e));
+        }
+
+        let _ = on_progress.send(TransferProgress { transferred: done, total });
+        Ok::<(), AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
 #[tauri::command(async)]
 pub fn sftp_mkdir(session_id: String, path: String, mgr: State<'_, SftpManager>, ssh: State<'_, SshManager>, vault: State<'_, Vault>) -> AppResult<()> {
     let conn = mgr.get(&session_id, &ssh, &vault)?;
@@ -577,6 +695,14 @@ pub fn local_fs_read_text(path: String) -> AppResult<String> {
 pub fn local_fs_write_text(path: String, content: String) -> AppResult<()> {
     let full = crate::fs_guard::ensure_local_path_allowed(&path)?;
     std::fs::write(&full, content)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn local_fs_copy(from: String, to: String) -> AppResult<()> {
+    let src = crate::fs_guard::ensure_local_path_allowed(&from)?;
+    let dst = crate::fs_guard::ensure_local_path_allowed(&to)?;
+    std::fs::copy(src, dst)?;
     Ok(())
 }
 

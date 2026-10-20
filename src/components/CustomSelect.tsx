@@ -33,16 +33,36 @@ export function CustomSelect<T extends string | number>({
 }: CustomSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const [isDropUp, setIsDropUp] = useState(dropUp);
+  const [maxHeightStyle, setMaxHeightStyle] = useState<number>(220);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    if (dropUp) {
-      setIsDropUp(true);
-    } else if (containerRef.current) {
+    if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom;
-      setIsDropUp(spaceBelow < 240);
+      const scrollParent = containerRef.current.closest<HTMLElement>('.overflow-y-auto, .overflow-auto');
+      
+      let spaceAbove: number;
+      let spaceBelow: number;
+
+      if (scrollParent) {
+        const parentRect = scrollParent.getBoundingClientRect();
+        spaceAbove = rect.top - parentRect.top;
+        spaceBelow = parentRect.bottom - rect.bottom;
+      } else {
+        spaceAbove = rect.top;
+        spaceBelow = window.innerHeight - rect.bottom;
+      }
+
+      // If dropUp is requested and there's enough room above (at least 180px), open up.
+      // Otherwise, pick whichever direction has more clearance without clipping into boundaries.
+      const shouldDropUp = dropUp
+        ? spaceAbove >= 180 || spaceAbove > spaceBelow
+        : spaceBelow < 220 && spaceAbove > spaceBelow;
+
+      setIsDropUp(shouldDropUp);
+      const availableSpace = shouldDropUp ? spaceAbove : spaceBelow;
+      setMaxHeightStyle(Math.min(220, Math.max(120, availableSpace - 10)));
     }
 
     const handleClickOutside = (e: MouseEvent) => {
@@ -84,7 +104,7 @@ export function CustomSelect<T extends string | number>({
         <ChevronDown
           className={cn(
             'h-3.5 w-3.5 text-slate-400 transition-transform duration-150 shrink-0',
-            open && 'rotate-180'
+            open && (isDropUp ? 'rotate-180' : 'rotate-0')
           )}
           style={{ color: open ? accentColor : undefined }}
         />
@@ -92,9 +112,9 @@ export function CustomSelect<T extends string | number>({
 
       {open && (
         <div
-          style={{ background: bgColor }}
+          style={{ background: bgColor, maxHeight: `${maxHeightStyle}px` }}
           className={cn(
-            'absolute left-0 right-0 z-50 rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-2xl ring-1 ring-white/10 max-h-56 overflow-y-auto',
+            'absolute left-0 right-0 z-50 rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-2xl ring-1 ring-white/10 overflow-y-auto',
             isDropUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
           )}
         >

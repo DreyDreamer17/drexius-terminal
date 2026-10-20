@@ -46,6 +46,7 @@ import {
   Share2,
   FolderLock,
   Boxes,
+  Loader2,
   Search,
   Clipboard,
   Settings,
@@ -68,6 +69,7 @@ import { NetbirdModal } from './components/NetbirdModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { SyncModal } from './components/SyncModal';
 import { OsIcon } from './components/OsIcon';
+import { isAndroidPlatform } from './lib/os';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
 import { KeychainPanel } from './components/KeychainPanel';
@@ -178,6 +180,7 @@ function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mo
 export default function App() {
   const mobile = useMobile();
   useMobileViewport();
+  const isAndroid = useMemo(() => isAndroidPlatform(), []);
   const persistedWorkspace = useMemo(() => readPersistedWorkspace(), []);
   const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
   // Phone settings pickers (auto-lock, theme, quick unlock, recovery key, storage permissions)
@@ -277,6 +280,7 @@ export default function App() {
   const [showDockerModal, setShowDockerModal] = useState(false);
   const [dockerHostId, setDockerHostId] = useState<string | null>(null);
   const [splitMenu, setSplitMenu] = useState<{ pref: 'vertical' | 'horizontal'; left: number; top: number } | null>(null);
+  const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const [showAI, setShowAI] = useState(false);
 
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
@@ -497,6 +501,9 @@ export default function App() {
   const handleUpdateUiPrefs = useCallback((next: UiPreferences) => {
     setUiPrefs(next);
     saveUiPreferences(next);
+    if (!next.showAi) {
+      setShowAI(false);
+    }
   }, []);
 
   const handleUpdateShortcuts = useCallback((next: Record<string, ShortcutBinding>) => {
@@ -793,6 +800,25 @@ export default function App() {
     setTabs((ts) => ts.map((t) => t.id !== activeTab.id ? t : { ...t, panes: [...t.panes, pane], layout: layoutFor(t.panes.length + 1, pref), activePaneId: pane.id, title: t.panes.length ? `${t.title.split(' +')[0]} +${t.panes.length}` : h.label }));
   }, [activeTab, openHost, toast]);
 
+  const toggleMaximizePane = useCallback((paneId?: string) => {
+    setMaximizedPaneId((prev) => {
+      if (paneId) {
+        return prev === paneId ? null : paneId;
+      }
+      const cur = activeTab?.activePaneId;
+      if (!cur) return null;
+      return prev ? null : cur;
+    });
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (!activeTab || activeTab.panes.length <= 1) {
+      if (maximizedPaneId !== null) setMaximizedPaneId(null);
+    } else if (maximizedPaneId !== null && !activeTab.panes.some((p) => p.id === maximizedPaneId)) {
+      setMaximizedPaneId(null);
+    }
+  }, [activeTab, maximizedPaneId]);
+
   const navigateSplitDirection = useCallback((direction: 'left' | 'right' | 'up' | 'down') => {
     if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
     const nextPaneId = getAdjacentPaneId(activeTab.activePaneId, activeTab.panes, activeTab.layout, direction);
@@ -802,8 +828,11 @@ export default function App() {
       if (live?.term) {
         live.term.focus();
       }
+      if (maximizedPaneId) {
+        setMaximizedPaneId(nextPaneId);
+      }
     }
-  }, [activeTab]);
+  }, [activeTab, maximizedPaneId]);
 
   const cleanupPaneSession = useCallback((p: Pane) => {
     bridge.sftpClose(p.id).catch(() => {});
@@ -825,6 +854,7 @@ export default function App() {
   }, []);
 
   const closePane = useCallback((tabId: string, paneId: string) => {
+    setMaximizedPaneId((prev) => (prev === paneId ? null : prev));
     setTabs((ts) => {
       return ts.map((t) => {
         if (t.id !== tabId) return t;
@@ -1029,6 +1059,20 @@ export default function App() {
         return;
       }
       const target = e.target as HTMLElement | null;
+
+      // ── Never intercept when shortcut recorder is active ──
+      if (target && target.closest('[data-shortcut-recorder]')) return;
+
+      // ── When settings modal is open, don't execute background workspace shortcuts ──
+      if (showSettings) {
+        if (matchesShortcut(e, shortcuts.open_settings?.keys || 'Ctrl+,')) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowSettings(false);
+        }
+        return;
+      }
+
       // xterm's hidden textarea is a terminal surface, not a text input: the
       // Ctrl+Shift+* workspace shortcuts must keep working while a terminal
       // has focus (the TerminalPane also blocks those sequences from leaking
@@ -1038,7 +1082,7 @@ export default function App() {
       const isInput = target && !inTerminal && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (isInput) return;
 
-      // ── Directional Split Navigation (Ghostty / tmux style) ──
+      // ── Directional Split Navigation ──
       if (matchesShortcut(e, shortcuts.focus_split_left?.keys || 'Alt+ArrowLeft')) {
         e.preventDefault();
         e.stopPropagation();
@@ -1082,6 +1126,16 @@ export default function App() {
         }
       }
 
+      // ── Toggle Maximize / Zoom Active Split Pane (Ctrl+Shift+M) ──
+      if (matchesShortcut(e, shortcuts.maximize_pane?.keys || 'Ctrl+Shift+M')) {
+        if (activeTab && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleMaximizePane();
+          return;
+        }
+      }
+
       // ── Next / Previous Split Pane (Ctrl+] / Ctrl+[) ──
       if (matchesShortcut(e, shortcuts.next_pane?.keys || 'Ctrl+]')) {
         if (activeTab && activeTab.panes.length > 1) {
@@ -1112,13 +1166,28 @@ export default function App() {
         }
       }
 
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const k = e.key.toLowerCase();
-      if (!inTerminal && !e.shiftKey && k === 't') { e.preventDefault(); e.stopPropagation(); openLocalTerminal(); return; }
-      if (!inTerminal && k === 'k') { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
-      if (k === 'k' && e.shiftKey) { e.preventDefault(); e.stopPropagation(); toggleQuick(); return; }
-      if (!e.shiftKey) return;
-      if (k === 'i') {
+      // ── New Local Terminal (Ctrl+T) ──
+      if (matchesShortcut(e, shortcuts.new_terminal?.keys || 'Ctrl+T')) {
+        if (!inTerminal) {
+          e.preventDefault();
+          e.stopPropagation();
+          openLocalTerminal();
+          return;
+        }
+      }
+
+      // ── Quick Connect / Palette (Ctrl+K) ──
+      if (matchesShortcut(e, shortcuts.open_quick?.keys || 'Ctrl+K') || (e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) {
+        if (!inTerminal || e.shiftKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleQuick();
+          return;
+        }
+      }
+
+      // ── Cluster Broadcast (Ctrl+Shift+I) ──
+      if (matchesShortcut(e, shortcuts.toggle_broadcast?.keys || 'Ctrl+Shift+I')) {
         e.preventDefault();
         e.stopPropagation();
         setBroadcast((b) => {
@@ -1126,29 +1195,74 @@ export default function App() {
           toast(next ? '⚡ Broadcast Cluster Mode: ON (Input sent to all panes in tab)' : 'Broadcast Cluster Mode: OFF');
           return next;
         });
+        return;
       }
-      else if (k === 'd') {
+
+      // ── Split Pane Vertical (Ctrl+Shift+D) ──
+      if (matchesShortcut(e, shortcuts.split_vertical?.keys || 'Ctrl+Shift+D')) {
         e.preventDefault();
         e.stopPropagation();
         setSplitMenu((prev) => (prev?.pref === 'vertical' ? null : { pref: 'vertical', left: 400, top: 45 }));
+        return;
       }
-      else if (k === 'e') {
+
+      // ── Split Pane Horizontal (Ctrl+Shift+E) ──
+      if (matchesShortcut(e, shortcuts.split_horizontal?.keys || 'Ctrl+Shift+E')) {
         e.preventDefault();
         e.stopPropagation();
         setSplitMenu((prev) => (prev?.pref === 'horizontal' ? null : { pref: 'horizontal', left: 430, top: 45 }));
+        return;
       }
-      else if (k === 'a') { e.preventDefault(); e.stopPropagation(); setShowAI((v) => !v); }
-      else if (k === 'f') { e.preventDefault(); e.stopPropagation(); openSftpTab(); }
-      else if (k === 'z') { e.preventDefault(); e.stopPropagation(); setZen((v) => !v); }
-      else if (k === 'b') { e.preventDefault(); e.stopPropagation(); setShowRail((v) => !v); }
-      else if (k === 'u' || (e.altKey && k === 'd')) {
+
+      // ── Toggle AI Assistant (Ctrl+Shift+A) ──
+      if (matchesShortcut(e, shortcuts.toggle_ai?.keys || 'Ctrl+Shift+A')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowAI((v) => !v);
+        return;
+      }
+
+      // ── Open SFTP Browser (Ctrl+Shift+F) ──
+      if (matchesShortcut(e, shortcuts.open_sftp?.keys || 'Ctrl+Shift+F')) {
+        e.preventDefault();
+        e.stopPropagation();
+        openSftpTab();
+        return;
+      }
+
+      // ── Toggle Zen Mode (Ctrl+Shift+Z) ──
+      if (matchesShortcut(e, shortcuts.toggle_zen?.keys || 'Ctrl+Shift+Z')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setZen((v) => !v);
+        return;
+      }
+
+      // ── Toggle Sidebar Rail (Ctrl+Shift+B) ──
+      if (matchesShortcut(e, shortcuts.toggle_rail?.keys || 'Ctrl+Shift+B')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowRail((v) => !v);
+        return;
+      }
+
+      // ── Docker Manager (Ctrl+Shift+U or Alt+D) ──
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'u' || (e.altKey && e.key.toLowerCase() === 'd'))) {
         e.preventDefault();
         e.stopPropagation();
         const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
         setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
         setShowDockerModal((v) => !v);
+        return;
       }
-      else if (k === '/') { e.preventDefault(); e.stopPropagation(); setShowStatusBar((v) => !v); }
+
+      // ── Toggle Status Bar (Ctrl+/) ──
+      if ((e.ctrlKey || e.metaKey) && e.key === '/') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowStatusBar((v) => !v);
+        return;
+      }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -1169,6 +1283,7 @@ export default function App() {
     shortcuts,
     navigateSplitDirection,
     closePane,
+    toggleMaximizePane,
     toast,
     terminalContext,
     activePaneId,
@@ -1247,8 +1362,9 @@ export default function App() {
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
     ...(uiPrefs.showDocker ? [{
       id: 'docker',
-      icon: Boxes,
-      label: 'Docker Containers (⌘⇧U)',
+      icon: showDockerModal ? Loader2 : Boxes,
+      iconClass: showDockerModal ? 'animate-spin text-cyan-400' : undefined,
+      label: showDockerModal ? 'Docker Containers (Opening…)' : 'Docker Containers (⌘⇧U)',
       on: showDockerModal,
       act: () => {
         const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
@@ -1304,7 +1420,7 @@ export default function App() {
   // Half-open drawer: the terminal shrinks to the uncovered half; full / closed / closing: untouched.
   const terminalDrawerInset = openDrawer && !openDrawer.closing && openDrawer.detent < 1 ? openDrawer.detent : 0;
   const drawerBg = theme.xterm.background || '#0e131d';
-  const aiVisible = unlocked && (mobile ? (mobilePage === 'assistant' && showAI) || aiDrawerOpen : showAI);
+  const aiVisible = unlocked && uiPrefs.showAi && (mobile ? (mobilePage === 'assistant' && showAI) || aiDrawerOpen : showAI);
   useEffect(() => {
     if (!terminalScreen || activeTab?.kind !== 'sftp') return;
     const t = tabs.find((t) => t.id === lastTerminalTab.current && t.panes.length) ?? [...tabs].reverse().find((t) => t.kind !== 'sftp' && t.panes.length);
@@ -1469,7 +1585,22 @@ export default function App() {
                   )}
                   <span className="truncate font-medium">{t.title}</span>
                   {t.panes.length > 1 && (
-                    <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">{t.panes.length}</span>
+                    maximizedPaneId && t.id === activeTabId ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleMaximizePane();
+                        }}
+                        title="Tab is zoomed into single pane. Click to restore split view (Ctrl+Shift+M)"
+                        className="flex items-center gap-1 rounded px-1.5 py-0.2 text-[9px] font-bold border border-cyan-400/40 bg-cyan-500/25 text-cyan-300 hover:bg-cyan-500/35 transition cursor-pointer"
+                      >
+                        <Minimize2 className="h-2.5 w-2.5" />
+                        <span>ZOOMED</span>
+                      </button>
+                    ) : (
+                      <span className="rounded bg-white/10 px-1 text-[9px] text-slate-400">{t.panes.length}</span>
+                    )
                   )}
                   <button
                     onClick={(e) => {
@@ -1511,14 +1642,16 @@ export default function App() {
 
           {/* Floating Right Actions */}
           <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={openLocalTerminal}
-              title="New local shell (⌘T)"
-              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
-            >
-              <TerminalIcon className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Local Shell</span>
-            </button>
+            {uiPrefs.showLocalTerminal && (
+              <button
+                onClick={openLocalTerminal}
+                title="New local shell (⌘T)"
+                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+              >
+                <TerminalIcon className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Local Shell</span>
+              </button>
+            )}
             {uiPrefs.showSerial && (
               <button
                 onClick={() => setShowSerial(true)}
@@ -1536,14 +1669,23 @@ export default function App() {
                   setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
                   setShowDockerModal(true);
                 }}
-                title="Docker Containers (⌘⇧U)"
-                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+                title={showDockerModal ? "Docker Containers (Opening…)" : "Docker Containers (⌘⇧U)"}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition",
+                  showDockerModal
+                    ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/40 shadow-[0_0_10px_rgba(34,211,238,0.25)]"
+                    : "text-slate-400 hover:bg-white/10 hover:text-cyan-300"
+                )}
               >
-                <Boxes className="h-3.5 w-3.5 text-cyan-400" />
-                <span className="hidden sm:inline">Docker</span>
+                {showDockerModal ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                ) : (
+                  <Boxes className="h-3.5 w-3.5 text-cyan-400" />
+                )}
+                <span className="hidden sm:inline">{showDockerModal ? 'Opening…' : 'Docker'}</span>
               </button>
             )}
-            {activeTab && activeTab.panes.length === 1 && (
+            {activeTab && (activeTab.panes.length === 1 || (maximizedPaneId !== null && activeTab.id === activeTabId)) && (
               <div className="flex items-center gap-1 shrink-0">
                 <div className="h-4 w-px bg-white/10 mx-0.5" />
                 <button
@@ -1605,6 +1747,17 @@ export default function App() {
                 )}
                 <div className="h-4 w-px bg-white/10 mx-0.5" />
               </div>
+            )}
+            {maximizedPaneId && activeTab && activeTab.panes.length > 1 && (
+              <button
+                type="button"
+                onClick={() => toggleMaximizePane()}
+                title="Restore split layout (Ctrl+Shift+M)"
+                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold border border-cyan-400/50 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30 shadow-[0_0_12px_rgba(34,211,238,0.25)] transition animate-in fade-in duration-150 cursor-pointer"
+              >
+                <Minimize2 className="h-3.5 w-3.5 text-cyan-300" />
+                <span className="hidden sm:inline">Restore Splits</span>
+              </button>
             )}
             <button
               title="Split vertical (⌘⇧D)"
@@ -1791,41 +1944,47 @@ export default function App() {
                 <span className="hidden md:inline">Broadcast</span>
               </button>
             )}
-            <div className="relative">
-              <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"><Palette className="h-3.5 w-3.5" /></button>
-              {showThemes && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setShowThemes(false)} />
-                  <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
-                  {THEMES.map((t) => (
-                    <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
-                      <span className="flex h-5 w-8 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
-                        {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <span key={i} className="mt-auto h-1.5 flex-1" style={{ background: c }} />)}
-                      </span>{t.name}
-                    </button>
-                  ))}
-                  <div className="mt-2 flex items-center justify-between border-t border-white/5 px-2 pt-2 text-xs text-slate-400">
-                    Font size
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
-                      <span className="w-6 text-center font-mono text-white">{fontSize}</span>
-                      <button onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+            {uiPrefs.showThemeButton && (
+              <div className="relative">
+                <button title="Theme" onClick={() => setShowThemes((v) => !v)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white"><Palette className="h-3.5 w-3.5" /></button>
+                {showThemes && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowThemes(false)} />
+                    <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
+                    {THEMES.map((t) => (
+                      <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
+                        <span className="flex h-5 w-8 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
+                          {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <span key={i} className="mt-auto h-1.5 flex-1" style={{ background: c }} />)}
+                        </span>{t.name}
+                      </button>
+                    ))}
+                    <div className="mt-2 flex items-center justify-between border-t border-white/5 px-2 pt-2 text-xs text-slate-400">
+                      Font size
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
+                        <span className="w-6 text-center font-mono text-white">{fontSize}</span>
+                        <button onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+                      </div>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between px-2 pt-1 text-xs text-slate-400">
+                      Line height
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setLineHeight((lh) => Math.max(1.0, Number((lh - 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
+                        <span className="w-10 text-center font-mono text-white">{lineHeight.toFixed(2)}</span>
+                        <button onClick={() => setLineHeight((lh) => Math.min(1.5, Number((lh + 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+                      </div>
                     </div>
                   </div>
-                  <div className="mt-1 flex items-center justify-between px-2 pt-1 text-xs text-slate-400">
-                    Line height
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => setLineHeight((lh) => Math.max(1.0, Number((lh - 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
-                      <span className="w-10 text-center font-mono text-white">{lineHeight.toFixed(2)}</span>
-                      <button onClick={() => setLineHeight((lh) => Math.min(1.5, Number((lh + 0.05).toFixed(2))))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
-                    </div>
-                  </div>
-                </div>
-              </>
-              )}
-            </div>
-            <button title="AI Assistant (⌘⇧A)" onClick={() => setShowAI((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showAI ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Sparkles className="h-3.5 w-3.5" /></button>
-            <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showStatusBar ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><PanelBottom className="h-3.5 w-3.5" /></button>
+                </>
+                )}
+              </div>
+            )}
+            {uiPrefs.showAi && (
+              <button title="AI Assistant (⌘⇧A)" onClick={() => setShowAI((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showAI ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Sparkles className="h-3.5 w-3.5" /></button>
+            )}
+            {uiPrefs.showStatusBarToggle && (
+              <button title={showStatusBar ? 'Hide status bar (⌘⇧/)' : 'Show status bar (⌘⇧/)'} onClick={() => setShowStatusBar((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', showStatusBar ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><PanelBottom className="h-3.5 w-3.5" /></button>
+            )}
             <button title="Zen mode (⌘⇧Z)" onClick={() => setZen((v) => !v)} className={cn('grid h-7 w-7 place-items-center rounded-lg transition', zen ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30' : 'text-slate-400 hover:bg-white/10 hover:text-white')}><Maximize2 className="h-3.5 w-3.5" /></button>
           </div>
         </header>
@@ -1863,7 +2022,7 @@ export default function App() {
                 )}
               >
                 {r.on && <span className="absolute -left-1.5 h-4 w-1 rounded-r-full bg-gradient-to-b from-cyan-300 to-fuchsia-400" />}
-                <r.icon className="h-4 w-4" />
+                <r.icon className={cn('h-4 w-4', (r as any).iconClass)} />
               </button>
             ))}
             <div className="mt-auto flex flex-col items-center gap-1.5 pb-1">
@@ -2078,7 +2237,7 @@ export default function App() {
                     cloudStatuses={cloudStatuses}
                     onRefreshCloudStatuses={() => refreshCloudStatuses(false)}
                     cloudRefreshing={cloudRefreshing}
-                    onOpenTermuxPreset={openTermuxPreset}
+                    onOpenTermuxPreset={isAndroid ? openTermuxPreset : undefined}
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
@@ -2138,7 +2297,7 @@ export default function App() {
               hosts={hosts}
               onOpen={openHost}
               onLocal={openLocalTerminal}
-              onTermux={openTermuxPreset}
+              onTermux={isAndroid ? openTermuxPreset : undefined}
               onNew={() => setModal({ host: null })}
               onSshConfig={() => setShowSshConfig(true)}
             />
@@ -2166,6 +2325,7 @@ export default function App() {
               );
             }
             const isSplit = t.panes.length > 1;
+            const currentTabMaximized = (isSplit && t.id === activeTabId) ? maximizedPaneId : null;
             return (
               <div
                 key={t.id}
@@ -2186,56 +2346,71 @@ export default function App() {
                 {t.panes.map((p) => {
                   const h = hostMap.get(p.hostId);
                   if (!h) return null;
+                  const isPaneMaximized = currentTabMaximized === p.id;
+                  const isPaneHidden = currentTabMaximized !== null && currentTabMaximized !== p.id;
                   return (
-                    <PaneErrorBoundary
+                    <div
                       key={p.id}
-                      label={h.label}
-                      background={theme.xterm.background}
-                      className={cn(t.activePaneId !== p.id && 'max-md:hidden')}
-                      onClose={() => closePane(t.id, p.id)}
+                      inert={isPaneHidden || undefined}
+                      className={cn(
+                        'min-h-0 min-w-0 h-full w-full flex',
+                        t.activePaneId !== p.id && mobile && 'max-md:hidden',
+                        isPaneHidden && 'opacity-0 pointer-events-none select-none'
+                      )}
                     >
-                      <TerminalPane
-                        pane={p}
-                        host={h}
-                        theme={theme}
-                        fontSize={fontSize}
-                        onFontSizeChange={setFontSize}
-                        lineHeight={lineHeight}
-                        cursorStyle={uiPrefs.cursorStyle}
-                        cursorBlink={uiPrefs.cursorBlink}
-                        scrollback={uiPrefs.scrollback}
-                        active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
-                        mobileHidden={t.activePaneId !== p.id}
-                        showHeader={isSplit && !mobile}
-                        isSplit={isSplit}
-                        broadcast={broadcast && isSplit}
-                        onOpenDocker={() => {
-                          setDockerHostId(p.isLocal ? '__local__' : h.id);
-                          setShowDockerModal(true);
-                        }}
-                        onTunnelChange={refresh}
-                        onFocus={() => focusPane(t.id, p.id)}
+                      <PaneErrorBoundary
+                        label={h.label}
+                        background={theme.xterm.background}
+                        className={cn(t.activePaneId !== p.id && mobile ? 'max-md:hidden' : undefined)}
                         onClose={() => closePane(t.id, p.id)}
-                        onChange={bump}
-                        onData={(d) => handlePaneData(t.id, p.id, d)}
-                        toast={toast}
-                        mobileBar={mobile ? {
-                          sessionCount: terminalSessionCount,
-                          onBack: () => navigateMobile('hosts'),
-                          onOpenSessions: () => setSessionSheet(true),
-                          onConnectHost: () => navigateMobile('hosts'),
-                          onLocalTerminal: openLocalTerminal,
-                          onTermuxPreset: openTermuxPreset,
-                          onSftp: () => openSftpTab(p.isLocal || p.kind === 'serial' ? undefined : h.id),
-                          onSerial: () => setShowSerial(true),
-                          onAssistant: () => setTerminalDrawer('assistant'),
-                          onSnippets: () => setTerminalDrawer('snippets'),
-                          onKeypad: () => setTerminalDrawer('keypad'),
-                          onHistory: () => setTerminalDrawer('history'),
-                        } : undefined}
-                        drawerInset={terminalDrawerInset}
-                      />
-                    </PaneErrorBoundary>
+                      >
+                        <TerminalPane
+                          pane={p}
+                          host={h}
+                          theme={theme}
+                          fontSize={fontSize}
+                          onFontSizeChange={setFontSize}
+                          lineHeight={lineHeight}
+                          cursorStyle={uiPrefs.cursorStyle}
+                          cursorBlink={uiPrefs.cursorBlink}
+                          scrollback={uiPrefs.scrollback}
+                          ghostSuggestions={uiPrefs.ghostSuggestions}
+                          active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
+                          mobileHidden={t.activePaneId !== p.id}
+                          hidden={isPaneHidden}
+                          showHeader={isSplit && !isPaneMaximized && !mobile}
+                          isSplit={isSplit}
+                          isMaximized={isPaneMaximized}
+                          onToggleMaximize={() => toggleMaximizePane(p.id)}
+                          broadcast={broadcast && isSplit && !currentTabMaximized}
+                          onOpenDocker={() => {
+                            setDockerHostId(p.isLocal ? '__local__' : h.id);
+                            setShowDockerModal(true);
+                          }}
+                          onTunnelChange={refresh}
+                          onFocus={() => focusPane(t.id, p.id)}
+                          onClose={() => closePane(t.id, p.id)}
+                          onChange={bump}
+                          onData={(d) => handlePaneData(t.id, p.id, d)}
+                          toast={toast}
+                          mobileBar={mobile ? {
+                            sessionCount: terminalSessionCount,
+                            onBack: () => navigateMobile('hosts'),
+                            onOpenSessions: () => setSessionSheet(true),
+                            onConnectHost: () => navigateMobile('hosts'),
+                            onLocalTerminal: openLocalTerminal,
+                            onTermuxPreset: isAndroid ? openTermuxPreset : undefined,
+                            onSftp: () => openSftpTab(p.isLocal || p.kind === 'serial' ? undefined : h.id),
+                            onSerial: () => setShowSerial(true),
+                            onAssistant: () => setTerminalDrawer('assistant'),
+                            onSnippets: () => setTerminalDrawer('snippets'),
+                            onKeypad: () => setTerminalDrawer('keypad'),
+                            onHistory: () => setTerminalDrawer('history'),
+                          } : undefined}
+                          drawerInset={terminalDrawerInset}
+                        />
+                      </PaneErrorBoundary>
+                    </div>
                   );
                 })}
               </div>
@@ -2681,7 +2856,9 @@ export default function App() {
         </div>
         <button className="nx-settings-row mt-4 rounded-xl" style={{ background: `${theme.accent}1a`, color: theme.accent }} onClick={() => navigateMobile('hosts')}><Plus size={18} /> Connect to a host</button>
         <button className="nx-settings-row" onClick={() => { openLocalTerminal(); setSessionSheet(false); }}><TerminalIcon size={18} /> Open local terminal</button>
-        <button className="nx-settings-row" onClick={() => { setSessionSheet(false); openTermuxPreset(); }}><TerminalIcon size={18} className="text-emerald-400" /> Termux (Local :8022)</button>
+        {isAndroid && (
+          <button className="nx-settings-row" onClick={() => { setSessionSheet(false); openTermuxPreset(); }}><TerminalIcon size={18} className="text-emerald-400" /> Termux (Local :8022)</button>
+        )}
       </MobileSheet>}
 
       {/* Quick Connect Floating Palette */}
@@ -2782,13 +2959,13 @@ export default function App() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-medium text-slate-200 group-hover:text-white">Local Terminal</div>
-                    <div className="text-[10px] text-slate-500">{mobile ? 'Android /system/bin/sh' : 'bash / zsh shell'}</div>
+                    <div className="text-[10px] text-slate-500">{isAndroid ? 'Android /system/bin/sh' : 'bash / zsh shell'}</div>
                   </div>
                 </button>
               )}
 
-              {/* Termux Local Bridge Option */}
-              {(!quickFilter || 'termux local 8022'.includes(quickFilter.toLowerCase())) && (
+              {/* Termux Local Bridge Option (Android only) */}
+              {isAndroid && (!quickFilter || 'termux local 8022'.includes(quickFilter.toLowerCase())) && (
                 <button
                   onClick={() => {
                     openTermuxPreset();

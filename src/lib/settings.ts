@@ -13,6 +13,9 @@ export interface UiPreferences {
   showSftp: boolean;
   showSnippets: boolean;
   showTunnels: boolean;
+  showLocalTerminal: boolean;
+  showThemeButton: boolean;
+  showStatusBarToggle: boolean;
 
   // Terminal & Appearance Defaults
   cursorStyle: 'block' | 'underline' | 'bar';
@@ -20,6 +23,7 @@ export interface UiPreferences {
   scrollback: number;
   confirmClosePane: boolean;
   defaultLocalShell: string;
+  ghostSuggestions: boolean;
 }
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
@@ -29,11 +33,15 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showSftp: true,
   showSnippets: true,
   showTunnels: true,
+  showLocalTerminal: true,
+  showThemeButton: true,
+  showStatusBarToggle: true,
   cursorStyle: 'bar',
   cursorBlink: true,
   scrollback: 10000,
   confirmClosePane: true,
   defaultLocalShell: '',
+  ghostSuggestions: true,
 };
 
 export interface ShortcutBinding {
@@ -86,6 +94,13 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     category: 'Splits & Navigation',
     keys: 'Ctrl+Shift+E',
     description: 'Split the current terminal pane horizontally (top/bottom)',
+  },
+  maximize_pane: {
+    id: 'maximize_pane',
+    label: 'Toggle Maximize / Zoom Pane',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+M',
+    description: 'Zoom and expand the active pane to full size or restore split view',
   },
   close_pane: {
     id: 'close_pane',
@@ -239,17 +254,26 @@ export function matchesShortcut(e: KeyboardEvent, shortcutKey: string): boolean 
 
   if (targetKey === eventKey) return true;
 
+  // Handle e.code matching (e.g. Digit1 when Shift produces '!', KeyZ, Space)
+  if (e.code) {
+    const codeLower = e.code.toLowerCase();
+    if (codeLower === `key${targetKey}`) return true;
+    if (codeLower === `digit${targetKey}`) return true;
+    if (targetKey === 'space' && codeLower === 'space') return true;
+  }
+
   // Handle named special keys
   if (targetKey === 'arrowleft' && (eventKey === 'arrowleft' || eventKey === 'left')) return true;
   if (targetKey === 'arrowright' && (eventKey === 'arrowright' || eventKey === 'right')) return true;
   if (targetKey === 'arrowup' && (eventKey === 'arrowup' || eventKey === 'up')) return true;
   if (targetKey === 'arrowdown' && (eventKey === 'arrowdown' || eventKey === 'down')) return true;
+  if ((targetKey === 'space' || targetKey === ' ') && eventKey === ' ') return true;
 
   return false;
 }
 
 /**
- * Directional Split Navigation (Ghostty / tmux style)
+ * Directional Split Navigation
  * Finds the adjacent pane in the active tab based on layout and direction.
  */
 export function getAdjacentPaneId(

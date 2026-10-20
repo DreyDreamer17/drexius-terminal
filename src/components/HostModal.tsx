@@ -1,9 +1,9 @@
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { X, KeyRound, Lock, Fingerprint, Upload, ShieldCheck, Key, Server, Terminal, Copy, Check } from 'lucide-react';
 import type { AuthMethod, Host, HostSecret, KeychainItem, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
-import { OS_OPTIONS } from '../lib/os';
+import { OS_OPTIONS, isAndroidPlatform } from '../lib/os';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 import { CustomSelect } from './CustomSelect';
@@ -49,6 +49,7 @@ export function HostModal({
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';
+  const isAndroid = useMemo(() => isAndroidPlatform(), []);
 
   const [h, setH] = useState<Host>(
     host ?? {
@@ -228,7 +229,7 @@ export function HostModal({
           </button>
         </div>
         <div className="max-h-[70vh] space-y-4 overflow-y-auto px-5 py-4">
-          {!host && !isTermuxLocal && (
+          {!host && !isTermuxLocal && isAndroid && (
             <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.06] px-3 py-2">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-300">

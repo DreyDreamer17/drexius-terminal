@@ -40,6 +40,8 @@ import {
   Copy,
   Square,
   Zap,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
@@ -141,12 +143,16 @@ interface Props {
   cursorStyle?: 'block' | 'underline' | 'bar';
   cursorBlink?: boolean;
   scrollback?: number;
+  ghostSuggestions?: boolean;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
   lineHeight?: number;
   active: boolean;
   showHeader: boolean;
   isSplit?: boolean;
+  isMaximized?: boolean;
+  onToggleMaximize?: () => void;
+  hidden?: boolean;
   mobileHidden?: boolean;
   broadcast?: boolean;
   onOpenDocker?: () => void;
@@ -197,11 +203,15 @@ export const TerminalPane = memo(function TerminalPane({
   cursorStyle = 'bar',
   cursorBlink = true,
   scrollback = 10000,
+  ghostSuggestions = true,
   onFontSizeChange,
   lineHeight = 1.0,
   active,
   showHeader,
   isSplit = false,
+  isMaximized = false,
+  onToggleMaximize,
+  hidden = false,
   broadcast = false,
   onOpenDocker,
   onTunnelChange,
@@ -220,6 +230,7 @@ export const TerminalPane = memo(function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const webglRef = useRef<WebglAddon | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const sessionRef = useRef<string | null>(null);
   const lineRef = useRef('');
@@ -231,6 +242,20 @@ export const TerminalPane = memo(function TerminalPane({
   const pendingSize = useRef<{ cols: number; rows: number } | null>(null);
   const lastSentSize = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
   const resizeScheduled = useRef(false);
+  const hiddenRef = useRef(hidden);
+  hiddenRef.current = hidden;
+
+  const refreshTerminal = useCallback(() => {
+    if (hiddenRef.current) return;
+    const el = elRef.current;
+    if (!termRef.current || !el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
+    try {
+      fitRef.current?.fit();
+    } catch {}
+    try {
+      termRef.current.refresh(0, Math.max(0, (termRef.current.rows || 1) - 1));
+    } catch {}
+  }, []);
 
   // Command & Clipboard history + Autosuggestion states
   const historyCacheRef = useRef<string[]>([]);
@@ -444,16 +469,17 @@ export const TerminalPane = memo(function TerminalPane({
   }, [onData, update, onChange]);
 
   const scheduleResize = useCallback((cols: number, rows: number) => {
-    if (cols <= 0 || rows <= 0) return;
+    if (cols < 10 || rows < 3 || hiddenRef.current) return;
     pendingSize.current = { cols, rows };
     if (resizeScheduled.current) return;
 
     resizeScheduled.current = true;
     requestAnimationFrame(() => {
       resizeScheduled.current = false;
+      if (hiddenRef.current) return;
       const size = pendingSize.current;
       const sid = sessionRef.current;
-      if (size && sid && !isSerial) {
+      if (size && size.cols >= 10 && size.rows >= 3 && sid && !isSerial) {
         if (
           size.cols === lastSentSize.current.cols &&
           size.rows === lastSentSize.current.rows
@@ -573,6 +599,14 @@ export const TerminalPane = memo(function TerminalPane({
   const resyncTimerRef = useRef<number | null>(null);
 
   const updateSuggestion = useCallback((overrideText?: string) => {
+    if (ghostSuggestions === false) {
+      if (suggestionRef.current) {
+        setSuggestion(null);
+        setGhostPos(null);
+      }
+      return;
+    }
+
     // The keystroke-tracked line is the source of truth. The screen buffer lags
     // behind keystrokes (server echo), so it must never overwrite it while typing.
     const prefix = (overrideText !== undefined ? overrideText : lineRef.current) || '';
@@ -623,7 +657,7 @@ export const TerminalPane = memo(function TerminalPane({
       full: bestMatch,
       suffix: bestMatch.slice(prefix.length),
     });
-  }, [isCursorAtCommandEnd]);
+  }, [isCursorAtCommandEnd, ghostSuggestions]);
 
   // After Tab / history navigation / paste / cursor movement, the real line only
   // exists on screen. Wait for the server echo to land, then re-read it once.
@@ -642,6 +676,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   /** Types the ghost suffix. Returns false (and drops the ghost) when it can't apply, so the key reaches the shell. */
   const acceptSuggestion = useCallback((): boolean => {
+    if (ghostSuggestions === false) return false;
     const s = suggestionRef.current;
     const sid = sessionRef.current;
     if (!s || !s.suffix || !sid) return false;
@@ -664,7 +699,14 @@ export const TerminalPane = memo(function TerminalPane({
     setGhostPos(null);
     termRef.current?.focus();
     return true;
-  }, [isSerial, isLocal, isCursorAtCommandEnd]);
+  }, [isSerial, isLocal, isCursorAtCommandEnd, ghostSuggestions]);
+
+  useEffect(() => {
+    if (ghostSuggestions === false && suggestion) {
+      setSuggestion(null);
+      setGhostPos(null);
+    }
+  }, [ghostSuggestions, suggestion]);
 
   const updateGhostPos = useCallback(() => {
     // If no suggestion is active, skip measuring and avoid re-renders (fixes H4 render storm)
@@ -1267,13 +1309,16 @@ export const TerminalPane = memo(function TerminalPane({
     // xterm 6, so it must not be used as a fallback here.
     try {
       const webgl = new WebglAddon();
+      webglRef.current = webgl;
       webgl.onContextLoss(() => {
         console.warn('WebGL context lost; terminal switched to the DOM renderer');
+        webglRef.current = null;
         try { webgl.dispose(); } catch { /* already disposed */ }
       });
       term.loadAddon(webgl);
     } catch (err) {
       console.warn('WebGL renderer unavailable, using DOM renderer:', err);
+      webglRef.current = null;
     }
 
     const helperTextarea = term.textarea;
@@ -1863,13 +1908,22 @@ export const TerminalPane = memo(function TerminalPane({
       toggleSearch: () => toggleSearchRef.current(),
       openHistory: () => openHistoryRef.current(),
       openClipboard: () => openClipboardRef.current(),
+      refresh: () => {
+        if (hiddenRef.current) return;
+        const el = elRef.current;
+        if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
+        try { fit.fit(); } catch {}
+        try { term.refresh(0, Math.max(0, (term.rows || 1) - 1)); } catch {}
+      },
     });
 
     const fitAndScheduleResize = () => {
-      if (document.visibilityState === 'hidden') return;
-      if (!elRef.current?.clientWidth || !elRef.current.clientHeight) return;
+      if (hiddenRef.current || document.visibilityState === 'hidden') return;
+      const el = elRef.current;
+      if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
       try {
         fit.fit();
+        term.refresh(0, Math.max(0, (term.rows || 1) - 1));
         updateGhostPos();
         if (term.cols && term.rows) {
           scheduleResize(term.cols, term.rows);
@@ -1927,6 +1981,7 @@ export const TerminalPane = memo(function TerminalPane({
         bridge.closeSerial(sessionRef.current);
       }
       sessionRef.current = null;
+      webglRef.current = null;
       registry.delete(pane.id);
       smartWriterRef.current?.dispose();
       smartWriterRef.current = null;
@@ -1998,8 +2053,22 @@ export const TerminalPane = memo(function TerminalPane({
 
   useEffect(() => {
     if (active && !mobile) termRef.current?.focus();
-    if (active) { try { if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit(); } catch { /* hidden */ } }
+    if (active && !hiddenRef.current) {
+      try {
+        if (elRef.current && elRef.current.offsetParent && elRef.current.clientWidth >= 40 && elRef.current.clientHeight >= 40) {
+          fitRef.current?.fit();
+        }
+      } catch {
+        /* hidden */
+      }
+    }
   }, [active, mobile]);
+
+  useLayoutEffect(() => {
+    if (!hidden) {
+      refreshTerminal();
+    }
+  }, [isMaximized, showHeader, hidden, refreshTerminal]);
 
   // Handle Ctrl+F / Cmd+F for search inside active terminal
   useEffect(() => {
@@ -2240,9 +2309,10 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }}
       className={cn(
-        'relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden transition-all',
+        'flex min-h-0 min-w-0 flex-col overflow-hidden transition-[border-color,box-shadow]',
+        isMaximized ? 'absolute inset-0 z-30' : 'relative h-full w-full',
         mobileHidden && 'max-md:hidden',
-        isSplit
+        isSplit && !isMaximized
           ? cn(
               'rounded-xl border',
               broadcast
@@ -2277,6 +2347,12 @@ export const TerminalPane = memo(function TerminalPane({
             <span className="flex items-center gap-1 rounded bg-rose-500/20 border border-rose-500/40 px-1.5 py-0.2 text-[9px] font-bold text-rose-300 animate-pulse shrink-0">
               <Radio className="h-2.5 w-2.5" />
               BROADCAST
+            </span>
+          )}
+          {isMaximized && (
+            <span className="flex items-center gap-1 rounded bg-cyan-500/20 border border-cyan-500/40 px-1.5 py-0.2 text-[9px] font-bold text-cyan-300 shrink-0">
+              <Maximize2 className="h-2.5 w-2.5" />
+              MAXIMIZED
             </span>
           )}
           <span className="flex min-w-0 items-center gap-1 truncate font-mono text-slate-500">
@@ -2342,8 +2418,31 @@ export const TerminalPane = memo(function TerminalPane({
                 <Unplug className="h-3 w-3" />
               </button>
             )}
+            {isSplit && onToggleMaximize && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleMaximize();
+                }}
+                title={isMaximized ? "Restore split layout (Ctrl+Shift+M)" : "Maximize pane (Ctrl+Shift+M)"}
+                className={cn(
+                  "rounded p-1 transition cursor-pointer",
+                  isMaximized
+                    ? "text-cyan-300 bg-cyan-500/20 hover:bg-cyan-500/30 shadow-[0_0_8px_rgba(34,211,238,0.2)]"
+                    : "text-slate-500 hover:bg-white/5 hover:text-cyan-300"
+                )}
+              >
+                {isMaximized ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
+              </button>
+            )}
             {isSplit && (
-              <button onClick={onClose} title="Close split pane" className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-rose-300">
+              <button
+                type="button"
+                onClick={onClose}
+                title="Close split pane"
+                className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-rose-300 transition cursor-pointer"
+              >
                 <X className="h-3 w-3" />
               </button>
             )}
@@ -2566,7 +2665,7 @@ export const TerminalPane = memo(function TerminalPane({
         )}
 
         {/* Real-time Inline Ghost Text Autosuggestion (Fish / Zsh / Copilot style) */}
-        {suggestion && ghostPos && (
+        {ghostSuggestions !== false && suggestion && ghostPos && (
           <div
             onClick={(e) => {
               e.preventDefault();
@@ -2656,7 +2755,7 @@ export const TerminalPane = memo(function TerminalPane({
         );
       })()}
       {mobile && active && drawerInset <= 0 && mobileBar && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
-        hasSuggestion={!!suggestion}
+        hasSuggestion={ghostSuggestions !== false && !!suggestion}
         tools={{ onKeypad: mobileBar.onKeypad, onSearch: () => setShowSearch(v => !v), onHistory: mobileBar.onHistory, onAssistant: mobileBar.onAssistant, onSnippets: mobileBar.onSnippets }}
         onKey={sendAccessoryKey} />}
 

@@ -46,3 +46,9 @@ export function normalizeOs(os?: string | null): OsId | null {
   if (s && (OS_OPTIONS as { id: string }[]).some((o) => o.id === s)) return s as OsId;
   return parseOsFromBanner(os);
 }
+
+/** Check if the current client is running on Android. */
+export function isAndroidPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /android/i.test(navigator.userAgent);
+}
