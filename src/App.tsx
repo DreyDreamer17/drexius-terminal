@@ -110,6 +110,7 @@ import {
   saveShortcuts,
   matchesShortcut,
   getAdjacentPaneId,
+  POPULAR_TERMINAL_FONTS,
   type UiPreferences,
   type ShortcutBinding,
 } from './lib/settings';
@@ -283,8 +284,8 @@ export default function App() {
   const isAndroid = useMemo(() => isAndroidPlatform(), []);
   const persistedWorkspace = useMemo(() => readPersistedWorkspace(), []);
   const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
-  // Phone settings pickers (auto-lock, theme, quick unlock, direct launch, recovery key, storage permissions)
-  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'quickunlock' | 'directlaunch' | 'recovery_key' | 'storage_perms' | null>(null);
+  // Phone settings pickers (auto-lock, theme, font, quick unlock, direct launch, recovery key, storage permissions)
+  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'font' | 'quickunlock' | 'directlaunch' | 'recovery_key' | 'storage_perms' | null>(null);
   const [deviceLockEnabled, setDeviceLockEnabled] = useState(() => bridge.osKeychainEnabled());
   const [directUnlockEnabled, setDirectUnlockEnabled] = useState(() => bridge.isDirectUnlockEnabled());
   const [directLaunchPw, setDirectLaunchPw] = useState('');
@@ -2654,13 +2655,16 @@ export default function App() {
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setShowThemes(false)} />
                     <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
-                    {THEMES.map((t) => (
-                      <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
-                        <span className="flex h-5 w-8 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
-                          {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <span key={i} className="mt-auto h-1.5 flex-1" style={{ background: c }} />)}
-                        </span>{t.name}
-                      </button>
-                    ))}
+                      <div className="max-h-64 overflow-y-auto space-y-0.5 pr-0.5">
+                        {THEMES.map((t) => (
+                          <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
+                            <span className="flex h-5 w-8 shrink-0 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
+                              {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <span key={i} className="mt-auto h-1.5 flex-1" style={{ background: c }} />)}
+                            </span>
+                            <span className="truncate">{t.name}</span>
+                          </button>
+                        ))}
+                      </div>
                     <div className="mt-2 flex items-center justify-between border-t border-white/5 px-2 pt-2 text-xs text-slate-400">
                       Font size
                       <div className="flex items-center gap-1">
@@ -3117,6 +3121,10 @@ export default function App() {
                           host={h}
                           theme={theme}
                           fontSize={fontSize}
+                          fontFamily={uiPrefs.fontFamily}
+                          customFontFamily={uiPrefs.customFontFamily}
+                          fontWeight={uiPrefs.fontWeight}
+                          letterSpacing={uiPrefs.letterSpacing}
                           onFontSizeChange={setFontSize}
                           lineHeight={lineHeight}
                           cursorStyle={uiPrefs.cursorStyle}
@@ -3309,12 +3317,59 @@ export default function App() {
             <span className="flex items-center gap-3"><Palette size={18} /> Theme</span>
             <span className="nx-settings-value"><ThemeSwatch t={theme} />{theme.name}<ChevronRight size={16} /></span>
           </button>
+          <button className="nx-settings-row justify-between" aria-haspopup="dialog" aria-label={`Font: ${uiPrefs.fontFamily}`} onClick={() => setSettingsPicker('font')}>
+            <span className="flex items-center gap-3"><Type size={18} /> Font family</span>
+            <span className="nx-settings-value truncate max-w-[140px]">
+              {uiPrefs.fontFamily === 'custom' ? (uiPrefs.customFontFamily || 'Custom') : uiPrefs.fontFamily}
+              <ChevronRight size={16} />
+            </span>
+          </button>
           <div className="nx-settings-row justify-between">
             <span className="flex items-center gap-3"><Type size={18} /> Font size</span>
             <span className="nx-stepper" role="group" aria-label="Terminal font size">
               <button type="button" aria-label="Smaller font" disabled={fontSize <= TERMINAL_FONT_MIN} onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))}><Minus size={16} /></button>
               <span aria-live="polite">{fontSize}<small>px</small></span>
               <button type="button" aria-label="Larger font" disabled={fontSize >= TERMINAL_FONT_MAX} onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))}><Plus size={16} /></button>
+            </span>
+          </div>
+          <div className="nx-settings-row justify-between">
+            <span className="flex items-center gap-3"><Type size={18} /> Font weight</span>
+            <div className="flex items-center gap-1">
+              {(['300', '400', '500', '600', '700'] as const).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => handleUpdateUiPrefs({ ...uiPrefs, fontWeight: w })}
+                  className={cn(
+                    'px-2 py-1 rounded text-xs font-mono transition',
+                    uiPrefs.fontWeight === w
+                      ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-400/40'
+                      : 'text-slate-400 hover:text-white bg-white/5'
+                  )}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="nx-settings-row justify-between">
+            <span className="flex items-center gap-3"><Rows2 size={18} /> Letter spacing</span>
+            <span className="nx-stepper" role="group" aria-label="Letter spacing">
+              <button
+                type="button"
+                disabled={uiPrefs.letterSpacing <= -1}
+                onClick={() => handleUpdateUiPrefs({ ...uiPrefs, letterSpacing: Math.max(-1, uiPrefs.letterSpacing - 1) })}
+              >
+                <Minus size={16} />
+              </button>
+              <span aria-live="polite">{uiPrefs.letterSpacing === 0 ? '0' : `${uiPrefs.letterSpacing > 0 ? '+' : ''}${uiPrefs.letterSpacing}`}<small>px</small></span>
+              <button
+                type="button"
+                disabled={uiPrefs.letterSpacing >= 3}
+                onClick={() => handleUpdateUiPrefs({ ...uiPrefs, letterSpacing: Math.min(3, uiPrefs.letterSpacing + 1) })}
+              >
+                <Plus size={16} />
+              </button>
             </span>
           </div>
           <label className="nx-settings-row flex-wrap justify-between gap-y-1">
@@ -3350,6 +3405,44 @@ export default function App() {
               {on && <Check size={18} style={{ color: t.accent }} />}
             </button>;
           })}
+        </div>
+      </MobileSheet>}
+      {mobile && settingsPicker === 'font' && <MobileSheet title="Font Family" kicker="Appearance" subtitle="Select standard coding font or custom system font" icon={Type} theme={theme} onClose={() => setSettingsPicker(null)}>
+        <div className="nx-settings-group" role="radiogroup" aria-label="Terminal font family">
+          {POPULAR_TERMINAL_FONTS.map((f) => {
+            const on = uiPrefs.fontFamily === f.id;
+            return (
+              <button
+                key={f.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                className="nx-settings-row nx-option-row justify-between"
+                onClick={() => {
+                  handleUpdateUiPrefs({ ...uiPrefs, fontFamily: f.id });
+                  if (f.id !== 'custom') setSettingsPicker(null);
+                }}
+              >
+                <div className="flex flex-col text-left py-0.5">
+                  <span className="font-semibold text-white text-sm">{f.label}</span>
+                  <span className="text-[11px] text-slate-400">{f.description}</span>
+                </div>
+                {on && <Check size={18} style={{ color: theme.accent }} />}
+              </button>
+            );
+          })}
+          {uiPrefs.fontFamily === 'custom' && (
+            <div className="p-3 border-t border-white/10 bg-white/[0.02]">
+              <label className="text-xs text-slate-300 font-medium block mb-1.5">Custom Font Name</label>
+              <input
+                type="text"
+                placeholder="e.g. Comic Code, Iosevka, Victor Mono"
+                value={uiPrefs.customFontFamily}
+                onChange={(e) => handleUpdateUiPrefs({ ...uiPrefs, customFontFamily: e.target.value })}
+                className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+              />
+            </div>
+          )}
         </div>
       </MobileSheet>}
       {mobile && settingsPicker === 'quickunlock' && (

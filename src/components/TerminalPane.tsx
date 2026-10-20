@@ -51,6 +51,7 @@ import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
 import { PortStreamDetector, type DetectedPort } from '../lib/portDetector';
 import { registry } from '../lib/sessions';
+import { resolveTerminalFontFamily } from '../lib/settings';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import type { DrexiusTheme } from '../lib/themes';
@@ -144,6 +145,10 @@ interface Props {
   host: Host;
   theme: DrexiusTheme;
   fontSize: number;
+  fontFamily?: string;
+  customFontFamily?: string;
+  fontWeight?: string;
+  letterSpacing?: number;
   cursorStyle?: 'block' | 'underline' | 'bar';
   cursorBlink?: boolean;
   scrollback?: number;
@@ -207,6 +212,10 @@ export const TerminalPane = memo(function TerminalPane({
   host,
   theme,
   fontSize,
+  fontFamily = 'JetBrains Mono',
+  customFontFamily = '',
+  fontWeight = '400',
+  letterSpacing = 0,
   cursorStyle = 'bar',
   cursorBlink = true,
   scrollback = 10000,
@@ -1287,11 +1296,12 @@ export const TerminalPane = memo(function TerminalPane({
   // Mount xterm once
   useEffect(() => {
     const term = new Terminal({
-      fontFamily:
-        '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
+      fontFamily: resolveTerminalFontFamily(fontFamily, customFontFamily),
       fontSize,
+      fontWeight: (fontWeight || '400') as any,
+      fontWeightBold: (Number(fontWeight) >= 600 ? 'bold' : '700') as any,
       lineHeight,
-      letterSpacing: 0,
+      letterSpacing,
       cursorBlink,
       cursorStyle,
       scrollback,
@@ -2094,6 +2104,19 @@ export const TerminalPane = memo(function TerminalPane({
 
   useEffect(() => {
     if (!termRef.current) return;
+    termRef.current.options.fontFamily = resolveTerminalFontFamily(fontFamily, customFontFamily);
+    termRef.current.options.fontWeight = (fontWeight || '400') as any;
+    termRef.current.options.fontWeightBold = (Number(fontWeight) >= 600 ? 'bold' : '700') as any;
+    termRef.current.options.letterSpacing = letterSpacing;
+    try {
+      if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
+    } catch {
+      /* */
+    }
+  }, [fontFamily, customFontFamily, fontWeight, letterSpacing]);
+
+  useEffect(() => {
+    if (!termRef.current) return;
     termRef.current.options.lineHeight = lineHeight;
     try {
       if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
@@ -2779,9 +2802,10 @@ export const TerminalPane = memo(function TerminalPane({
               maxWidth: `calc(100% - ${ghostPos.x}px)`,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              fontFamily:
-                '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace',
+              fontFamily: resolveTerminalFontFamily(fontFamily, customFontFamily),
               fontSize: `${fontSize}px`,
+              fontWeight: fontWeight,
+              letterSpacing: `${letterSpacing}px`,
               pointerEvents: 'auto',
               cursor: 'pointer',
               zIndex: 20,

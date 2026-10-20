@@ -5,6 +5,129 @@
 
 import type { Layout, Pane } from './types';
 
+export type TerminalFontWeight = '300' | '400' | '500' | '600' | '700';
+
+export interface TerminalFontOption {
+  id: string;
+  label: string;
+  description: string;
+  family: string;
+}
+
+export const DEFAULT_FONT_FAMILY = 'JetBrains Mono';
+
+export const POPULAR_TERMINAL_FONTS: TerminalFontOption[] = [
+  {
+    id: 'JetBrains Mono',
+    label: 'JetBrains Mono',
+    description: 'Bundled default • Excellent ligature & coding clarity',
+    family: '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono"',
+  },
+  {
+    id: 'Fira Code',
+    label: 'Fira Code',
+    description: 'Iconic monospaced font with programming ligatures',
+    family: '"Fira Code", "Fira Code Retina"',
+  },
+  {
+    id: 'Cascadia Code',
+    label: 'Cascadia Code',
+    description: 'Modern Microsoft terminal monospace font',
+    family: '"Cascadia Code", "Cascadia Mono"',
+  },
+  {
+    id: 'Hack',
+    label: 'Hack',
+    description: 'Open source workhorse font designed for source code',
+    family: '"Hack", "Hack Nerd Font"',
+  },
+  {
+    id: 'Source Code Pro',
+    label: 'Source Code Pro',
+    description: "Adobe's clean, legible open-source monospace font",
+    family: '"Source Code Pro"',
+  },
+  {
+    id: 'MesloLGS NF',
+    label: 'MesloLGS NF',
+    description: 'Optimized for Powerlevel10k & Nerd Font glyphs',
+    family: '"MesloLGS NF", "Meslo LG S NF", "Meslo LG S"',
+  },
+  {
+    id: 'Roboto Mono',
+    label: 'Roboto Mono',
+    description: "Google's geometric monospaced typeface",
+    family: '"Roboto Mono"',
+  },
+  {
+    id: 'Ubuntu Mono',
+    label: 'Ubuntu Mono',
+    description: 'Warm, distinctive Ubuntu terminal typeface',
+    family: '"Ubuntu Mono"',
+  },
+  {
+    id: 'Inconsolata',
+    label: 'Inconsolata',
+    description: 'Raph Levien classic humanist monospace font',
+    family: '"Inconsolata"',
+  },
+  {
+    id: 'DejaVu Sans Mono',
+    label: 'DejaVu Sans Mono',
+    description: 'Vast Unicode coverage and clear character distinction',
+    family: '"DejaVu Sans Mono"',
+  },
+  {
+    id: 'Menlo',
+    label: 'Menlo',
+    description: 'macOS standard fixed-width terminal font',
+    family: '"Menlo"',
+  },
+  {
+    id: 'Monaco',
+    label: 'Monaco',
+    description: 'Classic compact Apple monospace typeface',
+    family: '"Monaco"',
+  },
+  {
+    id: 'Consolas',
+    label: 'Consolas',
+    description: 'Windows ClearType monospace standard',
+    family: '"Consolas"',
+  },
+  {
+    id: 'custom',
+    label: 'Custom Font...',
+    description: 'Enter any font family installed on your system',
+    family: '',
+  },
+];
+
+export const FONT_WEIGHT_OPTIONS: { id: TerminalFontWeight; label: string }[] = [
+  { id: '300', label: 'Light' },
+  { id: '400', label: 'Regular' },
+  { id: '500', label: 'Medium' },
+  { id: '600', label: 'Semibold' },
+  { id: '700', label: 'Bold' },
+];
+
+export const FALLBACK_FONT_STACK =
+  '"JetBrainsMono Nerd Font", "JetBrains Mono Variable", "JetBrains Mono", Menlo, Monaco, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
+
+export function resolveTerminalFontFamily(fontFamily?: string, customFont?: string): string {
+  if (!fontFamily || fontFamily === 'JetBrains Mono') {
+    return FALLBACK_FONT_STACK;
+  }
+  if (fontFamily === 'custom' && customFont?.trim()) {
+    return `"${customFont.trim()}", ${FALLBACK_FONT_STACK}`;
+  }
+  const match = POPULAR_TERMINAL_FONTS.find((f) => f.id === fontFamily);
+  if (match && match.family) {
+    return `${match.family}, ${FALLBACK_FONT_STACK}`;
+  }
+  return `"${fontFamily}", ${FALLBACK_FONT_STACK}`;
+}
+
 export interface UiPreferences {
   // UI Customization Toggles (Show / Hide features)
   showSerial: boolean;
@@ -24,6 +147,12 @@ export interface UiPreferences {
   confirmClosePane: boolean;
   defaultLocalShell: string;
   ghostSuggestions: boolean;
+
+  // Font & Typography Configuration
+  fontFamily: string;
+  customFontFamily: string;
+  fontWeight: TerminalFontWeight;
+  letterSpacing: number;
 }
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
@@ -42,6 +171,10 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   confirmClosePane: true,
   defaultLocalShell: '',
   ghostSuggestions: true,
+  fontFamily: 'JetBrains Mono',
+  customFontFamily: '',
+  fontWeight: '400',
+  letterSpacing: 0,
 };
 
 export interface ShortcutBinding {

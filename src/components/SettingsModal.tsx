@@ -34,12 +34,16 @@ import {
   EyeOff,
   AlertTriangle,
   Loader2,
+  Search,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import {
   type UiPreferences,
   type ShortcutBinding,
+  POPULAR_TERMINAL_FONTS,
+  FONT_WEIGHT_OPTIONS,
+  resolveTerminalFontFamily,
   DEFAULT_UI_PREFERENCES,
   DEFAULT_SHORTCUTS,
 } from '../lib/settings';
@@ -156,6 +160,22 @@ export function SettingsModal({
     theme || THEMES.find((t) => t.id === themeId) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
+
+  const [themeSearch, setThemeSearch] = useState('');
+  const [themeFilter, setThemeFilter] = useState<'all' | 'dark' | 'light' | 'vibrant'>('all');
+
+  const filteredThemes = useMemo(() => {
+    return THEMES.filter((t) => {
+      if (themeFilter === 'light' && !t.isLight) return false;
+      if (themeFilter === 'dark' && t.isLight) return false;
+      if (themeFilter === 'vibrant' && !['cyberpunk', 'synthwave', 'matrix', 'homebrew', 'aurora'].includes(t.id)) return false;
+      if (themeSearch.trim()) {
+        const q = themeSearch.toLowerCase().trim();
+        return t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [themeSearch, themeFilter]);
 
   // Direct Launch / Auto-Unlock state & handlers
   const [directUnlockEnabled, setDirectUnlockEnabled] = useState(() => bridge.isDirectUnlockEnabled());
@@ -1058,53 +1078,308 @@ export function SettingsModal({
           {/* TAB 3: APPEARANCE & THEMES */}
           {activeTab === 'appearance' && (
             <div className="space-y-6">
-              {/* Font Size & Line Height */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5">
+              {/* Terminal Typography & Font Settings */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className="flex h-8 w-8 items-center justify-center rounded-lg"
+                      style={{ backgroundColor: `${accentColor}20`, color: accentColor }}
+                    >
+                      <Type className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Terminal Typography & Font</h3>
+                      <p className="text-xs text-slate-400">
+                        Configure font family, font weight, letter spacing, font size and line height
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updatePref('fontFamily', 'JetBrains Mono');
+                      updatePref('customFontFamily', '');
+                      updatePref('fontWeight', '400');
+                      updatePref('letterSpacing', 0);
+                      onFontSizeChange(13);
+                      onLineHeightChange(1.0);
+                      toast('Font settings reset to defaults');
+                    }}
+                    className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Reset</span>
+                  </button>
+                </div>
+
+                {/* Font Family Selection */}
                 <div className="space-y-2">
-                  <label className="text-xs font-medium text-slate-300 flex items-center gap-2">
-                    <Type className="h-4 w-4 text-cyan-400" />
-                    <span>Terminal Font Size</span>
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      disabled={fontSize <= 10}
-                      onClick={() => onFontSizeChange(Math.max(10, fontSize - 1))}
-                      className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white disabled:opacity-40"
-                    >
-                      <Minus className="h-4 w-4" />
-                    </button>
-                    <span className="font-mono text-sm font-semibold text-white min-w-[48px] text-center">
-                      {fontSize}px
+                  <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                    <span>Font Family</span>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      {uiPrefs.fontFamily === 'custom'
+                        ? uiPrefs.customFontFamily || 'Custom'
+                        : uiPrefs.fontFamily}
                     </span>
-                    <button
-                      type="button"
-                      disabled={fontSize >= 28}
-                      onClick={() => onFontSizeChange(Math.min(28, fontSize + 1))}
-                      className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white disabled:opacity-40"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </button>
+                  </label>
+                  <CustomSelect
+                    value={uiPrefs.fontFamily}
+                    onChange={(val) => updatePref('fontFamily', String(val))}
+                    options={POPULAR_TERMINAL_FONTS.map((f) => ({
+                      value: f.id,
+                      label: f.label,
+                    }))}
+                    theme={activeTheme}
+                    accentColor={accentColor}
+                  />
+
+                  {/* Custom Font Family Input */}
+                  {uiPrefs.fontFamily === 'custom' && (
+                    <div className="pt-1.5">
+                      <input
+                        type="text"
+                        placeholder="Enter system font name (e.g. Comic Code, Iosevka, Victor Mono)"
+                        value={uiPrefs.customFontFamily}
+                        onChange={(e) => updatePref('customFontFamily', e.target.value)}
+                        className="w-full rounded-xl border border-white/15 bg-white/5 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 transition"
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        NexusTerminal will use this font if installed on your system, otherwise falling back to JetBrains Mono.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Font Weight & Letter Spacing Controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                  {/* Font Weight */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-300">
+                      Font Weight
+                    </label>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {FONT_WEIGHT_OPTIONS.map((w) => {
+                        const isSelected = uiPrefs.fontWeight === w.id;
+                        return (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => updatePref('fontWeight', w.id)}
+                            className={cn(
+                              'py-1.5 px-1 rounded-lg border text-xs font-medium transition text-center truncate',
+                              isSelected
+                                ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-300 shadow-sm'
+                                : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-white hover:bg-white/5'
+                            )}
+                            title={w.label}
+                          >
+                            {w.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Letter Spacing */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                      <span>Letter Spacing</span>
+                      <span className="font-mono text-xs text-cyan-300">
+                        {uiPrefs.letterSpacing === 0 ? '0px (Default)' : `${uiPrefs.letterSpacing > 0 ? '+' : ''}${uiPrefs.letterSpacing}px`}
+                      </span>
+                    </label>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {[-1, 0, 1, 2, 3].map((spacing) => {
+                        const isSelected = uiPrefs.letterSpacing === spacing;
+                        return (
+                          <button
+                            key={spacing}
+                            type="button"
+                            onClick={() => updatePref('letterSpacing', spacing)}
+                            className={cn(
+                              'py-1.5 px-1 rounded-lg border text-xs font-mono font-medium transition text-center',
+                              isSelected
+                                ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-300 shadow-sm'
+                                : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-white hover:bg-white/5'
+                            )}
+                          >
+                            {spacing === 0 ? '0' : `${spacing > 0 ? '+' : ''}${spacing}`}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
-                    <span className="flex items-center gap-2">
-                      <Rows2 className="h-4 w-4 text-fuchsia-400" />
-                      <span>Line Height</span>
+                {/* Font Size & Line Height Row */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-slate-300 flex items-center gap-2">
+                      <Type className="h-4 w-4 text-cyan-400" />
+                      <span>Font Size</span>
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={fontSize <= 10}
+                        onClick={() => onFontSizeChange(Math.max(10, fontSize - 1))}
+                        className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white disabled:opacity-40"
+                      >
+                        <Minus className="h-4 w-4" />
+                      </button>
+                      <span className="font-mono text-sm font-semibold text-white min-w-[48px] text-center">
+                        {fontSize}px
+                      </span>
+                      <button
+                        type="button"
+                        disabled={fontSize >= 28}
+                        onClick={() => onFontSizeChange(Math.min(28, fontSize + 1))}
+                        className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white disabled:opacity-40"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-slate-300 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Rows2 className="h-4 w-4 text-fuchsia-400" />
+                        <span>Line Height</span>
+                      </span>
+                      <span className="font-mono text-xs text-fuchsia-300">{lineHeight.toFixed(2)}</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="1.0"
+                      max="1.6"
+                      step="0.05"
+                      value={lineHeight}
+                      onChange={(e) => onLineHeightChange(parseFloat(e.target.value))}
+                      className="w-full nx-range"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Interactive Live Terminal Preview Box */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-white">Live Terminal Preview</h3>
+                  <span className="text-[11px] text-slate-400">
+                    Real-time font cell metrics & color rendering
+                  </span>
+                </div>
+                <div
+                  className="rounded-xl border overflow-hidden shadow-xl transition-all"
+                  style={{
+                    backgroundColor: activeTheme.xterm.background || '#0a0d14',
+                    borderColor: `${accentColor}35`,
+                  }}
+                >
+                  {/* Simulated Terminal Window Header */}
+                  <div className="flex items-center justify-between px-3.5 py-2 border-b border-white/10 bg-black/20">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-500/80 inline-block" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-amber-500/80 inline-block" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80 inline-block" />
+                      <span className="ml-2 font-mono text-[11px] text-slate-400 truncate">
+                        nexus@terminal ~ 80×24
+                      </span>
+                    </div>
+                    <span
+                      className="text-[10px] font-mono px-2 py-0.5 rounded border"
+                      style={{
+                        backgroundColor: `${accentColor}15`,
+                        borderColor: `${accentColor}30`,
+                        color: accentColor,
+                      }}
+                    >
+                      {uiPrefs.fontFamily === 'custom'
+                        ? uiPrefs.customFontFamily || 'Custom'
+                        : uiPrefs.fontFamily}{' '}
+                      @{fontSize}px
                     </span>
-                    <span className="font-mono text-xs text-fuchsia-300">{lineHeight.toFixed(2)}</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="1.0"
-                    max="1.6"
-                    step="0.05"
-                    value={lineHeight}
-                    onChange={(e) => onLineHeightChange(parseFloat(e.target.value))}
-                    className="w-full nx-range"
-                  />
+                  </div>
+
+                  {/* Simulated Terminal Body */}
+                  <div
+                    className="p-4 overflow-x-auto select-none"
+                    style={{
+                      fontFamily: resolveTerminalFontFamily(uiPrefs.fontFamily, uiPrefs.customFontFamily),
+                      fontSize: `${fontSize}px`,
+                      fontWeight: uiPrefs.fontWeight,
+                      letterSpacing: `${uiPrefs.letterSpacing}px`,
+                      lineHeight: lineHeight,
+                      color: activeTheme.xterm.foreground || '#d6deeb',
+                    }}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div style={{ color: accentColor }} className="font-bold shrink-0">
+                        nexus@drexius:~$
+                      </div>
+                      <div className="text-white">neofetch --drexius</div>
+                    </div>
+                    <div className="mt-1.5 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span style={{ color: activeTheme.xterm.cyan || accentColor }}>OS:</span>
+                        <span>Drexius Linux (x86_64 / arm64-v8a)</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span style={{ color: activeTheme.xterm.green || '#4ade80' }}>Theme:</span>
+                        <span>{activeTheme.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span style={{ color: activeTheme.xterm.yellow || '#fbbf24' }}>Metrics:</span>
+                        <span>
+                          {fontSize}px size • {lineHeight.toFixed(2)} lh • {uiPrefs.fontWeight} weight •{' '}
+                          {uiPrefs.letterSpacing}px spacing
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span style={{ color: activeTheme.xterm.magenta || '#c084fc' }}>Security:</span>
+                        <span>SQLCipher AES-256 + Argon2id Active</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-2.5 flex items-center gap-2">
+                      <span style={{ color: accentColor }} className="font-bold shrink-0">
+                        nexus@drexius:~$
+                      </span>
+                      <span className="inline-block w-2 h-4 animate-pulse" style={{ backgroundColor: activeTheme.xterm.cursor || accentColor }} />
+                    </div>
+
+                    {/* 16 ANSI Color Palette Bar */}
+                    <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-mono opacity-50 uppercase mr-1">ANSI:</span>
+                      {[
+                        activeTheme.xterm.black,
+                        activeTheme.xterm.red,
+                        activeTheme.xterm.green,
+                        activeTheme.xterm.yellow,
+                        activeTheme.xterm.blue,
+                        activeTheme.xterm.magenta,
+                        activeTheme.xterm.cyan,
+                        activeTheme.xterm.white,
+                        activeTheme.xterm.brightBlack,
+                        activeTheme.xterm.brightRed,
+                        activeTheme.xterm.brightGreen,
+                        activeTheme.xterm.brightYellow,
+                        activeTheme.xterm.brightBlue,
+                        activeTheme.xterm.brightMagenta,
+                        activeTheme.xterm.brightCyan,
+                        activeTheme.xterm.brightWhite,
+                      ].map((c, i) => (
+                        <span
+                          key={i}
+                          className="h-3 w-4 rounded-sm border border-black/40 shrink-0"
+                          style={{ backgroundColor: c }}
+                          title={c}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1161,9 +1436,59 @@ export function SettingsModal({
 
               {/* Themes Gallery */}
               <div className="space-y-3">
-                <h3 className="text-sm font-semibold text-white">Color Themes ({THEMES.length})</h3>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">
+                      Color Themes ({filteredThemes.length} / {THEMES.length})
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Curated developer color schemes with accurate ANSI palettes
+                    </p>
+                  </div>
+
+                  {/* Filter chips */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {(['all', 'dark', 'light', 'vibrant'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setThemeFilter(mode)}
+                        className={cn(
+                          'px-2.5 py-1 rounded-lg text-xs font-medium capitalize transition border',
+                          themeFilter === mode
+                            ? 'border-cyan-400/50 bg-cyan-500/10 text-cyan-300'
+                            : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-white'
+                        )}
+                      >
+                        {mode === 'vibrant' ? 'Neon / Vibrant' : mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Theme Search Input */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search themes by name..."
+                    value={themeSearch}
+                    onChange={(e) => setThemeSearch(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-white/10 bg-white/[0.03] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+                  />
+                  {themeSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setThemeSearch('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                  {THEMES.map((t) => {
+                  {filteredThemes.map((t) => {
                     const isSelected = t.id === themeId;
                     return (
                       <button
@@ -1173,35 +1498,43 @@ export function SettingsModal({
                         className={cn(
                           'flex flex-col text-left rounded-xl border p-2.5 transition relative overflow-hidden',
                           isSelected
-                            ? 'border-cyan-400 bg-white/10 shadow-lg'
+                            ? 'border-cyan-400 bg-white/10 shadow-lg ring-1 ring-cyan-400/30'
                             : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20'
                         )}
                         style={{ backgroundColor: t.xterm.background || '#0e131d' }}
                       >
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-semibold text-white truncate">{t.name}</span>
+                          <span
+                            className={cn(
+                              'text-xs font-semibold truncate',
+                              t.isLight ? 'text-slate-900' : 'text-white'
+                            )}
+                          >
+                            {t.name}
+                          </span>
                           {isSelected && <Check className="h-3.5 w-3.5 text-cyan-400 shrink-0" />}
                         </div>
                         {/* Swatch dots */}
                         <div className="flex items-center gap-1.5">
                           <span
-                            className="h-3 w-3 rounded-full border border-black/40"
+                            className="h-3 w-3 rounded-full border border-black/40 shrink-0"
                             style={{ backgroundColor: t.accent }}
+                            title="Accent"
                           />
                           <span
-                            className="h-3 w-3 rounded-full border border-black/40"
+                            className="h-3 w-3 rounded-full border border-black/40 shrink-0"
                             style={{ backgroundColor: t.xterm.cyan || '#22d3ee' }}
                           />
                           <span
-                            className="h-3 w-3 rounded-full border border-black/40"
+                            className="h-3 w-3 rounded-full border border-black/40 shrink-0"
                             style={{ backgroundColor: t.xterm.green || '#10b981' }}
                           />
                           <span
-                            className="h-3 w-3 rounded-full border border-black/40"
+                            className="h-3 w-3 rounded-full border border-black/40 shrink-0"
                             style={{ backgroundColor: t.xterm.yellow || '#f59e0b' }}
                           />
                           <span
-                            className="h-3 w-3 rounded-full border border-black/40"
+                            className="h-3 w-3 rounded-full border border-black/40 shrink-0"
                             style={{ backgroundColor: t.xterm.red || '#ef4444' }}
                           />
                         </div>
