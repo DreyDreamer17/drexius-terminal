@@ -1,4 +1,5 @@
-# Build and publish the desktop bundles.
+# Build and publish the desktop bundles (macOS, Windows, Linux .deb/.rpm/AppImage)
+# and the signed Android APKs (universal + arm64).
 #
 # Triggered by pushing a `v*` tag. The tag is the single source of truth for the
 # version: bump `version` in src-tauri/Cargo.toml *and* src-tauri/tauri.conf.json
@@ -106,6 +107,9 @@ jobs:
           rustup target add ${{ matrix.target }}
           rustc --version
 
+      # `rpm` provides rpmbuild, which Tauri shells out to for the .rpm bundle
+      # (bundle.targets is "all"). It is not guaranteed on the runner image, so it
+      # is installed explicitly rather than relying on an image default.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -113,7 +117,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libudev-dev
+            librsvg2-dev patchelf libudev-dev rpm
 
       # tauri.conf.json points frontendDist at ../dist and dist/ is gitignored, so a
       # clean checkout has nothing for tauri-build to resolve when build.rs runs.
@@ -151,3 +155,189 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+  # Android is not part of the tauri-action matrix above (that action only drives
+  # desktop bundles), so it gets its own job. It runs after `build` so the draft
+  # release already exists by the time the APKs are attached to it.
+  #
+  # Two APKs are shipped:
+  #   * DrexiusTerminal-universal.apk  arm64-v8a + armeabi-v7a + x86_64 in one file.
+  #                                    Installs anywhere; the safe default download.
+  #   * DrexiusTerminal-arm64.apk      arm64-v8a only. Roughly a third of the size and
+  #                                    right for nearly every phone made since ~2017.
+  # AABs are intentionally not built (Play Store only; not sideloadable).
+  android:
+    name: Build Android APKs
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Pinned to the toolchain the app is developed and tested against, rather
+      # than whatever the runner image happens to ship that week.
+      ANDROID_PLATFORM: platforms;android-37.0
+      ANDROID_BUILD_TOOLS: 36.0.0
+      ANDROID_NDK_VERSION: 30.0.16248370
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail in seconds, not after a 20-minute build, if a release is missing its
+      # signing key. (The signing step below enforces the same rule again.)
+      - name: Require signing secrets for tagged releases
+        if: github.event_name == 'push'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "${ANDROID_KEYSTORE_BASE64}" ] || missing="${missing} ANDROID_KEYSTORE_BASE64"
+          [ -n "${ANDROID_KEY_ALIAS}" ] || missing="${missing} ANDROID_KEY_ALIAS"
+          [ -n "${ANDROID_KEYSTORE_PASSWORD}" ] || missing="${missing} ANDROID_KEYSTORE_PASSWORD"
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing repository secret(s):${missing}. APKs signed with a different key cannot be installed over an earlier release, so tagged releases require the permanent keystore."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Select stable toolchain and Android targets
+        run: |
+          rustup default stable
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          rustc --version
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager \
+            "${ANDROID_PLATFORM}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          NDK_DIR="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+          test -d "${NDK_DIR}" || { echo "::error::NDK not found at ${NDK_DIR}"; exit 1; }
+          echo "NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}" >> "$GITHUB_PATH"
+
+      - run: npm ci
+
+      # Universal first: every ABI that is built ends up inside the one APK, so the
+      # three targets must all be requested here.
+      - name: Build universal release APK
+        run: npx tauri android build --apk --ci --target aarch64 armv7 x86_64
+
+      # Copy the result out immediately; the second build reuses the same Gradle
+      # project and must not be able to disturb it.
+      - name: Stage universal APK
+        run: |
+          mkdir -p "${RUNNER_TEMP}/apk-in"
+          SRC="$(find src-tauri/gen/android/app/build/outputs/apk/universal/release -name '*-unsigned.apk' | head -n 1)"
+          test -n "${SRC}" || { echo "::error::universal release APK not found"; exit 1; }
+          cp "${SRC}" "${RUNNER_TEMP}/apk-in/universal.apk"
+          # A universal APK that silently lacks an ABI would install fine and then
+          # crash on that hardware, so assert all three native libs are present.
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "${RUNNER_TEMP}/apk-in/universal.apk" | grep -q "lib/${abi}/libdrexius_terminal_lib.so" \
+              || { echo "::error::universal APK is missing the ${abi} native library"; exit 1; }
+          done
+
+      - name: Build arm64 release APK
+        run: npx tauri android build --apk --ci --target aarch64 --split-per-abi
+
+      - name: Stage arm64 APK
+        run: |
+          SRC="$(find src-tauri/gen/android/app/build/outputs/apk/arm64/release -name '*-unsigned.apk' | head -n 1)"
+          test -n "${SRC}" || { echo "::error::arm64 release APK not found"; exit 1; }
+          cp "${SRC}" "${RUNNER_TEMP}/apk-in/arm64.apk"
+
+      # Android refuses to install an unsigned APK, and refuses to install an APK
+      # over an existing install unless it carries the SAME signing key. So:
+      #   * tag push  -> the signing secrets are REQUIRED. A release signed with a
+      #                  different key could never be installed as an upgrade, and
+      #                  users would have to uninstall (losing their vault) first.
+      #   * manual run -> falls back to a throw-away key so the pipeline can be
+      #                  tested without secrets. Such APKs are kept as a workflow
+      #                  artifact only and are never attached to a release.
+      - name: Prepare signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          KEYSTORE="${RUNNER_TEMP}/release.keystore"
+          if [ -n "${ANDROID_KEYSTORE_BASE64}" ] && [ -n "${ANDROID_KEY_ALIAS}" ] && [ -n "${ANDROID_KEYSTORE_PASSWORD}" ]; then
+            echo "${ANDROID_KEYSTORE_BASE64}" | base64 -d > "${KEYSTORE}"
+            KEY_ALIAS="${ANDROID_KEY_ALIAS}"
+            KS_PASS="${ANDROID_KEYSTORE_PASSWORD}"
+            KEY_PASS="${ANDROID_KEY_PASSWORD:-${ANDROID_KEYSTORE_PASSWORD}}"
+            echo "Signing with the configured release keystore."
+          else
+            if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+              echo "::error::Android signing secrets are missing. Refusing to publish APKs signed with a throw-away key: they could not be installed over an earlier release. Set ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS and ANDROID_KEYSTORE_PASSWORD (and optionally ANDROID_KEY_PASSWORD) in the repository secrets, then re-run this workflow."
+              exit 1
+            fi
+            echo "::warning::No Android signing secrets configured - signing with a throw-away key for this manual run. The APKs will be kept as a workflow artifact only and will NOT be attached to a release."
+            echo "EPHEMERAL_KEY=true" >> "$GITHUB_ENV"
+            KEY_ALIAS="drexius-ci"
+            KS_PASS="$(openssl rand -hex 24)"
+            KEY_PASS="${KS_PASS}"
+            keytool -genkeypair -v \
+              -keystore "${KEYSTORE}" -storetype PKCS12 \
+              -alias "${KEY_ALIAS}" -keyalg RSA -keysize 4096 -validity 36500 \
+              -storepass "${KS_PASS}" -keypass "${KEY_PASS}" \
+              -dname "CN=DrexiusTerminal CI, O=DrexiusTerminal, C=US"
+          fi
+          echo "::add-mask::${KS_PASS}"
+          echo "::add-mask::${KEY_PASS}"
+          {
+            echo "KEYSTORE=${KEYSTORE}"
+            echo "KEY_ALIAS=${KEY_ALIAS}"
+            echo "KS_PASS=${KS_PASS}"
+            echo "KEY_PASS=${KEY_PASS}"
+          } >> "$GITHUB_ENV"
+
+      # zipalign must run before apksigner: signing (v2+) covers the whole file, so
+      # any later alignment change would invalidate the signature. `-P 16` aligns
+      # the uncompressed native libraries to 16 KB, which Android 15+ devices with
+      # 16 KB memory pages need in order to load them (we target API 37).
+      - name: Align and sign APKs
+        run: |
+          mkdir -p release-apks
+          for pair in "universal:DrexiusTerminal-universal.apk" "arm64:DrexiusTerminal-arm64.apk"; do
+            IN="${RUNNER_TEMP}/apk-in/${pair%%:*}.apk"
+            OUT="release-apks/${pair#*:}"
+            zipalign -P 16 -f 4 "${IN}" "${RUNNER_TEMP}/aligned.apk"
+            apksigner sign \
+              --ks "${KEYSTORE}" --ks-key-alias "${KEY_ALIAS}" \
+              --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+              --out "${OUT}" "${RUNNER_TEMP}/aligned.apk"
+            apksigner verify --verbose --print-certs "${OUT}"
+            zipalign -c -P 16 4 "${OUT}"
+          done
+          rm -f "${KEYSTORE}"
+          sha256sum release-apks/*.apk | tee release-apks/SHA256SUMS-android.txt
+          ls -lh release-apks
+
+      # Kept as a workflow artifact too, so a failed release upload never costs a
+      # 20-minute rebuild.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: release-apks/
+          if-no-files-found: error
+
+      - name: Attach APKs to the draft release
+        if: env.EPHEMERAL_KEY != 'true'
+        run: gh release upload "${TAG}" release-apks/*.apk release-apks/SHA256SUMS-android.txt --clobber
