@@ -476,20 +476,7 @@ pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
             // Policy: approved roots only, credential stores never.
             crate::fs_guard::ensure_local_path_allowed(p)?
         }
-        _ => {
-            #[cfg(target_os = "android")]
-            {
-                std::path::PathBuf::from("/storage/emulated/0")
-            }
-            #[cfg(not(target_os = "android"))]
-            {
-                if std::path::Path::new("/storage/emulated/0").is_dir() {
-                    std::path::PathBuf::from("/storage/emulated/0")
-                } else {
-                    dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
-                }
-            }
-        }
+        _ => std::path::PathBuf::from(local_fs_home()?),
     };
 
     let canonical = target.canonicalize().unwrap_or(target);
