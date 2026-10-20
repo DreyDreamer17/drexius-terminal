@@ -476,15 +476,13 @@ impl Vault {
         self.path.with_extension("device_lock")
     }
 
+    #[cfg(target_os = "android")]
     fn device_lock_key(&self) -> AppResult<[u8; 32]> {
         let salt = std::fs::read(self.salt_path()).unwrap_or_else(|_| b"drexius-terminal-default-salt".to_vec());
         let mut ikm = Vec::new();
         ikm.extend_from_slice(b"drexius-device-lock-master-v1-");
         ikm.extend_from_slice(&salt);
-        #[cfg(target_os = "android")]
         ikm.extend_from_slice(b"-android-sandbox-uid");
-        #[cfg(not(target_os = "android"))]
-        ikm.extend_from_slice(b"-desktop-local-fallback");
 
         let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(b"drx-device-lock-salt-2025"), &ikm);
         let mut okm = [0u8; 32];
@@ -493,6 +491,7 @@ impl Vault {
         Ok(okm)
     }
 
+    #[cfg(target_os = "android")]
     pub fn save_device_lock(&self, master_password: &str) -> AppResult<()> {
         let key_bytes = self.device_lock_key()?;
         let cipher = XChaCha20Poly1305::new((&key_bytes).into());
@@ -515,6 +514,7 @@ impl Vault {
         Ok(())
     }
 
+    #[cfg(target_os = "android")]
     pub fn load_device_lock(&self) -> AppResult<Zeroizing<String>> {
         let path = self.device_lock_path();
         if !path.exists() {
@@ -1382,27 +1382,18 @@ pub async fn os_keychain_unlock(app: tauri::AppHandle) -> AppResult<Option<Strin
 
         #[cfg(not(target_os = "android"))]
         {
-            // 1. Try OS keyring first (Desktop: macOS Keychain, Windows Credential Manager, Linux Secret Service)
-            let pw = match keychain_entry().and_then(|entry| {
+            // Desktop exclusively uses the OS Keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+            // Fail closed: if the OS keychain is unavailable, do not fall back to an unbonded disk file.
+            let pw = keychain_entry().and_then(|entry| {
                 entry.get_password().map_err(|e| match e {
                     keyring::Error::NoEntry => AppError::Other("No master password stored in OS keychain".into()),
                     keyring::Error::NoStorageAccess(msg) => AppError::Other(format!("OS keychain unavailable: {msg}")),
                     keyring::Error::PlatformFailure(msg) => AppError::Other(format!("Biometric prompt failed: {msg}")),
                     other => AppError::Other(format!("OS keychain denied access: {other}")),
                 })
-            }) {
-                Ok(p) => Zeroizing::new(p),
-                Err(keyring_err) => {
-                    // Keyring is unavailable or failed (e.g. headless desktop).
-                    // Check if a secure device lock credential exists in the app's isolated sandbox.
-                    match vault.load_device_lock() {
-                        Ok(p) => p,
-                        Err(_) => return Err(keyring_err),
-                    }
-                }
-            };
+            })?;
 
-            vault.unlock(&pw)
+            vault.unlock(&Zeroizing::new(pw))
         }
     })
     .await
@@ -1431,46 +1422,36 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
 
     #[cfg(not(target_os = "android"))]
     {
-        // 1. Try OS keyring first
-        let _ = keychain_entry().and_then(|entry| {
-            entry
-                .set_password(&pw)
-                .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
-        });
-
-        // 2. Also persist device-bound secure file fallback so direct auto-unlock
-        // succeeds even when OS keyring is delayed or requires interactive login.
-        let _ = vault.save_device_lock(&pw);
+        // Desktop exclusively stores the master password in the OS Keychain
+        // (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+        let entry = keychain_entry().map_err(|e| AppError::Other(format!("Failed to access OS keychain: {e}")))?;
+        entry
+            .set_password(&pw)
+            .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))?;
+        // Clean up any legacy software fallback on desktop
+        let _ = vault.delete_device_lock();
         Ok(())
     }
 }
 
 /// "Is there a stored quick-unlock credential on this device?"
 ///
-/// The device-lock file is a plain `stat()` and always checked. Reading the OS
-/// keyring is *not* free: on macOS an access can raise a Touch ID / keychain
-/// dialog and on Linux a Secret Service prompt. The app mounts a lock screen
-/// before the user has touched anything, so the keyring is only consulted when
-/// a view the user deliberately opened asks for it (`probeKeyring: true`) —
-/// see `bridge.osKeychainStatus` and the Quick Unlock settings sheet.
+/// On Android, the sandboxed private UID storage is checked.
+/// On desktop, the OS keyring is checked when probed.
 #[tauri::command]
 pub fn os_keychain_status(vault: State<'_, Vault>, probe_keyring: Option<bool>) -> bool {
-    if vault.device_lock_path().exists() {
-        return true;
+    #[cfg(target_os = "android")]
+    {
+        let _ = probe_keyring;
+        vault.device_lock_path().exists()
     }
     #[cfg(not(target_os = "android"))]
     {
+        let _ = vault;
         probe_keyring.unwrap_or(false)
             && keychain_entry()
                 .and_then(|e| e.get_password().map_err(|e| AppError::Other(e.to_string())))
                 .is_ok()
-    }
-    #[cfg(target_os = "android")]
-    {
-        // Android has no OS-keyring entry: the sandboxed device-lock file above
-        // is the only store, so there is nothing to probe.
-        let _ = probe_keyring;
-        false
     }
 }
 

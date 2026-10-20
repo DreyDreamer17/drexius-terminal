@@ -1603,6 +1603,11 @@ export const TerminalPane = memo(function TerminalPane({
     termRef.current = term;
     const smartWriter = new SmartTerminalWriter(term);
     smartWriter.kittyProcessor.onDirectFile = (filePath, ctrl) => {
+      // SECURITY: Direct local file reading (t=f) is only permitted for local shell sessions.
+      // Remote SSH hosts must not be able to trigger client-side filesystem reads.
+      if (!pane.isLocal && host.id !== '__local__') {
+        return;
+      }
       bridge.readFileBase64(filePath).then((b64) => {
         if (!b64) return;
         const byteLen = Math.floor((b64.length * 3) / 4);

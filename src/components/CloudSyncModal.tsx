@@ -95,7 +95,7 @@ export function CloudSyncModal({
     digitaloceanToken: '',
     proxmoxUrl: '',
     proxmoxToken: '',
-    proxmoxInsecure: true,
+    proxmoxInsecure: false,
   });
 
   const [instancesByProvider, setInstancesByProvider] = useState<Record<CloudProviderId, CloudInstance[]>>({
@@ -130,7 +130,7 @@ export function CloudSyncModal({
           digitaloceanToken: saved.digitaloceanToken || '',
           proxmoxUrl: saved.proxmoxUrl || '',
           proxmoxToken: saved.proxmoxToken || '',
-          proxmoxInsecure: saved.proxmoxInsecure ?? true,
+          proxmoxInsecure: saved.proxmoxInsecure ?? false,
         });
 
         // Auto-select first configured provider and fetch its live fleet
@@ -156,7 +156,7 @@ export function CloudSyncModal({
             firstConfigured,
             tok,
             firstConfigured === 'proxmox' ? saved.proxmoxUrl : null,
-            saved.proxmoxInsecure ?? true
+            firstConfigured === 'proxmox' ? (saved.proxmoxInsecure ?? false) : false
           );
           if (cancelled) return;
           setInstancesByProvider((prev) => ({ ...prev, [firstConfigured]: list }));
@@ -212,7 +212,7 @@ export function CloudSyncModal({
         provider,
         currentToken.trim(),
         provider === 'proxmox' ? creds.proxmoxUrl?.trim() : null,
-        creds.proxmoxInsecure ?? true
+        provider === 'proxmox' ? (creds.proxmoxInsecure ?? false) : false
       );
       setInstancesByProvider((prev) => ({ ...prev, [provider]: list }));
       setSelectedIds(new Set(list.map((i) => `${i.provider}:${i.id}`)));
@@ -439,7 +439,7 @@ export function CloudSyncModal({
                 <label className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-xs text-slate-300 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={creds.proxmoxInsecure ?? true}
+                    checked={creds.proxmoxInsecure ?? false}
                     onChange={(e) =>
                       setCreds((prev) => ({ ...prev, proxmoxInsecure: e.target.checked }))
                     }

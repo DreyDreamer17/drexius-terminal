@@ -393,11 +393,22 @@ pub fn ssh_config_preview(
             return Err(AppError::Other("Could not resolve home directory".into()));
         };
 
-        if !p.is_file() {
+        let meta = std::fs::metadata(&p).map_err(|e| {
+            AppError::Other(format!("Cannot read SSH config {}: {e}", p.display()))
+        })?;
+        if !meta.is_file() {
             return Err(AppError::Other(format!(
-                "SSH config file not found: {}",
+                "SSH config path is not a regular file: {}",
                 p.display()
             )));
+        }
+        if meta.len() > 5 * 1024 * 1024 {
+            return Err(AppError::Other("SSH config file exceeds 5MB limit".into()));
+        }
+        let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+        let canon_str = canon.to_string_lossy();
+        if canon_str.starts_with("/dev") || canon_str.starts_with("/proc") || canon_str.starts_with("/sys") {
+            return Err(AppError::Other("Access to system device or pseudo-filesystem path is prohibited".into()));
         }
 
         std::fs::read_to_string(&p)
@@ -456,10 +467,17 @@ pub fn ssh_config_import(
 
         if let Some(id_path) = &parsed.identity_file {
             let expanded = expand_path(id_path);
-            if expanded.is_file() {
-                auth_method = AuthMethod::Key;
-                if let Ok(key_content) = std::fs::read_to_string(&expanded) {
-                    if key_content.contains("PRIVATE KEY") {
+            if let Ok(meta) = std::fs::metadata(&expanded) {
+                let canon_str = expanded.canonicalize().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                if meta.is_file()
+                    && meta.len() <= 500 * 1024
+                    && !canon_str.starts_with("/dev")
+                    && !canon_str.starts_with("/proc")
+                    && !canon_str.starts_with("/sys")
+                {
+                    auth_method = AuthMethod::Key;
+                    if let Ok(key_content) = std::fs::read_to_string(&expanded) {
+                        if key_content.contains("PRIVATE KEY") {
                         let key_filename = expanded
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -479,6 +497,7 @@ pub fn ssh_config_import(
                 }
             }
         }
+    }
 
         // ProxyJump may reference an alias in this batch, or an older vault
         // host. The latter lookup is scoped to the target vault.

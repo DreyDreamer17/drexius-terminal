@@ -477,9 +477,14 @@ pub async fn cloud_fetch_instances(
         return Err(AppError::Other("API token cannot be empty".into()));
     }
 
+    let is_proxmox = prov == "proxmox";
+    // Only Proxmox on-premise clusters may opt in to self-signed TLS.
+    // Public cloud providers (Hetzner, DigitalOcean) always enforce valid TLS certificates.
+    let accept_invalid_certs = is_proxmox && allow_insecure.unwrap_or(false);
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
-        .danger_accept_invalid_certs(allow_insecure.unwrap_or(false))
+        .danger_accept_invalid_certs(accept_invalid_certs)
         .build()
         .map_err(|e| AppError::Other(format!("Failed to build HTTP client: {e}")))?;
 
@@ -578,7 +583,7 @@ pub async fn cloud_fetch_instances(
             // Best-effort guest IP resolution for running LXC/QEMU instances
             let ip_client = reqwest::Client::builder()
                 .timeout(Duration::from_millis(2200))
-                .danger_accept_invalid_certs(allow_insecure.unwrap_or(true))
+                .danger_accept_invalid_certs(accept_invalid_certs)
                 .build()
                 .unwrap_or(client);
 

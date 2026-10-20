@@ -422,9 +422,22 @@ pub fn local_pty_close(session_id: String, mgr: State<'_, LocalPtyManager>) -> A
     Ok(())
 }
 
+const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB ceiling for inline images
+
 #[tauri::command]
 pub fn read_file_base64(path: String) -> Result<String, String> {
-    std::fs::read(&path)
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(|e| format!("Cannot access path: {e}"))?;
+    if !meta.is_file() {
+        return Err("Path is not a regular file (special devices and directories are blocked)".into());
+    }
+    if meta.len() > MAX_INLINE_IMAGE_BYTES {
+        return Err(format!(
+            "File exceeds maximum inline image display size ({} MB)",
+            MAX_INLINE_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+    std::fs::read(p)
         .map(|bytes| B64.encode(&bytes))
         .map_err(|e| e.to_string())
 }

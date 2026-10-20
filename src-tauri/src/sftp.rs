@@ -341,10 +341,19 @@ pub async fn sftp_transfer_remote(
             })();
             (total, res)
         } else {
-            let c_src = src_conn.lock();
+            // Deadlock prevention: acquire locks in deterministic pointer address order
+            // to avoid ABBA deadlocks when concurrent transfers run between the same endpoints in reverse.
+            let (c_src, c_dst) = if (Arc::as_ptr(&src_conn) as usize) < (Arc::as_ptr(&dst_conn) as usize) {
+                let s = src_conn.lock();
+                let d = dst_conn.lock();
+                (s, d)
+            } else {
+                let d = dst_conn.lock();
+                let s = src_conn.lock();
+                (s, d)
+            };
             let mut src = c_src.sftp.open(Path::new(&src_path))?;
             let total = src.stat()?.size.unwrap_or(0);
-            let c_dst = dst_conn.lock();
             let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
             let res: AppResult<()> = (|| {
                 loop {
