@@ -4,6 +4,7 @@ import {
   Laptop,
   Smartphone,
   QrCode,
+  Camera,
   ShieldCheck,
   Copy,
   Check,
@@ -41,6 +42,7 @@ function parsePairingLink(link: string): ParsedPairingLink {
 }
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
+import { QrScannerModal } from './QrScannerModal';
 
 interface Props {
   onClose: () => void;
@@ -77,6 +79,7 @@ export function DevicePairingModal({
   const [joining, setJoining] = useState(false);
   const [joinResult, setJoinResult] = useState<PairingJoinResult | null>(null);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
 
   // Devices list state
   const [localInfo, setLocalInfo] = useState<LocalDeviceInfo | null>(null);
@@ -220,11 +223,10 @@ export function DevicePairingModal({
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
-  const handleJoin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const executeJoin = async (link: string) => {
     let parsed: ParsedPairingLink;
     try {
-      parsed = parsePairingLink(joinLink);
+      parsed = parsePairingLink(link);
     } catch (err: any) {
       setJoinError(err?.message || 'Invalid pairing link');
       return;
@@ -259,6 +261,11 @@ export function DevicePairingModal({
     } finally {
       setJoining(false);
     }
+  };
+
+  const handleJoin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await executeJoin(joinLink);
   };
 
   const handleRevoke = async (id: string, name: string) => {
@@ -528,6 +535,33 @@ export function DevicePairingModal({
               </div>
             )}
 
+            {/* 1-Tap Camera Scanner Button */}
+            <div className="rounded-xl border border-dashed border-white/20 bg-white/[0.02] p-4 text-center space-y-2">
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowScanner(true)}
+                  className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg"
+                  style={{
+                    backgroundColor: accentColor,
+                    color: '#000000',
+                    boxShadow: `0 0 20px ${accentColor}35`,
+                  }}
+                >
+                  <Camera className="h-4 w-4" />
+                  <span>Scan QR Code with Camera</span>
+                </button>
+                <p className="text-[11px] text-slate-400">
+                  Point camera at the host's screen to connect and sync automatically.
+                </p>
+              </div>
+            </div>
+
+            <div className="relative flex items-center justify-center my-1">
+              <div className="border-t border-white/10 w-full" />
+              <span className="bg-black/60 px-2 text-[10px] uppercase font-semibold text-slate-500 absolute">or paste link manually</span>
+            </div>
+
             <div>
               <label className="block text-[11px] font-medium text-slate-300 mb-1">
                 Pairing Link (copy it from the host device)
@@ -684,6 +718,20 @@ export function DevicePairingModal({
           </div>
         )}
       </div>
+
+      {showScanner && (
+        <QrScannerModal
+          theme={activeTheme}
+          title="Scan Pairing QR Code"
+          onScan={(scanned) => {
+            setShowScanner(false);
+            setJoinLink(scanned);
+            toast('QR code scanned! Connecting…');
+            executeJoin(scanned);
+          }}
+          onClose={() => setShowScanner(false)}
+        />
+      )}
     </ResponsiveOverlay>
   );
 }

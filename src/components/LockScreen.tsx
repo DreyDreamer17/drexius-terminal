@@ -403,18 +403,20 @@ Generated: ${new Date().toISOString()}
 
   return (
     <div
-      className="nx-lock-screen relative flex min-h-screen flex-col justify-center overflow-y-auto px-4 py-6 md:grid md:place-items-center text-slate-200"
+      className="nx-lock-screen relative flex min-h-screen flex-col justify-center overflow-y-auto overflow-x-hidden no-scrollbar px-4 py-6 md:grid md:place-items-center text-slate-200"
       style={{ backgroundColor: bgColor }}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
-      <div
-        className="nx-blob pointer-events-none absolute -left-32 top-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
-        style={{ backgroundColor: `${accentColor}25` }}
-      />
-      <div
-        className="nx-blob-2 pointer-events-none absolute -right-32 bottom-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
-        style={{ backgroundColor: `${accentColor}15` }}
-      />
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.025)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.025)_1px,transparent_1px)] bg-[size:48px_48px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_75%)]" />
+        <div
+          className="nx-blob pointer-events-none absolute -left-32 top-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
+          style={{ backgroundColor: `${accentColor}25` }}
+        />
+        <div
+          className="nx-blob-2 pointer-events-none absolute -right-32 bottom-1/4 h-[420px] w-[420px] rounded-full blur-[120px]"
+          style={{ backgroundColor: `${accentColor}15` }}
+        />
+      </div>
 
       <div className="relative w-full max-w-md mx-auto md:max-w-5xl md:grid md:grid-cols-2 md:gap-12 md:items-center">
         <div className="hidden md:block">

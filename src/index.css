@@ -30,6 +30,19 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 *:not(.no-scrollbar)::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
 *:not(.no-scrollbar)::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
 
+/* On mobile/touch screens, eliminate default webkit scrollbars so animations and re-renders do not cause periodic scrollbar flashing */
+@media (max-width: 768px) {
+  *:not(.force-scrollbar) {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+  *:not(.force-scrollbar)::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+}
+
 /* Bulletproof scrollbar elimination across WebKit, GTK, Firefox */
 .no-scrollbar,
 .no-scrollbar * {
@@ -126,7 +139,7 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 .nx-float { animation: nx-float 5s ease-in-out infinite; }
 
 /* Mobile primitives are deliberately scoped; desktop pane geometry is unchanged. */
-html, body { overscroll-behavior: none; }
+html, body { overscroll-behavior: none; overflow-x: hidden; }
 body { touch-action: pan-x pan-y; }
 @layer components {
 .nx-touch-button { display: inline-flex; min-width: 44px; min-height: 44px; flex-shrink: 0; align-items: center; justify-content: center; border-radius: 12px; }

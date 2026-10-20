@@ -44,6 +44,7 @@ pub struct NetbirdCredentials {
 // ── CLI JSON Structs ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
+#[cfg_attr(target_os = "android", allow(dead_code))]
 struct NetbirdCliStatus {
     #[serde(rename = "netbirdIp")]
     netbird_ip: Option<String>,
@@ -53,6 +54,7 @@ struct NetbirdCliStatus {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(target_os = "android", allow(dead_code))]
 struct NetbirdCliPeer {
     fqdn: Option<String>,
     #[serde(rename = "netbirdIp")]
@@ -74,6 +76,7 @@ fn clean_ip(raw: &str) -> String {
     }
 }
 
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub fn parse_netbird_cli_json(raw: &str) -> Option<Vec<NetbirdDevice>> {
     let parsed: NetbirdCliStatus = serde_json::from_str(raw).ok()?;
     let mut devices = Vec::new();

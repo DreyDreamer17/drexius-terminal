@@ -2,7 +2,7 @@ import { useMobile, useMobileViewport } from './hooks/useMobile';
 import drexiusLogo from './assets/drexius-logo.png';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
 import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX } from './lib/mobileTerminal';
-import { MobileSheet, ResponsiveOverlay, SheetHandle, WorkspaceAccessContext } from './components/MobileSheet';
+import { MobileSheet, WorkspaceAccessContext } from './components/MobileSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Server,
@@ -65,6 +65,7 @@ import { SshConfigModal } from './components/SshConfigModal';
 import { TailscaleModal } from './components/TailscaleModal';
 import { NetbirdModal } from './components/NetbirdModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
+import { SyncModal } from './components/SyncModal';
 import { OsIcon } from './components/OsIcon';
 import { SnippetsPanel } from './components/SnippetsPanel';
 import { TerminalPane } from './components/TerminalPane';
@@ -1955,7 +1956,7 @@ export default function App() {
         {/* Main workspace */}
         <main inert={mobile && !mobileWorkspaceVisible} className={cn("relative flex min-w-0 flex-1 flex-col", mobile && !mobileWorkspaceVisible && "invisible")}>
           {/* Panes */}
-        <div className="relative min-h-0 flex-1" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
+        <div className="relative min-h-0 flex-1 overflow-hidden" onClick={() => { setShowThemes(false); setQuick(false); setPanel(null); }}>
           {(!tabs.length || (mobile && mobilePage === 'terminals' && !tabs.some(t => t.panes.length))) && (
             <Welcome
               hosts={hosts}
@@ -2883,10 +2884,12 @@ function Welcome({
   onSshConfig: () => void;
 }) {
   return (
-    <div className="relative grid h-full place-items-center overflow-y-auto">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(34,211,238,0.08),transparent_60%)]" />
-      <div className="nx-blob pointer-events-none absolute left-1/4 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]" />
-      <div className="nx-blob-2 pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-[100px]" />
+    <div className="relative grid h-full place-items-center overflow-y-auto overflow-x-hidden no-scrollbar">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(34,211,238,0.08),transparent_60%)]" />
+        <div className="nx-blob pointer-events-none absolute left-1/4 top-1/3 h-72 w-72 rounded-full bg-cyan-500/10 blur-[100px]" />
+        <div className="nx-blob-2 pointer-events-none absolute right-1/4 bottom-1/4 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-[100px]" />
+      </div>
       <div className="relative w-full max-w-2xl px-6 py-6 text-center">
         <img src={drexiusLogo} alt="Drexius" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-white">Where to today?</h1>
@@ -2924,216 +2927,5 @@ function Welcome({
   );
 }
 
-function SyncModal({
-  onClose,
-  onOpenPairing,
-  toast,
-  theme,
-}: {
-  onClose: () => void;
-  onOpenPairing: () => void;
-  toast: (m: string) => void;
-  theme?: DrexiusTheme;
-}) {
-  const accentColor = theme?.accent ?? '#22d3ee';
-  const bgColor = theme?.xterm?.background ?? '#0e131d';
-  const [url, setUrl] = useState(() => localStorage.getItem('drx.sync.relay') ?? '');
-  const [token, setToken] = useState('');
-  const [status, setStatus] = useState<{ lastSync: number | null; lastError: string | null; deviceId: string; hasToken?: boolean; relayUrl?: string | null; skippedBlobs?: number } | null>(null);
-  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    try {
-      localStorage.removeItem('drx.sync.token');
-    } catch {}
-    if (isTauri) {
-      bridge.syncStatus().then((st) => {
-        setStatus(st);
-        if (st.relayUrl) setUrl(st.relayUrl);
-      }).catch(() => {});
-    }
-  }, []);
 
-  const save = async () => {
-    try {
-      if (isTauri) {
-        const tokenArg = token ? token : (status?.hasToken ? undefined : '');
-        await bridge.syncConfigure(url || null, tokenArg);
-        setStatus(await bridge.syncStatus());
-      }
-      try {
-        localStorage.removeItem('drx.sync.token');
-        if (url) localStorage.setItem('drx.sync.relay', url);
-        else localStorage.removeItem('drx.sync.relay');
-      } catch {}
-      toast(url ? 'Relay settings saved — pair a new vault to share its sync key' : 'Relay sync disabled');
-      onClose();
-    } catch (e) {
-      toast(`Could not save relay settings: ${String(e)}`);
-    }
-  };
-  const doSync = async () => {
-    setBusy(true);
-    try {
-      if (isTauri) {
-        const tokenArg = token ? token : undefined;
-        await bridge.syncConfigure(url || null, tokenArg);
-      }
-      const out = await bridge.syncNow();
-      setStatus({ lastSync: out.lastSync, lastError: out.lastError, deviceId: out.deviceId, hasToken: out.hasToken, skippedBlobs: out.skippedBlobs });
-      toast('Encrypted sync completed');
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
-      toast(`Sync failed: ${msg}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const steps = [
-    ['Seed', 'Random group key · shared by encrypted pairing'],
-    ['K_sync', 'HKDF-SHA256(seed, "drexius/sync/v2")'],
-    ['Seal', 'XChaCha20-Poly1305 · 256-byte padded CBOR'],
-    ['Blind', 'blob id = HMAC(K_index, table:id)'],
-    ['Merge', 'Hybrid logical clocks · last-writer-wins'],
-  ];
-  const lastSyncStr = status?.lastSync ? new Date(status.lastSync * 1000).toLocaleString() : 'never';
-  return (
-    <ResponsiveOverlay label="Encrypted relay sync" onClose={onClose} className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
-      <div
-        onMouseDown={(e) => e.stopPropagation()}
-        className="nx-sheet relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 p-6 shadow-2xl"
-        style={{ backgroundColor: bgColor }}
-      >
-        <SheetHandle onClose={onClose} />
-        {/* Top ambient radial glow */}
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 h-40 opacity-25"
-          style={{ background: `radial-gradient(ellipse at top, ${accentColor} 0%, transparent 70%)` }}
-        />
-
-        <div className="relative flex items-center gap-3">
-          <div
-            className="grid h-10 w-10 place-items-center rounded-2xl border transition shadow-lg shrink-0"
-            style={{
-              backgroundColor: `${accentColor}18`,
-              borderColor: `${accentColor}35`,
-              color: accentColor,
-              boxShadow: `0 0 20px ${accentColor}25`,
-            }}
-          >
-            <Cloud className="h-5 w-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">Encrypted relay sync</h3>
-            <p className="text-[11px] text-slate-500">Self-hosted relay · join other devices by encrypted pairing</p>
-          </div>
-        </div>
-
-        {/* Direct Wi-Fi / LAN Pairing Shortcut */}
-        <div
-          className="relative mt-4 rounded-xl border p-3 flex items-center justify-between"
-          style={{
-            backgroundColor: `${accentColor}0e`,
-            borderColor: `${accentColor}25`,
-          }}
-        >
-          <div>
-            <div className="text-xs font-semibold" style={{ color: accentColor }}>No relay? Link directly over LAN</div>
-            <div className="text-[10.5px] text-slate-400">Pair on the same LAN; transfers a snapshot and, if configured, relay settings and the shared sync key (AI keys excluded).</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onOpenPairing();
-            }}
-            className="flex items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-medium transition shrink-0 shadow-sm"
-            style={{
-              backgroundColor: `${accentColor}20`,
-              borderColor: `${accentColor}40`,
-              color: accentColor,
-            }}
-          >
-            <QrCode className="h-3.5 w-3.5" />
-            <span>Pair Device</span>
-          </button>
-        </div>
-
-        <ol className="relative mt-4 space-y-2">
-          {steps.map(([k, v], i) => (
-            <li key={k} className="flex items-center gap-3 text-xs">
-              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-white/5 text-[10px] text-slate-400 ring-1 ring-white/10">{i + 1}</span>
-              <span className="w-14 font-semibold" style={{ color: accentColor }}>{k}</span>
-              <span className="font-mono text-[11px] text-slate-400">{v}</span>
-            </li>
-          ))}
-        </ol>
-
-        <div className="relative">
-          <label className="mt-4 block text-[10px] uppercase tracking-wider text-slate-500">Relay URL</label>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://relay.example.com" className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none" />
-          <label className="mt-3 block text-[10px] uppercase tracking-wider text-slate-500">
-            Relay bearer token (required for bundled relay)
-            {status?.hasToken && !token && (
-              <span className="ml-2 font-normal text-emerald-400 lowercase">
-                (saved in encrypted vault)
-              </span>
-            )}
-          </label>
-          <input
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            type="password"
-            placeholder={status?.hasToken ? '•••••••• (leave blank to keep existing)' : '••••••••'}
-            className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs text-slate-100 focus:outline-none"
-          />
-          <p className="mt-2 text-[11px] text-slate-500">The relay stores padded ciphertext with blinded IDs but sees traffic metadata. Hosts (including inline secrets), keychain, snippets, tunnels and vault metadata sync; AI credentials and known-host trust stay local.</p>
-          <p className="mt-2 text-[11px] text-amber-300/90">Set up a self-hosted HTTPS relay and a strong bearer token first. To join, select “Join existing vault” on a new device and pair it on the same LAN; pairing shares the group key. A matching password alone is not enough. Keep separate backups; revocation does not erase already-shared keys.</p>
-
-          {status && (
-            <div className="mt-3 rounded-lg border border-white/5 bg-black/30 p-2 font-mono text-[10.5px] text-slate-400">
-              device <span style={{ color: accentColor }}>{status.deviceId}</span> · last sync <span className="text-emerald-300">{lastSyncStr}</span>
-              {status.lastError && <div className="mt-1 text-rose-300">error: {status.lastError}</div>}
-              {!!status.skippedBlobs && (
-                <div className="mt-1 text-amber-300">
-                  skipped {status.skippedBlobs} unreadable blob{status.skippedBlobs === 1 ? '' : 's'} — another
-                  sync group on this relay, or a record the relay no longer serves. Sync continued.
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="mt-5 flex justify-between gap-2">
-            <button
-              onClick={doSync}
-              disabled={!url || busy}
-              className="rounded-xl border px-4 py-2 text-xs font-semibold transition disabled:opacity-40"
-              style={{
-                backgroundColor: `${accentColor}18`,
-                borderColor: `${accentColor}35`,
-                color: accentColor,
-              }}
-            >
-              {busy ? 'Syncing…' : 'Sync now'}
-            </button>
-            <div className="flex gap-2">
-              <button onClick={onClose} className="rounded-xl px-4 py-2 text-xs text-slate-300 hover:bg-white/5">Close</button>
-              <button
-                onClick={save}
-                className="rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg"
-                style={{
-                  backgroundColor: accentColor,
-                  color: '#000000',
-                  boxShadow: `0 0 20px ${accentColor}35`,
-                }}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </ResponsiveOverlay>
-  );
-}

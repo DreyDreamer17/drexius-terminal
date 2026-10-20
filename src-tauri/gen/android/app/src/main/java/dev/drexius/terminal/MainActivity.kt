@@ -15,6 +15,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
@@ -138,6 +139,11 @@ class MainActivity : TauriActivity() {
         webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
       } catch (_: Exception) {}
     }
+
+    // Disable Android WebView native scrollbars so they don't flash during CSS animations
+    webView.isVerticalScrollBarEnabled = false
+    webView.isHorizontalScrollBarEnabled = false
+    webView.overScrollMode = View.OVER_SCROLL_NEVER
   }
 
   private fun recoverFromRendererGone(webView: WebView, didCrash: Boolean): Boolean {
