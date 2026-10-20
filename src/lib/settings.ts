@@ -81,6 +81,34 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     keys: 'Alt+ArrowDown',
     description: 'Move focus to the split terminal pane below',
   },
+  swap_split_left: {
+    id: 'swap_split_left',
+    label: 'Swap Pane Left',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+ArrowLeft',
+    description: 'Exchange position with the split terminal pane on the left',
+  },
+  swap_split_right: {
+    id: 'swap_split_right',
+    label: 'Swap Pane Right',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+ArrowRight',
+    description: 'Exchange position with the split terminal pane on the right',
+  },
+  swap_split_up: {
+    id: 'swap_split_up',
+    label: 'Swap Pane Up',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+ArrowUp',
+    description: 'Exchange position with the split terminal pane above',
+  },
+  swap_split_down: {
+    id: 'swap_split_down',
+    label: 'Swap Pane Down',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+ArrowDown',
+    description: 'Exchange position with the split terminal pane below',
+  },
   split_vertical: {
     id: 'split_vertical',
     label: 'Split Pane Vertical',
@@ -101,6 +129,20 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     category: 'Splits & Navigation',
     keys: 'Ctrl+Shift+M',
     description: 'Zoom and expand the active pane to full size or restore split view',
+  },
+  save_layout_preset: {
+    id: 'save_layout_preset',
+    label: 'Save Split Layout Preset',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+S',
+    description: 'Save current split layout and connected hosts as a reusable preset',
+  },
+  open_layout_menu: {
+    id: 'open_layout_menu',
+    label: 'Layout Presets & Switcher',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+L',
+    description: 'Open the split layout switcher and recall saved layout presets',
   },
   close_pane: {
     id: 'close_pane',
@@ -303,6 +345,78 @@ export function getAdjacentPaneId(
     // Allow Alt+Up/Down to wrap
     if (direction === 'up' && idx === 0) return panes[panes.length - 1].id;
     if (direction === 'down' && idx === panes.length - 1) return panes[0].id;
+    return null;
+  }
+
+  if (layout === '3-columns' || layout === '4-columns') {
+    if (direction === 'left') return idx > 0 ? panes[idx - 1].id : panes[panes.length - 1].id;
+    if (direction === 'right') return idx < panes.length - 1 ? panes[idx + 1].id : panes[0].id;
+    return null;
+  }
+
+  if (layout === '3-rows') {
+    if (direction === 'up') return idx > 0 ? panes[idx - 1].id : panes[panes.length - 1].id;
+    if (direction === 'down') return idx < panes.length - 1 ? panes[idx + 1].id : panes[0].id;
+    return null;
+  }
+
+  if (layout === 'main-left') {
+    // Index 0: Main Left, Index 1: Top Right, Index 2: Bottom Right
+    if (idx === 0) {
+      if (direction === 'right' || direction === 'up') return panes[1]?.id ?? null;
+      if (direction === 'down') return panes[2]?.id ?? panes[1]?.id ?? null;
+    } else if (idx === 1) {
+      if (direction === 'left') return panes[0]?.id ?? null;
+      if (direction === 'down') return panes[2]?.id ?? null;
+    } else if (idx === 2) {
+      if (direction === 'left') return panes[0]?.id ?? null;
+      if (direction === 'up') return panes[1]?.id ?? null;
+    }
+    return null;
+  }
+
+  if (layout === 'main-right') {
+    // Index 0: Top Left, Index 1: Bottom Left, Index 2: Main Right
+    if (idx === 0) {
+      if (direction === 'right') return panes[2]?.id ?? null;
+      if (direction === 'down') return panes[1]?.id ?? null;
+    } else if (idx === 1) {
+      if (direction === 'right') return panes[2]?.id ?? null;
+      if (direction === 'up') return panes[0]?.id ?? null;
+    } else if (idx === 2) {
+      if (direction === 'left' || direction === 'up') return panes[0]?.id ?? null;
+      if (direction === 'down') return panes[1]?.id ?? panes[0]?.id ?? null;
+    }
+    return null;
+  }
+
+  if (layout === 'main-top') {
+    // Index 0: Main Top, Index 1: Bottom Left, Index 2: Bottom Right
+    if (idx === 0) {
+      if (direction === 'down' || direction === 'left') return panes[1]?.id ?? null;
+      if (direction === 'right') return panes[2]?.id ?? panes[1]?.id ?? null;
+    } else if (idx === 1) {
+      if (direction === 'up') return panes[0]?.id ?? null;
+      if (direction === 'right') return panes[2]?.id ?? null;
+    } else if (idx === 2) {
+      if (direction === 'up') return panes[0]?.id ?? null;
+      if (direction === 'left') return panes[1]?.id ?? null;
+    }
+    return null;
+  }
+
+  if (layout === 'main-bottom') {
+    // Index 0: Top Left, Index 1: Top Right, Index 2: Main Bottom
+    if (idx === 0) {
+      if (direction === 'right') return panes[1]?.id ?? null;
+      if (direction === 'down') return panes[2]?.id ?? null;
+    } else if (idx === 1) {
+      if (direction === 'left') return panes[0]?.id ?? null;
+      if (direction === 'down') return panes[2]?.id ?? null;
+    } else if (idx === 2) {
+      if (direction === 'up' || direction === 'left') return panes[0]?.id ?? null;
+      if (direction === 'right') return panes[1]?.id ?? panes[0]?.id ?? null;
+    }
     return null;
   }
 

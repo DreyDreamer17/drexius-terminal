@@ -218,7 +218,36 @@ export interface ActiveSshSession {
   startedAt: number;
 }
 
-export type Layout = 'single' | 'vertical' | 'horizontal' | 'grid';
+export type Layout =
+  | 'single'
+  | 'vertical'
+  | 'horizontal'
+  | 'grid'
+  | 'main-left'
+  | 'main-right'
+  | 'main-top'
+  | 'main-bottom'
+  | '3-columns'
+  | '3-rows'
+  | '4-columns';
+
+export interface LayoutPresetPane {
+  hostId: string;
+  isLocal?: boolean;
+  label?: string;
+  hostLabel?: string;
+  color?: string | null;
+}
+
+export interface LayoutPreset {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: number;
+  layout: Layout;
+  panes: LayoutPresetPane[];
+  isBuiltin?: boolean;
+}
 
 export type TabKind = 'terminal' | 'sftp';
 

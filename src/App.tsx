@@ -50,11 +50,27 @@ import {
   Search,
   Clipboard,
   Settings,
+  Bookmark,
+  Trash2,
+  PanelTop,
+  PanelLeft,
+  Columns3,
+  Layers,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
 import { THEMES, type DrexiusTheme } from './lib/themes';
 import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
+import {
+  type LayoutPreset,
+  type LayoutPresetPane,
+  BUILTIN_LAYOUT_PRESETS,
+  loadUserLayoutPresets,
+  saveUserLayoutPresets,
+  createUserPreset,
+  getLayoutDescription,
+} from './lib/layoutPresets';
 import { LockScreen } from './components/LockScreen';
 import { LaunchSplash } from './components/LaunchSplash';
 import { HostSidebar } from './components/HostSidebar';
@@ -100,6 +116,63 @@ import {
 
 const uid = safeUid;
 const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
+
+function getSplitContainerClasses(layout: Layout, paneCount: number): string {
+  if (paneCount <= 1) return 'flex p-0';
+  switch (layout) {
+    case 'vertical':
+      return 'grid grid-cols-2 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+    case 'horizontal':
+      return 'grid grid-cols-1 grid-rows-2 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+    case '3-columns':
+      return 'grid grid-cols-3 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+    case '3-rows':
+      return 'grid grid-cols-1 grid-rows-3 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+    case '4-columns':
+      return 'grid grid-cols-4 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+    case 'main-left':
+    case 'main-right':
+    case 'main-top':
+    case 'main-bottom':
+    case 'grid':
+    default:
+      return 'grid grid-cols-2 grid-rows-2 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
+  }
+}
+
+function getPaneSpanClasses(layout: Layout, index: number, totalPanes: number): string {
+  if (totalPanes <= 2) return '';
+
+  if (layout === 'main-left') {
+    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-2';
+    if (index === 1) return 'col-start-2 col-span-1 row-start-1 row-span-1';
+    if (index === 2) return 'col-start-2 col-span-1 row-start-2 row-span-1';
+  }
+
+  if (layout === 'main-right') {
+    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-1';
+    if (index === 1) return 'col-start-1 col-span-1 row-start-2 row-span-1';
+    if (index === 2) return 'col-start-2 col-span-1 row-start-1 row-span-2';
+  }
+
+  if (layout === 'main-top') {
+    if (index === 0) return 'col-start-1 col-span-2 row-start-1 row-span-1';
+    if (index === 1) return 'col-start-1 col-span-1 row-start-2 row-span-1';
+    if (index === 2) return 'col-start-2 col-span-1 row-start-2 row-span-1';
+  }
+
+  if (layout === 'main-bottom') {
+    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-1';
+    if (index === 1) return 'col-start-2 col-span-1 row-start-1 row-span-1';
+    if (index === 2) return 'col-start-1 col-span-2 row-start-2 row-span-1';
+  }
+
+  if (layout === 'grid' && totalPanes === 3) {
+    if (index === 2) return 'col-start-1 col-span-2 row-start-2 row-span-1';
+  }
+
+  return '';
+}
 
 /** Tools that slide up over the phone terminal screen. */
 type TerminalDrawerKind = 'assistant' | 'snippets' | 'keypad' | 'history';
@@ -307,8 +380,19 @@ export default function App() {
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
   const [showDockerModal, setShowDockerModal] = useState(false);
   const [dockerHostId, setDockerHostId] = useState<string | null>(null);
-  const [splitMenu, setSplitMenu] = useState<{ pref: 'vertical' | 'horizontal'; left: number; top: number } | null>(null);
+  const [splitMenu, setSplitMenu] = useState<{
+    tab: 'split' | 'layout' | 'presets';
+    direction: 'right' | 'down' | 'left' | 'up';
+    pref: 'vertical' | 'horizontal';
+    left: number;
+    top: number;
+  } | null>(null);
+  const [userPresets, setUserPresets] = useState<LayoutPreset[]>(() => loadUserLayoutPresets());
+  const [showSavePresetModal, setShowSavePresetModal] = useState(false);
+  const [presetNameInput, setPresetNameInput] = useState('');
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+  const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
+  const [dropTargetPaneId, setDropTargetPaneId] = useState<string | null>(null);
   const [showAI, setShowAI] = useState(false);
 
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
@@ -821,12 +905,175 @@ export default function App() {
     setModal({ host: newHost });
   }, [hosts, openHost, activeVaultId]);
 
-  const splitWith = useCallback((h: Host, pref?: Layout) => {
-    if (!activeTab || activeTab.kind === 'sftp') return openHost(h);
-    if (activeTab.panes.length >= 4) { toast('Maximum 4 panes per tab'); return; }
-    const pane: Pane = { id: uid(), hostId: h.id, isLocal: h.id === LOCAL_HOST.id };
-    setTabs((ts) => ts.map((t) => t.id !== activeTab.id ? t : { ...t, panes: [...t.panes, pane], layout: layoutFor(t.panes.length + 1, pref), activePaneId: pane.id, title: t.panes.length ? `${t.title.split(' +')[0]} +${t.panes.length}` : h.label }));
-  }, [activeTab, openHost, toast]);
+  const splitPaneInDirection = useCallback(
+    (direction: 'right' | 'down' | 'left' | 'up', hostToUse?: Host) => {
+      const h = hostToUse || (activePane ? hostMap.get(activePane.hostId) : undefined) || LOCAL_HOST;
+      if (!activeTab || activeTab.kind === 'sftp') return openHost(h);
+      if (activeTab.panes.length >= 4) {
+        toast('Maximum 4 panes per tab');
+        return;
+      }
+
+      const newPane: Pane = { id: uid(), hostId: h.id, isLocal: h.id === LOCAL_HOST.id };
+      const currentPanes = activeTab.panes;
+      const activeIdx = Math.max(0, currentPanes.findIndex((p) => p.id === activeTab.activePaneId));
+
+      let nextLayout: Layout = activeTab.layout;
+      let nextPanes: Pane[] = [...currentPanes];
+
+      if (currentPanes.length === 1) {
+        if (direction === 'right') {
+          nextPanes = [currentPanes[0], newPane];
+          nextLayout = 'vertical';
+        } else if (direction === 'left') {
+          nextPanes = [newPane, currentPanes[0]];
+          nextLayout = 'vertical';
+        } else if (direction === 'down') {
+          nextPanes = [currentPanes[0], newPane];
+          nextLayout = 'horizontal';
+        } else if (direction === 'up') {
+          nextPanes = [newPane, currentPanes[0]];
+          nextLayout = 'horizontal';
+        }
+      } else if (currentPanes.length === 2) {
+        if (activeTab.layout === 'vertical') {
+          if (direction === 'down' || direction === 'up') {
+            if (activeIdx === 0) {
+              nextLayout = 'main-right';
+              const insertIdx = direction === 'down' ? 1 : 0;
+              nextPanes.splice(insertIdx, 0, newPane);
+            } else {
+              nextLayout = 'main-left';
+              const insertIdx = direction === 'down' ? 2 : 1;
+              nextPanes.splice(insertIdx, 0, newPane);
+            }
+          } else {
+            nextLayout = '3-columns';
+            const insertIdx = direction === 'right' ? activeIdx + 1 : activeIdx;
+            nextPanes.splice(insertIdx, 0, newPane);
+          }
+        } else if (activeTab.layout === 'horizontal') {
+          if (direction === 'right' || direction === 'left') {
+            if (activeIdx === 0) {
+              nextLayout = 'main-bottom';
+              const insertIdx = direction === 'right' ? 1 : 0;
+              nextPanes.splice(insertIdx, 0, newPane);
+            } else {
+              nextLayout = 'main-top';
+              const insertIdx = direction === 'right' ? 2 : 1;
+              nextPanes.splice(insertIdx, 0, newPane);
+            }
+          } else {
+            nextLayout = '3-rows';
+            const insertIdx = direction === 'down' ? activeIdx + 1 : activeIdx;
+            nextPanes.splice(insertIdx, 0, newPane);
+          }
+        } else {
+          nextLayout = 'main-left';
+          nextPanes.push(newPane);
+        }
+      } else if (currentPanes.length === 3) {
+        if (activeTab.layout === '3-columns' && (direction === 'right' || direction === 'left')) {
+          nextLayout = '4-columns';
+          const insertIdx = direction === 'right' ? activeIdx + 1 : activeIdx;
+          nextPanes.splice(insertIdx, 0, newPane);
+        } else {
+          nextLayout = 'grid';
+          const insertIdx = direction === 'right' || direction === 'down' ? activeIdx + 1 : activeIdx;
+          nextPanes.splice(insertIdx, 0, newPane);
+        }
+      }
+
+      setTabs((ts) =>
+        ts.map((t) =>
+          t.id !== activeTab.id
+            ? t
+            : {
+                ...t,
+                panes: nextPanes,
+                layout: nextLayout,
+                activePaneId: newPane.id,
+                title: t.panes.length ? `${t.title.split(' +')[0]} +${nextPanes.length - 1}` : h.label,
+              }
+        )
+      );
+      toast(`Split ${direction} with ${h.label}`);
+    },
+    [activeTab, activePane, hostMap, openHost, toast]
+  );
+
+  const splitWith = useCallback(
+    (h: Host, pref?: Layout) => {
+      splitPaneInDirection(pref === 'horizontal' ? 'down' : 'right', h);
+    },
+    [splitPaneInDirection]
+  );
+
+  const changeActiveTabLayout = useCallback(
+    (newLayout: Layout) => {
+      if (!activeTab || activeTab.kind === 'sftp') return;
+      setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, layout: newLayout } : t)));
+      toast(`Switched layout: ${getLayoutDescription(newLayout)}`);
+    },
+    [activeTab, toast]
+  );
+
+  const applyLayoutPreset = useCallback(
+    (preset: LayoutPreset) => {
+      const currentHost = activePane ? hostMap.get(activePane.hostId) : LOCAL_HOST;
+      const newPanes: Pane[] = preset.panes.map((pp: LayoutPresetPane) => {
+        let hostId = pp.hostId;
+        let isLocal = pp.isLocal;
+        if (hostId === '__current__') {
+          hostId = currentHost?.id ?? LOCAL_HOST.id;
+          isLocal = hostId === LOCAL_HOST.id;
+        }
+        if (hostId !== LOCAL_HOST.id && !hostMap.has(hostId)) {
+          hostId = LOCAL_HOST.id;
+          isLocal = true;
+        }
+        return {
+          id: uid(),
+          hostId,
+          isLocal: isLocal ?? (hostId === LOCAL_HOST.id),
+        };
+      });
+
+      const tab: Tab = {
+        id: uid(),
+        title: preset.name,
+        color: theme.accent,
+        panes: newPanes,
+        layout: preset.layout,
+        activePaneId: newPanes[0]?.id ?? '',
+      };
+
+      setTabs((ts) => [...ts, tab]);
+      setActiveTabId(tab.id);
+      setNewConnNonce((n) => n + 1);
+      toast(`Loaded preset: ${preset.name} (${newPanes.length} panes)`);
+    },
+    [activePane, hostMap, theme, toast]
+  );
+
+  const handleSavePreset = () => {
+    if (!activeTab || activeTab.panes.length < 2) return;
+    const name = presetNameInput.trim() || `Workspace ${userPresets.length + 1}`;
+    const newPreset = createUserPreset(name, activeTab.layout, activeTab.panes, hostMap);
+    const updated = [newPreset, ...userPresets];
+    setUserPresets(updated);
+    saveUserLayoutPresets(updated);
+    setShowSavePresetModal(false);
+    setPresetNameInput('');
+    toast(`Saved layout preset: ${name}`);
+  };
+
+  const handleDeletePreset = (id: string, name: string) => {
+    const updated = userPresets.filter((p) => p.id !== id);
+    setUserPresets(updated);
+    saveUserLayoutPresets(updated);
+    toast(`Deleted preset: ${name}`);
+  };
 
   const toggleMaximizePane = useCallback((paneId?: string) => {
     setMaximizedPaneId((prev) => {
@@ -861,6 +1108,53 @@ export default function App() {
       }
     }
   }, [activeTab, maximizedPaneId]);
+
+  const swapPanes = useCallback(
+    (tabId: string, paneIdA: string, paneIdB: string) => {
+      if (paneIdA === paneIdB) return;
+      setTabs((ts) =>
+        ts.map((t) => {
+          if (t.id !== tabId) return t;
+          const idxA = t.panes.findIndex((p) => p.id === paneIdA);
+          const idxB = t.panes.findIndex((p) => p.id === paneIdB);
+          if (idxA === -1 || idxB === -1) return t;
+          const nextPanes = [...t.panes];
+          const temp = nextPanes[idxA];
+          nextPanes[idxA] = nextPanes[idxB];
+          nextPanes[idxB] = temp;
+          return {
+            ...t,
+            panes: nextPanes,
+            activePaneId: paneIdA,
+          };
+        })
+      );
+      const hostA = activeTab?.panes.find((p) => p.id === paneIdA)?.hostId;
+      const hostB = activeTab?.panes.find((p) => p.id === paneIdB)?.hostId;
+      const labelA = hostA ? (hostA === LOCAL_HOST.id ? 'Local Terminal' : hostMap.get(hostA)?.label || 'Pane') : 'Pane';
+      const labelB = hostB ? (hostB === LOCAL_HOST.id ? 'Local Terminal' : hostMap.get(hostB)?.label || 'Pane') : 'Pane';
+      toast(`Swapped ${labelA} ↔ ${labelB}`);
+      setTimeout(() => {
+        try {
+          window.dispatchEvent(new Event('resize'));
+          registry.get(paneIdA)?.term?.focus();
+        } catch {}
+      }, 50);
+    },
+    [activeTab, hostMap, toast]
+  );
+
+  const swapSplitDirection = useCallback(
+    (direction: 'left' | 'right' | 'up' | 'down') => {
+      if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
+      const currentId = activeTab.activePaneId;
+      const targetId = getAdjacentPaneId(currentId, activeTab.panes, activeTab.layout, direction);
+      if (targetId && targetId !== currentId) {
+        swapPanes(activeTab.id, currentId, targetId);
+      }
+    },
+    [activeTab, swapPanes]
+  );
 
   const cleanupPaneSession = useCallback((p: Pane) => {
     bridge.sftpClose(p.id).catch(() => {});
@@ -1072,7 +1366,7 @@ export default function App() {
         if (hasPendingConfirm()) return;
         // A terminal-screen drawer (AI / snippets) is the topmost layer on mobile: Escape dismisses it first.
         if (closeTerminalDrawerRef.current?.()) { e.preventDefault(); e.stopPropagation(); return; }
-        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu || showSettings) {
+        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu || showSettings || showSavePresetModal) {
           e.preventDefault();
           e.stopPropagation();
           setQuick(false);
@@ -1083,6 +1377,7 @@ export default function App() {
           setShowDockerModal(false);
           setSplitMenu(null);
           setShowSettings(false);
+          setShowSavePresetModal(false);
         }
         return;
       }
@@ -1109,6 +1404,32 @@ export default function App() {
       const inTerminal = !!(target && target.closest && target.closest('.xterm'));
       const isInput = target && !inTerminal && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (isInput) return;
+
+      // ── Directional Split Swap / Move (Alt+Shift+Arrow) ──
+      if (matchesShortcut(e, shortcuts.swap_split_left?.keys || 'Alt+Shift+ArrowLeft')) {
+        e.preventDefault();
+        e.stopPropagation();
+        swapSplitDirection('left');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.swap_split_right?.keys || 'Alt+Shift+ArrowRight')) {
+        e.preventDefault();
+        e.stopPropagation();
+        swapSplitDirection('right');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.swap_split_up?.keys || 'Alt+Shift+ArrowUp')) {
+        e.preventDefault();
+        e.stopPropagation();
+        swapSplitDirection('up');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.swap_split_down?.keys || 'Alt+Shift+ArrowDown')) {
+        e.preventDefault();
+        e.stopPropagation();
+        swapSplitDirection('down');
+        return;
+      }
 
       // ── Directional Split Navigation ──
       if (matchesShortcut(e, shortcuts.focus_split_left?.keys || 'Alt+ArrowLeft')) {
@@ -1226,20 +1547,39 @@ export default function App() {
         return;
       }
 
-      // ── Split Pane Vertical (Ctrl+Shift+D) ──
+      // ── Split Pane Vertical / Right (Ctrl+Shift+D) ──
       if (matchesShortcut(e, shortcuts.split_vertical?.keys || 'Ctrl+Shift+D')) {
         e.preventDefault();
         e.stopPropagation();
-        setSplitMenu((prev) => (prev?.pref === 'vertical' ? null : { pref: 'vertical', left: 400, top: 45 }));
+        setSplitMenu((prev) => (prev?.direction === 'right' && prev.tab === 'split' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: 400, top: 45 }));
         return;
       }
 
-      // ── Split Pane Horizontal (Ctrl+Shift+E) ──
+      // ── Split Pane Horizontal / Down (Ctrl+Shift+E) ──
       if (matchesShortcut(e, shortcuts.split_horizontal?.keys || 'Ctrl+Shift+E')) {
         e.preventDefault();
         e.stopPropagation();
-        setSplitMenu((prev) => (prev?.pref === 'horizontal' ? null : { pref: 'horizontal', left: 430, top: 45 }));
+        setSplitMenu((prev) => (prev?.direction === 'down' && prev.tab === 'split' ? null : { tab: 'split', direction: 'down', pref: 'horizontal', left: 430, top: 45 }));
         return;
+      }
+
+      // ── Open Layout & Presets Menu (Ctrl+Shift+L) ──
+      if (matchesShortcut(e, shortcuts.open_layout_menu?.keys || 'Ctrl+Shift+L')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSplitMenu((prev) => (prev?.tab === 'presets' ? null : { tab: 'presets', direction: 'right', pref: 'vertical', left: 460, top: 45 }));
+        return;
+      }
+
+      // ── Save Layout Preset (Ctrl+Shift+S) ──
+      if (matchesShortcut(e, shortcuts.save_layout_preset?.keys || 'Ctrl+Shift+S')) {
+        if (activeTab && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          setPresetNameInput(activeTab.title || 'My Workspace');
+          setShowSavePresetModal(true);
+          return;
+        }
       }
 
       // ── Toggle AI Assistant (Ctrl+Shift+A) ──
@@ -1792,14 +2132,14 @@ export default function App() {
               disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
-                setSplitMenu((prev) => (prev?.pref === 'vertical' ? null : { pref: 'vertical', left: rect.left, top: rect.bottom + 6 }));
+                setSplitMenu((prev) => (prev?.tab === 'split' && prev.direction === 'right' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: rect.left, top: rect.bottom + 6 }));
               }}
               className={cn(
                 'grid h-7 w-7 place-items-center rounded-lg transition border disabled:opacity-30',
-                splitMenu?.pref === 'vertical' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+                splitMenu?.tab === 'split' && splitMenu.direction === 'right' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
               )}
               style={
-                splitMenu?.pref === 'vertical'
+                splitMenu?.tab === 'split' && splitMenu.direction === 'right'
                   ? {
                       backgroundColor: `${theme.accent}20`,
                       borderColor: `${theme.accent}60`,
@@ -1809,21 +2149,21 @@ export default function App() {
                   : undefined
               }
             >
-              <Columns2 className="h-3.5 w-3.5" style={{ color: splitMenu?.pref === 'vertical' ? theme.accent : undefined }} />
+              <Columns2 className="h-3.5 w-3.5" style={{ color: splitMenu?.tab === 'split' && splitMenu.direction === 'right' ? theme.accent : undefined }} />
             </button>
             <button
               title="Split horizontal (⌘⇧E)"
               disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
-                setSplitMenu((prev) => (prev?.pref === 'horizontal' ? null : { pref: 'horizontal', left: rect.left, top: rect.bottom + 6 }));
+                setSplitMenu((prev) => (prev?.tab === 'split' && prev.direction === 'down' ? null : { tab: 'split', direction: 'down', pref: 'horizontal', left: rect.left, top: rect.bottom + 6 }));
               }}
               className={cn(
                 'grid h-7 w-7 place-items-center rounded-lg transition border disabled:opacity-30',
-                splitMenu?.pref === 'horizontal' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+                splitMenu?.tab === 'split' && splitMenu.direction === 'down' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
               )}
               style={
-                splitMenu?.pref === 'horizontal'
+                splitMenu?.tab === 'split' && splitMenu.direction === 'down'
                   ? {
                       backgroundColor: `${theme.accent}20`,
                       borderColor: `${theme.accent}60`,
@@ -1833,16 +2173,39 @@ export default function App() {
                   : undefined
               }
             >
-              <Rows2 className="h-3.5 w-3.5" style={{ color: splitMenu?.pref === 'horizontal' ? theme.accent : undefined }} />
+              <Rows2 className="h-3.5 w-3.5" style={{ color: splitMenu?.tab === 'split' && splitMenu.direction === 'down' ? theme.accent : undefined }} />
+            </button>
+            <button
+              title="Layout Presets & Switcher (⌘⇧L)"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setSplitMenu((prev) => (prev?.tab === 'presets' || prev?.tab === 'layout' ? null : { tab: (activeTab?.panes.length ?? 0) > 1 ? 'layout' : 'presets', direction: 'right', pref: 'vertical', left: rect.left, top: rect.bottom + 6 }));
+              }}
+              className={cn(
+                'grid h-7 w-7 place-items-center rounded-lg transition border',
+                splitMenu?.tab === 'presets' || splitMenu?.tab === 'layout' ? 'text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white border-transparent'
+              )}
+              style={
+                splitMenu?.tab === 'presets' || splitMenu?.tab === 'layout'
+                  ? {
+                      backgroundColor: `${theme.accent}20`,
+                      borderColor: `${theme.accent}60`,
+                      color: theme.accent,
+                      boxShadow: `0 0 12px ${theme.accent}25`,
+                    }
+                  : undefined
+              }
+            >
+              <LayoutGrid className="h-3.5 w-3.5" style={{ color: splitMenu?.tab === 'presets' || splitMenu?.tab === 'layout' ? theme.accent : undefined }} />
             </button>
             {splitMenu && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setSplitMenu(null)} />
                 <div
-                  className="fixed z-50 w-72 overflow-hidden rounded-xl border p-2 shadow-2xl backdrop-blur-xl ring-1 ring-white/10 text-slate-200"
+                  className="fixed z-50 w-80 overflow-hidden rounded-xl border p-2.5 shadow-2xl backdrop-blur-xl ring-1 ring-white/10 text-slate-200"
                   style={{
                     top: splitMenu.top,
-                    left: Math.min(splitMenu.left, window.innerWidth - 300),
+                    left: Math.min(splitMenu.left, window.innerWidth - 340),
                     backgroundColor: theme.xterm.background || '#0e131d',
                     borderColor: `${theme.accent}30`,
                     boxShadow: `0 16px 36px rgba(0,0,0,0.6), 0 0 20px ${theme.accent}15`,
@@ -1853,104 +2216,343 @@ export default function App() {
                     className="pointer-events-none absolute inset-x-0 top-0 h-20 opacity-20"
                     style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
                   />
-                  <div className="relative z-10 flex items-center justify-between px-2 pt-1 pb-2 border-b border-white/5">
-                    <span className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
-                      {splitMenu.pref === 'vertical' ? (
-                        <Columns2 className="h-3.5 w-3.5" style={{ color: theme.accent }} />
-                      ) : (
-                        <Rows2 className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+
+                  {/* Top Navigation Tabs */}
+                  <div className="relative z-10 flex items-center gap-1 p-0.5 mb-2.5 rounded-lg bg-white/[0.04] border border-white/5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setSplitMenu((prev) => prev ? { ...prev, tab: 'split' } : null)}
+                      className={cn(
+                        'flex-1 py-1 rounded-md text-[11px] font-medium transition text-center flex items-center justify-center gap-1.5',
+                        splitMenu.tab === 'split' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
                       )}
-                      Split {splitMenu.pref === 'vertical' ? 'Vertical' : 'Horizontal'}
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-mono">Esc to close</span>
+                      style={splitMenu.tab === 'split' ? { color: theme.accent } : undefined}
+                    >
+                      <Columns2 className="h-3 w-3" />
+                      Split
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSplitMenu((prev) => prev ? { ...prev, tab: 'layout' } : null)}
+                      className={cn(
+                        'flex-1 py-1 rounded-md text-[11px] font-medium transition text-center flex items-center justify-center gap-1.5',
+                        splitMenu.tab === 'layout' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                      )}
+                      style={splitMenu.tab === 'layout' ? { color: theme.accent } : undefined}
+                    >
+                      <Layers className="h-3 w-3" />
+                      Layout
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSplitMenu((prev) => prev ? { ...prev, tab: 'presets' } : null)}
+                      className={cn(
+                        'flex-1 py-1 rounded-md text-[11px] font-medium transition text-center flex items-center justify-center gap-1.5',
+                        splitMenu.tab === 'presets' ? 'bg-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                      )}
+                      style={splitMenu.tab === 'presets' ? { color: theme.accent } : undefined}
+                    >
+                      <Bookmark className="h-3 w-3" />
+                      Presets
+                    </button>
                   </div>
 
-                  <div className="relative z-10 py-1 space-y-0.5 max-h-64 overflow-y-auto">
-                    {/* Option 1: Current host (Duplicate) */}
-                    {activePane && hostMap.get(activePane.hostId) && (
+                  {/* Tab 1: Directional Split */}
+                  {splitMenu.tab === 'split' && (
+                    <div className="relative z-10 py-1 space-y-2">
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1 flex items-center justify-between">
+                          <span>Split Direction</span>
+                          <span className="text-[9px] font-mono text-slate-500">From active pane</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-black/30 border border-white/5">
+                          {(['left', 'right', 'up', 'down'] as const).map((dir) => {
+                            const isSelected = splitMenu.direction === dir;
+                            const label = dir === 'left' ? '← Left' : dir === 'right' ? 'Right →' : dir === 'up' ? '↑ Up' : '↓ Down';
+                            return (
+                              <button
+                                key={dir}
+                                type="button"
+                                onClick={() => setSplitMenu((prev) => prev ? { ...prev, direction: dir } : null)}
+                                className={cn(
+                                  'py-1 rounded text-[10px] font-semibold tracking-wide transition border',
+                                  isSelected
+                                    ? 'text-white'
+                                    : 'text-slate-400 hover:text-white border-transparent hover:bg-white/5'
+                                )}
+                                style={
+                                  isSelected
+                                    ? {
+                                        backgroundColor: `${theme.accent}25`,
+                                        borderColor: `${theme.accent}60`,
+                                        color: theme.accent,
+                                      }
+                                    : undefined
+                                }
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 pt-1 border-t border-white/5">
+                        Split with Host
+                      </div>
+
+                      <div className="space-y-0.5 max-h-56 overflow-y-auto pr-0.5">
+                        {/* Option 1: Current host (Duplicate) */}
+                        {activePane && hostMap.get(activePane.hostId) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const h = hostMap.get(activePane.hostId);
+                              if (h) splitPaneInDirection(splitMenu.direction, h);
+                              setSplitMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                          >
+                            <Zap className="h-4 w-4 shrink-0" style={{ color: theme.accent }} />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-white flex items-center gap-1.5">
+                                <span className="truncate">{hostMap.get(activePane.hostId)?.label}</span>
+                                <span
+                                  className="text-[9px] rounded border px-1 py-0 font-mono shrink-0"
+                                  style={{
+                                    backgroundColor: `${theme.accent}18`,
+                                    borderColor: `${theme.accent}35`,
+                                    color: theme.accent,
+                                  }}
+                                >
+                                  Current
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-400 truncate">
+                                Duplicate session on this host
+                              </div>
+                            </div>
+                          </button>
+                        )}
+
+                        {/* Option 2: Local Terminal */}
+                        {(!activePane || !activePane.isLocal) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              splitPaneInDirection(splitMenu.direction, LOCAL_HOST);
+                              setSplitMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                          >
+                            <TerminalIcon className="h-4 w-4 text-emerald-400 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-white">Local Terminal</div>
+                              <div className="text-[10px] text-slate-400">Open local shell split</div>
+                            </div>
+                          </button>
+                        )}
+
+                        {/* Other saved hosts */}
+                        {hosts.filter((h) => h.id !== activePane?.hostId).map((h) => (
+                          <button
+                            key={h.id}
+                            type="button"
+                            onClick={() => {
+                              splitPaneInDirection(splitMenu.direction, h);
+                              setSplitMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                          >
+                            <OsIcon os={h.os} color={h.color} size={16} />
+                            <div className="min-w-0 flex-1 truncate">
+                              <div className="font-medium text-white truncate">{h.label}</div>
+                              <div className="text-[10px] text-slate-400 font-mono truncate">
+                                {h.username}@{h.hostname}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tab 2: Layout Switcher */}
+                  {splitMenu.tab === 'layout' && (
+                    <div className="relative z-10 py-1 space-y-1.5">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1">
+                        Active Tab Layout ({activeTab?.panes.length ?? 0} panes)
+                      </div>
+                      {(!activeTab || activeTab.panes.length < 2) ? (
+                        <div className="p-3 text-center text-xs text-slate-400 bg-white/[0.02] rounded-lg border border-white/5">
+                          Split the current tab into 2+ panes to switch between multi-pane geometries.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
+                          {(
+                            activeTab.panes.length === 2
+                              ? [
+                                  { layout: 'vertical' as Layout, label: 'Vertical Split', desc: '2 Columns', icon: Columns2 },
+                                  { layout: 'horizontal' as Layout, label: 'Horizontal Split', desc: '2 Rows', icon: Rows2 },
+                                ]
+                              : activeTab.panes.length === 3
+                              ? [
+                                  { layout: 'main-left' as Layout, label: 'Main Left', desc: 'Large left + 2 right', icon: PanelLeft },
+                                  { layout: 'main-right' as Layout, label: 'Main Right', desc: '2 left + large right', icon: PanelLeft },
+                                  { layout: 'main-top' as Layout, label: 'Main Top', desc: 'Wide top + 2 bottom', icon: PanelTop },
+                                  { layout: 'main-bottom' as Layout, label: 'Main Bottom', desc: '2 top + wide bottom', icon: PanelTop },
+                                  { layout: '3-columns' as Layout, label: '3 Columns', desc: '3 equal vertical cols', icon: Columns3 },
+                                  { layout: '3-rows' as Layout, label: '3 Rows', desc: '3 equal horizontal rows', icon: Rows2 },
+                                ]
+                              : [
+                                  { layout: 'grid' as Layout, label: '2x2 Grid', desc: '4 equal quadrants', icon: Grid2x2 },
+                                  { layout: '4-columns' as Layout, label: '4 Columns', desc: '4 vertical columns', icon: Columns3 },
+                                ]
+                          ).map((item) => {
+                            const isCurrent = activeTab.layout === item.layout;
+                            const IconComponent = item.icon;
+                            return (
+                              <button
+                                key={item.layout}
+                                type="button"
+                                onClick={() => {
+                                  changeActiveTabLayout(item.layout);
+                                  setSplitMenu(null);
+                                }}
+                                className={cn(
+                                  'flex flex-col items-start p-2 rounded-lg border text-left transition',
+                                  isCurrent
+                                    ? 'bg-white/10 text-white'
+                                    : 'bg-white/[0.03] text-slate-300 hover:bg-white/[0.07] border-white/5'
+                                )}
+                                style={
+                                  isCurrent
+                                    ? {
+                                        backgroundColor: `${theme.accent}20`,
+                                        borderColor: `${theme.accent}60`,
+                                        boxShadow: `0 0 10px ${theme.accent}20`,
+                                      }
+                                    : undefined
+                                }
+                              >
+                                <div className="flex items-center gap-1.5 w-full">
+                                  <IconComponent className="h-3.5 w-3.5" style={{ color: isCurrent ? theme.accent : undefined }} />
+                                  <span className="text-xs font-semibold">{item.label}</span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 mt-0.5">{item.desc}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tab 3: Presets & Templates */}
+                  {splitMenu.tab === 'presets' && (
+                    <div className="relative z-10 py-1 space-y-2">
                       <button
                         type="button"
+                        disabled={!activeTab || activeTab.panes.length < 2}
                         onClick={() => {
-                          const h = hostMap.get(activePane.hostId);
-                          if (h) splitWith(h, splitMenu.pref);
+                          setPresetNameInput(activeTab?.title || `Workspace ${userPresets.length + 1}`);
+                          setShowSavePresetModal(true);
                           setSplitMenu(null);
                         }}
-                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
-                      >
-                        <Zap className="h-4 w-4 shrink-0" style={{ color: theme.accent }} />
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium text-white flex items-center gap-1.5">
-                            <span className="truncate">{hostMap.get(activePane.hostId)?.label}</span>
-                            <span
-                              className="text-[9px] rounded border px-1 py-0 font-mono shrink-0"
-                              style={{
-                                backgroundColor: `${theme.accent}18`,
-                                borderColor: `${theme.accent}35`,
-                                color: theme.accent,
-                              }}
-                            >
-                              Current
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-slate-400 truncate">
-                            Duplicate session on this host
-                          </div>
-                        </div>
-                      </button>
-                    )}
-
-                    {/* Option 2: Local Terminal */}
-                    {(!activePane || !activePane.isLocal) && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          splitWith(LOCAL_HOST, splitMenu.pref);
-                          setSplitMenu(null);
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium border transition disabled:opacity-40"
+                        style={{
+                          backgroundColor: `${theme.accent}20`,
+                          borderColor: `${theme.accent}50`,
+                          color: theme.accent,
                         }}
-                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
                       >
-                        <TerminalIcon className="h-4 w-4 text-emerald-400 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium text-white">Local Terminal</div>
-                          <div className="text-[10px] text-slate-400">Open local shell split</div>
-                        </div>
+                        <Bookmark className="h-3.5 w-3.5" />
+                        <span>Save Current Tab Layout Preset</span>
                       </button>
-                    )}
 
-                    {/* Other saved hosts */}
-                    {hosts.filter((h) => h.id !== activePane?.hostId).length > 0 && (
-                      <div className="pt-1 mt-1 border-t border-white/5">
-                        <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                          Other Saved Hosts
+                      {/* User Presets */}
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1">
+                          My Saved Presets ({userPresets.length})
                         </div>
-                        {hosts
-                          .filter((h) => h.id !== activePane?.hostId)
-                          .map((h) => (
+                        {userPresets.length === 0 ? (
+                          <div className="px-2 py-1 text-[11px] text-slate-400 italic">
+                            No custom presets saved yet.
+                          </div>
+                        ) : (
+                          <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+                            {userPresets.map((p) => (
+                              <div
+                                key={p.id}
+                                className="group flex items-center justify-between rounded-lg px-2 py-1.5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/5 transition"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    applyLayoutPreset(p);
+                                    setSplitMenu(null);
+                                  }}
+                                  className="flex-1 text-left min-w-0"
+                                >
+                                  <div className="text-xs font-medium text-white truncate flex items-center gap-1.5">
+                                    <span>{p.name}</span>
+                                    <span className="text-[9px] px-1 py-0 rounded bg-white/10 text-slate-300 font-mono">
+                                      {p.layout}
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 truncate">
+                                    {p.panes.length} panes: {p.panes.map((pp: LayoutPresetPane) => pp.hostLabel || pp.label || (pp.isLocal ? 'Local' : 'Host')).join(', ')}
+                                  </div>
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Delete preset"
+                                  onClick={() => handleDeletePreset(p.id, p.name)}
+                                  className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 transition"
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Builtin Templates */}
+                      <div className="pt-1 border-t border-white/5">
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-1 mb-1">
+                          Built-in Templates
+                        </div>
+                        <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+                          {BUILTIN_LAYOUT_PRESETS.map((p) => (
                             <button
-                              key={h.id}
+                              key={p.id}
                               type="button"
                               onClick={() => {
-                                splitWith(h, splitMenu.pref);
+                                applyLayoutPreset(p);
                                 setSplitMenu(null);
                               }}
-                              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-slate-200 hover:bg-white/10 hover:text-white transition group"
+                              className="w-full flex items-center justify-between rounded-lg px-2 py-1.5 bg-white/[0.03] hover:bg-white/[0.08] border border-white/5 transition text-left"
                             >
-                              <OsIcon os={h.os} color={h.color} size={16} />
-                              <div className="min-w-0 flex-1 truncate">
-                                <div className="font-medium text-white truncate">{h.label}</div>
-                                <div className="text-[10px] text-slate-400 font-mono truncate">
-                                  {h.username}@{h.hostname}
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-medium text-white truncate flex items-center gap-1.5">
+                                  <span>{p.name}</span>
+                                  <span className="text-[9px] px-1 py-0 rounded bg-white/10 text-slate-300 font-mono">
+                                    {p.layout}
+                                  </span>
                                 </div>
+                                <div className="text-[10px] text-slate-400 truncate">{p.description}</div>
                               </div>
+                              <span className="text-[10px] font-mono shrink-0 ml-1" style={{ color: theme.accent }}>Launch →</span>
                             </button>
                           ))}
+                        </div>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}
-            <button title="Grid" disabled={!activeTab || (activeTab?.panes.length ?? 0) < 3} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 disabled:opacity-30"><Grid2x2 className="h-3.5 w-3.5" /></button>
             {activeTab && activeTab.panes.length > 1 && (
               <button
                 title={broadcast ? 'Broadcast input: ON (⌘⇧I) — Keys sent to all panes' : 'Broadcast input: OFF (⌘⇧I)'}
@@ -2361,31 +2963,73 @@ export default function App() {
                 className={cn(
                   'absolute inset-0',
                   (t.id !== activeTabId || (mobile && mobilePage !== 'terminals')) && 'invisible',
-                  isSplit
-                    ? cn(
-                        'grid gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0',
-                        t.layout === 'vertical' && 'grid-cols-2',
-                        t.layout === 'horizontal' && 'grid-rows-2',
-                        t.layout === 'grid' && 'grid-cols-2 grid-rows-2'
-                      )
-                    : 'flex p-0'
+                  isSplit ? getSplitContainerClasses(t.layout, t.panes.length) : 'flex p-0'
                 )}
               >
-                {t.panes.map((p) => {
-                  const h = hostMap.get(p.hostId);
-                  if (!h) return null;
-                  const isPaneMaximized = currentTabMaximized === p.id;
-                  const isPaneHidden = currentTabMaximized !== null && currentTabMaximized !== p.id;
-                  return (
-                    <div
-                      key={p.id}
-                      inert={isPaneHidden || undefined}
-                      className={cn(
-                        'min-h-0 min-w-0 h-full w-full flex',
-                        t.activePaneId !== p.id && mobile && 'max-md:hidden',
-                        isPaneHidden && 'opacity-0 pointer-events-none select-none'
+                {[...t.panes]
+                  .sort((a, b) => a.id.localeCompare(b.id))
+                  .map((p) => {
+                    const h = hostMap.get(p.hostId);
+                    if (!h) return null;
+                    const slotIndex = t.panes.findIndex((item) => item.id === p.id);
+                    const isPaneMaximized = currentTabMaximized === p.id;
+                    const isPaneHidden = currentTabMaximized !== null && currentTabMaximized !== p.id;
+                    const spanClasses = isSplit && !isPaneMaximized ? getPaneSpanClasses(t.layout, slotIndex, t.panes.length) : '';
+                    const isDraggingThis = draggedPaneId === p.id;
+                    const isDropTarget = dropTargetPaneId === p.id && draggedPaneId !== null && draggedPaneId !== p.id;
+                    return (
+                      <div
+                        key={p.id}
+                        inert={isPaneHidden || undefined}
+                        style={{ order: slotIndex }}
+                        className={cn(
+                          'min-h-0 min-w-0 h-full w-full flex relative transition-all duration-150',
+                          spanClasses,
+                          isDraggingThis && 'opacity-50 ring-2 ring-cyan-400/60 ring-dashed',
+                          t.activePaneId !== p.id && mobile && 'max-md:hidden',
+                          isPaneHidden && 'opacity-0 pointer-events-none select-none'
+                        )}
+                      >
+                      {/* Drop overlay to capture drag-and-drop swaps cleanly across xterm canvas */}
+                      {draggedPaneId !== null && draggedPaneId !== p.id && (
+                        <div
+                          className={cn(
+                            'absolute inset-0 z-20 pointer-events-auto flex items-center justify-center transition-all duration-150 rounded-lg',
+                            isDropTarget
+                              ? 'border-2 border-dashed border-cyan-400/90 bg-cyan-500/20 backdrop-blur-[2px] shadow-[inset_0_0_30px_rgba(34,211,238,0.25)]'
+                              : 'border-2 border-transparent bg-cyan-500/5 hover:border-cyan-400/40'
+                          )}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (dropTargetPaneId !== p.id) {
+                              setDropTargetPaneId(p.id);
+                            }
+                          }}
+                          onDragLeave={(e) => {
+                            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                            if (dropTargetPaneId === p.id) {
+                              setDropTargetPaneId(null);
+                            }
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const srcId = e.dataTransfer.getData('application/x-drexius-pane') || e.dataTransfer.getData('text/plain') || draggedPaneId;
+                            if (srcId && srcId !== p.id) {
+                              swapPanes(t.id, srcId, p.id);
+                            }
+                            setDraggedPaneId(null);
+                            setDropTargetPaneId(null);
+                          }}
+                        >
+                          {isDropTarget && (
+                            <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/95 border border-cyan-400/70 text-cyan-200 text-xs font-semibold shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
+                              <ArrowLeftRight className="h-4 w-4 text-cyan-400 animate-pulse" />
+                              <span>Swap with {h.label}</span>
+                            </div>
+                          )}
+                        </div>
                       )}
-                    >
                       <PaneErrorBoundary
                         label={h.label}
                         background={theme.xterm.background}
@@ -2410,6 +3054,12 @@ export default function App() {
                           isSplit={isSplit}
                           isMaximized={isPaneMaximized}
                           onToggleMaximize={() => toggleMaximizePane(p.id)}
+                          onSplitPane={(dir) => splitPaneInDirection(dir)}
+                          onDragStart={(id) => setDraggedPaneId(id)}
+                          onDragEnd={() => {
+                            setDraggedPaneId(null);
+                            setDropTargetPaneId(null);
+                          }}
                           broadcast={broadcast && isSplit && !currentTabMaximized}
                           onOpenDocker={() => {
                             setDockerHostId(p.isLocal ? '__local__' : h.id);
@@ -3406,6 +4056,87 @@ export default function App() {
           }}
           toast={toast}
         />
+      )}
+      {showSavePresetModal && activeTab && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-2xl backdrop-blur-xl ring-1 ring-white/10 text-slate-200"
+            style={{
+              backgroundColor: theme.xterm.background || '#0e131d',
+              borderColor: `${theme.accent}30`,
+              boxShadow: `0 20px 50px rgba(0,0,0,0.8), 0 0 30px ${theme.accent}20`,
+            }}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <Bookmark className="h-4 w-4" style={{ color: theme.accent }} />
+                <h3 className="font-semibold text-white text-sm">Save Layout Preset</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSavePresetModal(false)}
+                className="text-slate-400 hover:text-white transition"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="py-4 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">Preset Name</label>
+                <input
+                  type="text"
+                  autoFocus
+                  value={presetNameInput}
+                  onChange={(e) => setPresetNameInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSavePreset();
+                    if (e.key === 'Escape') setShowSavePresetModal(false);
+                  }}
+                  placeholder="e.g. Full Stack Dev, Cloud Operations"
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1"
+                  style={{ borderColor: `${theme.accent}60` }}
+                />
+              </div>
+
+              <div className="rounded-xl bg-white/[0.03] border border-white/5 p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-slate-400">Layout Geometry:</span>
+                  <span className="font-mono font-semibold" style={{ color: theme.accent }}>
+                    {getLayoutDescription(activeTab.layout)}
+                  </span>
+                </div>
+                <div className="flex items-start justify-between text-slate-300">
+                  <span className="text-slate-400 shrink-0">Panes ({activeTab.panes.length}):</span>
+                  <span className="text-right truncate ml-2 text-slate-300">
+                    {activeTab.panes.map((p) => hostMap.get(p.hostId)?.label || (p.isLocal ? 'Local Terminal' : 'Host')).join(' • ')}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => setShowSavePresetModal(false)}
+                className="px-3 py-1.5 text-xs rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSavePreset}
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition shadow-sm"
+                style={{
+                  backgroundColor: theme.accent,
+                  color: '#000000',
+                }}
+              >
+                Save Preset
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {toastMsg && <div role="status" className="nx-toast nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
     </div>

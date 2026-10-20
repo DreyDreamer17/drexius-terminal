@@ -43,6 +43,9 @@ import {
   Zap,
   Maximize2,
   Minimize2,
+  Columns2,
+  Rows2,
+  GripVertical,
 } from 'lucide-react';
 import { bridge, isBridgeError, isTauri } from '../lib/bridge';
 import { parseOsFromBanner } from '../lib/os';
@@ -153,6 +156,9 @@ interface Props {
   isSplit?: boolean;
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
+  onSplitPane?: (direction: 'right' | 'down') => void;
+  onDragStart?: (paneId: string) => void;
+  onDragEnd?: () => void;
   hidden?: boolean;
   mobileHidden?: boolean;
   broadcast?: boolean;
@@ -212,6 +218,9 @@ export const TerminalPane = memo(function TerminalPane({
   isSplit = false,
   isMaximized = false,
   onToggleMaximize,
+  onSplitPane,
+  onDragStart,
+  onDragEnd,
   hidden = false,
   broadcast = false,
   onOpenDocker,
@@ -1337,7 +1346,13 @@ export const TerminalPane = memo(function TerminalPane({
       webgl.onContextLoss(() => {
         console.warn('WebGL context lost; terminal switched to the DOM renderer');
         webglRef.current = null;
-        try { webgl.dispose(); } catch { /* already disposed */ }
+        setTimeout(() => {
+          try {
+            webgl.dispose();
+          } catch {
+            /* already disposed */
+          }
+        }, 0);
       });
       term.loadAddon(webgl);
     } catch (err) {
@@ -2363,6 +2378,22 @@ export const TerminalPane = memo(function TerminalPane({
     >
       {showHeader && !mobile && (
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
+          {isSplit && (
+            <div
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/plain', pane.id);
+                e.dataTransfer.setData('application/x-drexius-pane', pane.id);
+                e.dataTransfer.effectAllowed = 'move';
+                onDragStart?.(pane.id);
+              }}
+              onDragEnd={() => onDragEnd?.()}
+              title="Drag to swap position with another pane (or use Alt+Shift+Arrows)"
+              className="cursor-grab active:cursor-grabbing text-slate-500 hover:text-cyan-300 transition -ml-1 mr-0.5 p-0.5 rounded hover:bg-white/10 shrink-0 select-none"
+            >
+              <GripVertical className="h-3.5 w-3.5" />
+            </div>
+          )}
           <span className={cn('h-1.5 w-1.5 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
           {isSerial ? (
             <span className="flex items-center gap-1 font-medium text-amber-300">
@@ -2453,6 +2484,32 @@ export const TerminalPane = memo(function TerminalPane({
               >
                 <Unplug className="h-3 w-3" />
               </button>
+            )}
+            {onSplitPane && (
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSplitPane('right');
+                  }}
+                  title="Split pane vertically (right) - Ctrl+Shift+D"
+                  className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-cyan-300 transition cursor-pointer"
+                >
+                  <Columns2 className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSplitPane('down');
+                  }}
+                  title="Split pane horizontally (down) - Ctrl+Shift+E"
+                  className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-cyan-300 transition cursor-pointer"
+                >
+                  <Rows2 className="h-3 w-3" />
+                </button>
+              </div>
             )}
             {isSplit && onToggleMaximize && (
               <button
