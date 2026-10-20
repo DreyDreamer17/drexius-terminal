@@ -3640,5 +3640,41 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_known_host_encrypted_db_roundtrip() {
+        let unique = format!("test_known_host_{}.vault", rand::random::<u64>());
+        let db_path = std::env::temp_dir().join(unique);
+        let vault = Vault::new(db_path.clone());
+
+        // 1. Initialize and unlock the encrypted SQLCipher vault
+        vault.unlock("test-master-password-1234").expect("unlock vault");
+
+        let host = "server.example.internal";
+        let port = 2222;
+        let fingerprint = "SHA256:7u1g0D1eP8wQz3V8/xK4m2N5p9T7r1S3v5X7z9B0=";
+
+        // 2. Initial query should be None
+        assert_eq!(vault.known_host(host, port).expect("query empty"), None);
+
+        // 3. Record host key directly into encrypted DB
+        vault.with(|c| {
+            c.execute(
+                "INSERT INTO known_hosts(host, port, fingerprint, added_at) VALUES(?1, ?2, ?3, ?4)",
+                params![host, port, fingerprint, now()],
+            )?;
+            Ok(())
+        }).expect("insert known host");
+
+        // 4. Read back and verify exact fingerprint match
+        let retrieved = vault.known_host(host, port).expect("query known host");
+        assert_eq!(retrieved, Some(fingerprint.to_string()));
+
+        // 5. Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(vault.salt_path());
+        let _ = std::fs::remove_file(db_path.with_extension("vault-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("vault-shm"));
+    }
 }
 
