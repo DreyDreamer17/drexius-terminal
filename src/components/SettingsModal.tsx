@@ -483,6 +483,7 @@ export function SettingsModal({
                     <CustomSelect
                       value={uiPrefs.scrollback}
                       onChange={(val) => updatePref('scrollback', Number(val))}
+                      dropUp={true}
                       options={[
                         { value: 5000, label: '5,000 lines' },
                         { value: 10000, label: '10,000 lines (Default)' },
@@ -813,11 +814,11 @@ export function SettingsModal({
                     <CustomSelect
                       value={autoLockMinutes}
                       onChange={(val) => onAutoLockChange(Number(val))}
+                      dropUp={true}
                       options={[
                         { value: 0, label: 'Never (Manual Lock Only)' },
-                        { value: 1, label: '1 minute' },
-                        { value: 5, label: '5 minutes (Recommended)' },
-                        { value: 15, label: '15 minutes' },
+                        { value: 5, label: '5 minutes' },
+                        { value: 15, label: '15 minutes (Recommended)' },
                         { value: 30, label: '30 minutes' },
                         { value: 60, label: '1 hour' },
                       ]}

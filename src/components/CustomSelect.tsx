@@ -32,10 +32,19 @@ export function CustomSelect<T extends string | number>({
   accentColor: customAccent,
 }: CustomSelectProps<T>) {
   const [open, setOpen] = useState(false);
+  const [isDropUp, setIsDropUp] = useState(dropUp);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
+    if (dropUp) {
+      setIsDropUp(true);
+    } else if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setIsDropUp(spaceBelow < 240);
+    }
+
     const handleClickOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -43,7 +52,7 @@ export function CustomSelect<T extends string | number>({
     };
     window.addEventListener('mousedown', handleClickOutside);
     return () => window.removeEventListener('mousedown', handleClickOutside);
-  }, [open]);
+  }, [open, dropUp]);
 
   const selected = options.find((o) => o.value === value);
   const accentColor = customAccent || theme?.accent || '#22d3ee';
@@ -86,7 +95,7 @@ export function CustomSelect<T extends string | number>({
           style={{ background: bgColor }}
           className={cn(
             'absolute left-0 right-0 z-50 rounded-xl border border-white/15 p-1.5 shadow-2xl backdrop-blur-2xl ring-1 ring-white/10 max-h-56 overflow-y-auto',
-            dropUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+            isDropUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
           )}
         >
           {options.length === 0 ? (
