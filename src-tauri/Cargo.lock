@@ -1196,6 +1196,7 @@ dependencies = [
  "sha2",
  "socket2",
  "ssh2",
+ "subtle",
  "tauri",
  "tauri-build",
  "tauri-plugin-biometric",

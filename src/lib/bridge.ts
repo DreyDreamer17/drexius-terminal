@@ -325,6 +325,39 @@ export const bridge = {
     return isNew ? 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD' : null;
   },
 
+  async vaultVerifyPassword(masterPassword: string): Promise<boolean> {
+    if (isTauri) {
+      try {
+        return await invoke<boolean>('vault_verify_password', { password: masterPassword });
+      } catch (e) {
+        console.warn('vault_verify_password failed:', e);
+        return false;
+      }
+    }
+    const saltB64 = localStorage.getItem('drx.salt');
+    if (!saltB64) return false;
+    try {
+      const key = await deriveDemoKey(masterPassword, fromB64(saltB64));
+      const stored = localStorage.getItem('drx.vault');
+      if (!stored) return false;
+      const parsed = JSON.parse(stored);
+      if (parsed.plain) return true;
+      if (parsed.iv && parsed.ct) {
+        if (typeof crypto !== 'undefined' && crypto?.subtle?.decrypt && typeof key !== 'string') {
+          await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: fromB64(parsed.iv) as BufferSource },
+            key,
+            fromB64(parsed.ct) as BufferSource
+          );
+          return true;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   async vaultRecover(recoveryCode: string, newPassword: string): Promise<string> {
     if (isTauri) return invoke('vault_recover', { recoveryCode, newPassword });
     await this.resetDemoVault();
@@ -421,6 +454,24 @@ export const bridge = {
     if (!isTauri) return;
     try { await invoke('os_keychain_delete'); } catch { /* non-fatal */ }
     try { localStorage.removeItem('drx.os_keychain'); } catch {}
+  },
+
+  isDirectUnlockEnabled(): boolean {
+    try {
+      return localStorage.getItem('drx.direct_unlock') === '1';
+    } catch {
+      return false;
+    }
+  },
+
+  setDirectUnlockEnabled(enabled: boolean): void {
+    try {
+      if (enabled) {
+        localStorage.setItem('drx.direct_unlock', '1');
+      } else {
+        localStorage.removeItem('drx.direct_unlock');
+      }
+    } catch {}
   },
 
   async checkStoragePermission(): Promise<boolean> {

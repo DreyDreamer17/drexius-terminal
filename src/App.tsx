@@ -183,9 +183,15 @@ export default function App() {
   const isAndroid = useMemo(() => isAndroidPlatform(), []);
   const persistedWorkspace = useMemo(() => readPersistedWorkspace(), []);
   const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
-  // Phone settings pickers (auto-lock, theme, quick unlock, recovery key, storage permissions)
-  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'quickunlock' | 'recovery_key' | 'storage_perms' | null>(null);
+  // Phone settings pickers (auto-lock, theme, quick unlock, direct launch, recovery key, storage permissions)
+  const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'quickunlock' | 'directlaunch' | 'recovery_key' | 'storage_perms' | null>(null);
   const [deviceLockEnabled, setDeviceLockEnabled] = useState(() => bridge.osKeychainEnabled());
+  const [directUnlockEnabled, setDirectUnlockEnabled] = useState(() => bridge.isDirectUnlockEnabled());
+  const [directLaunchPw, setDirectLaunchPw] = useState('');
+  const [directLaunchBusy, setDirectLaunchBusy] = useState(false);
+  const [directLaunchErr, setDirectLaunchErr] = useState<string | null>(null);
+  const directUnlockAttempted = useRef(false);
+  const [directUnlocking, setDirectUnlocking] = useState(() => bridge.isDirectUnlockEnabled() && isTauri);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [copiedRecovery, setCopiedRecovery] = useState(false);
   const [downloadedRecoveryPath, setDownloadedRecoveryPath] = useState<string | null>(null);
@@ -194,6 +200,28 @@ export default function App() {
   const [quickUnlockErr, setQuickUnlockErr] = useState(null as string | null);
   const [storageGranted, setStorageGranted] = useState<boolean | null>(null);
   const [requestingPerm, setRequestingPerm] = useState(false);
+
+  // Direct Launch auto-unlock on initial app startup
+  useEffect(() => {
+    if (directUnlockAttempted.current) return;
+    directUnlockAttempted.current = true;
+
+    if (bridge.isDirectUnlockEnabled() && isTauri) {
+      bridge
+        .osKeychainUnlock()
+        .then(() => {
+          setUnlocked(true);
+        })
+        .catch((err) => {
+          console.warn('Direct launch auto-unlock failed, falling back to manual unlock:', err);
+        })
+        .finally(() => {
+          setDirectUnlocking(false);
+        });
+    } else {
+      setDirectUnlocking(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (settingsPicker === 'recovery_key') {
@@ -1430,7 +1458,7 @@ export default function App() {
   return (
     <>
     {showSplash && <LaunchSplash onFinished={() => setShowSplash(false)} />}
-    {!unlocked && !showSplash && (
+    {!unlocked && !showSplash && !directUnlocking && (
       <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
         <LockScreen onUnlocked={() => setUnlocked(true)}
           onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
@@ -2531,6 +2559,12 @@ export default function App() {
               <span className="nx-settings-value">{deviceLockEnabled ? 'Enabled' : 'Off'}<ChevronRight size={16} /></span>
             </button>
           )}
+          {isTauri && (
+            <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('directlaunch')}>
+              <span className="flex items-center gap-3"><Zap size={18} /> Direct Launch</span>
+              <span className="nx-settings-value">{directUnlockEnabled ? 'Enabled' : 'Off'}<ChevronRight size={16} /></span>
+            </button>
+          )}
           <button className="nx-settings-row justify-between" onClick={() => setSettingsPicker('recovery_key')}>
             <span className="flex items-center gap-3"><KeyRound size={18} /> Emergency Recovery Kit</span>
             <span className="nx-settings-value">View<ChevronRight size={16} /></span>
@@ -2685,6 +2719,121 @@ export default function App() {
                 </button>
               </div>
             )}
+          </div>
+        </MobileSheet>
+      )}
+      {mobile && settingsPicker === 'directlaunch' && (
+        <MobileSheet
+          title="Direct Launch"
+          kicker="Security"
+          subtitle="Open the app directly without authorization or password"
+          icon={Zap}
+          theme={theme}
+          onClose={() => {
+            setSettingsPicker(null);
+            setDirectLaunchErr(null);
+            setDirectLaunchPw('');
+          }}
+        >
+          <div className="space-y-4 p-2">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-xs space-y-2">
+              <div className="flex items-center gap-2 font-medium text-white">
+                <Zap size={18} style={{ color: theme.accent }} />
+                <span>Direct App Launch</span>
+              </div>
+              <p className="text-slate-400 leading-relaxed">
+                Status:{' '}
+                <strong className={directUnlockEnabled ? 'text-emerald-400' : 'text-slate-300'}>
+                  {directUnlockEnabled ? 'Enabled' : 'Disabled'}
+                </strong>
+              </p>
+              <p className="text-slate-400 leading-relaxed">
+                When enabled, the app automatically unlocks your vault and opens your terminal directly on startup without prompting for authorization or your master password.
+              </p>
+              {directUnlockEnabled && (
+                <p className="text-amber-400/90 text-[11px] leading-relaxed">
+                  Notice: Master credentials will be stored locally on this device. Anyone who has physical access to this device can open your terminal.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs text-slate-300">
+                {directUnlockEnabled
+                  ? 'Enter your master password to disable Direct Launch:'
+                  : 'Enter your master password to enable Direct Launch:'}
+              </p>
+              <input
+                type="password"
+                placeholder="Master password"
+                value={directLaunchPw}
+                onChange={(e) => setDirectLaunchPw(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-black/40 px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none"
+                style={{ outlineColor: theme.accent }}
+              />
+              {directLaunchErr && (
+                <p className="text-xs text-rose-400">{directLaunchErr}</p>
+              )}
+              <button
+                type="button"
+                disabled={directLaunchBusy || !directLaunchPw}
+                onClick={async () => {
+                  setDirectLaunchBusy(true);
+                  setDirectLaunchErr(null);
+                  try {
+                    const isValid = await bridge.vaultVerifyPassword(directLaunchPw);
+                    if (!isValid) {
+                      setDirectLaunchErr('Incorrect master password. Please verify and try again.');
+                      setDirectLaunchBusy(false);
+                      return;
+                    }
+
+                    if (!directUnlockEnabled) {
+                      if (isTauri) {
+                        try {
+                          await bridge.osKeychainStore(directLaunchPw);
+                        } catch (e) {
+                          console.warn('Keychain store warning:', e);
+                        }
+                      }
+                      bridge.setDirectUnlockEnabled(true);
+                      setDirectUnlockEnabled(true);
+                      toast('Direct Launch enabled');
+                    } else {
+                      bridge.setDirectUnlockEnabled(false);
+                      if (isTauri) {
+                        try {
+                          await bridge.osKeychainDelete();
+                        } catch (_) {}
+                      }
+                      setDirectUnlockEnabled(false);
+                      toast('Direct Launch disabled');
+                    }
+                    setSettingsPicker(null);
+                    setDirectLaunchPw('');
+                  } catch (err: any) {
+                    setDirectLaunchErr(err?.message || 'Verification failed');
+                  } finally {
+                    setDirectLaunchBusy(false);
+                  }
+                }}
+                className={cn(
+                  'flex w-full items-center justify-center gap-2 rounded-xl py-3 text-xs font-semibold transition cursor-pointer disabled:opacity-50',
+                  directUnlockEnabled
+                    ? 'border border-rose-500/30 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25'
+                    : 'text-black hover:brightness-110 active:scale-[0.99]'
+                )}
+                style={{
+                  backgroundColor: directUnlockEnabled ? undefined : theme.accent,
+                }}
+              >
+                {directLaunchBusy ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <span>{directUnlockEnabled ? 'Disable Direct Launch' : 'Enable Direct Launch'}</span>
+                )}
+              </button>
+            </div>
           </div>
         </MobileSheet>
       )}

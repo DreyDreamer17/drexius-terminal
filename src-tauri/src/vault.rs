@@ -851,6 +851,39 @@ impl Vault {
         }
     }
 
+    /// Constant-time verification of the master password without altering the vault's active state.
+    pub fn verify_password(&self, master_password: &str) -> AppResult<bool> {
+        if !self.path.exists() {
+            return Ok(false);
+        }
+        let salt = match std::fs::read(self.salt_path()) {
+            Ok(s) if s.len() == 16 => s,
+            _ => return Ok(false),
+        };
+        let key = match Self::derive_key(master_password, &salt) {
+            Ok(k) => k,
+            Err(_) => return Ok(false),
+        };
+
+        // If vault is currently unlocked in memory, compare the derived key with the root key in constant time
+        if let Some(unlocked) = self.inner.lock().as_ref() {
+            use subtle::ConstantTimeEq;
+            return Ok(key.as_slice().ct_eq(unlocked.root_key.as_slice()).into());
+        }
+
+        // Vault is locked; test if the derived key unlocks the SQLCipher database
+        let conn = match rusqlite::Connection::open(&self.path) {
+            Ok(c) => c,
+            Err(_) => return Ok(false),
+        };
+        let key_hex = hex::encode(&key);
+        if conn.pragma_update(None, "key", &key_hex).is_err() {
+            return Ok(false);
+        }
+        let valid = conn.execute_batch("SELECT count(*) FROM sqlite_master;").is_ok();
+        Ok(valid)
+    }
+
     fn read_rekey_journal(&self) -> Option<RekeyJournal> {
         let bytes = std::fs::read(self.rekey_journal_path()).ok()?;
         serde_json::from_slice(&bytes).ok()
@@ -1207,6 +1240,16 @@ pub async fn vault_unlock(master_password: String, app: tauri::AppHandle) -> App
 }
 
 #[tauri::command]
+pub async fn vault_verify_password(password: String, app: tauri::AppHandle) -> AppResult<bool> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let vault = app.state::<Vault>();
+        vault.verify_password(&password)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[tauri::command]
 pub async fn vault_recover(
     recovery_code: String,
     new_password: String,
@@ -1389,16 +1432,15 @@ pub fn os_keychain_store(master_password: String, vault: State<'_, Vault>) -> Ap
     #[cfg(not(target_os = "android"))]
     {
         // 1. Try OS keyring first
-        let keyring_result = keychain_entry().and_then(|entry| {
+        let _ = keychain_entry().and_then(|entry| {
             entry
                 .set_password(&pw)
                 .map_err(|e| AppError::Other(format!("Failed to store in OS keychain: {e}")))
         });
 
-        // 2. If OS keyring fails, fallback to device-bound secure file
-        if keyring_result.is_err() {
-            vault.save_device_lock(&pw)?;
-        }
+        // 2. Also persist device-bound secure file fallback so direct auto-unlock
+        // succeeds even when OS keyring is delayed or requires interactive login.
+        let _ = vault.save_device_lock(&pw);
         Ok(())
     }
 }

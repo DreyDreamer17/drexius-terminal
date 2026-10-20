@@ -28,7 +28,14 @@ import {
   Plus,
   PanelBottom,
   Terminal,
+  Zap,
+  KeyRound,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
+import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import {
   type UiPreferences,
@@ -149,6 +156,78 @@ export function SettingsModal({
     theme || THEMES.find((t) => t.id === themeId) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
+
+  // Direct Launch / Auto-Unlock state & handlers
+  const [directUnlockEnabled, setDirectUnlockEnabled] = useState(() => bridge.isDirectUnlockEnabled());
+  const [showDirectUnlockModal, setShowDirectUnlockModal] = useState(false);
+  const [targetDirectUnlockState, setTargetDirectUnlockState] = useState(false);
+  const [directUnlockPw, setDirectUnlockPw] = useState('');
+  const [showDirectUnlockPw, setShowDirectUnlockPw] = useState(false);
+  const [directUnlockBusy, setDirectUnlockBusy] = useState(false);
+  const [directUnlockErr, setDirectUnlockErr] = useState<string | null>(null);
+  const directPwInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (showDirectUnlockModal) {
+      const timer = setTimeout(() => directPwInputRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [showDirectUnlockModal]);
+
+  const handleToggleDirectUnlock = () => {
+    const nextState = !directUnlockEnabled;
+    setTargetDirectUnlockState(nextState);
+    setDirectUnlockPw('');
+    setShowDirectUnlockPw(false);
+    setDirectUnlockErr(null);
+    setShowDirectUnlockModal(true);
+  };
+
+  const handleConfirmDirectUnlock = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!directUnlockPw) {
+      setDirectUnlockErr('Please enter your master password');
+      return;
+    }
+    setDirectUnlockBusy(true);
+    setDirectUnlockErr(null);
+    try {
+      const isValid = await bridge.vaultVerifyPassword(directUnlockPw);
+      if (!isValid) {
+        setDirectUnlockErr('Incorrect master password. Please verify and try again.');
+        setDirectUnlockBusy(false);
+        return;
+      }
+
+      if (targetDirectUnlockState) {
+        if (isTauri) {
+          try {
+            await bridge.osKeychainStore(directUnlockPw);
+          } catch (storeErr) {
+            console.warn('Keychain store warning:', storeErr);
+          }
+        }
+        bridge.setDirectUnlockEnabled(true);
+        setDirectUnlockEnabled(true);
+        toast('Direct Launch enabled: NexusTerminal will open directly on launch.');
+      } else {
+        bridge.setDirectUnlockEnabled(false);
+        if (isTauri) {
+          try {
+            await bridge.osKeychainDelete();
+          } catch (_) {}
+        }
+        setDirectUnlockEnabled(false);
+        toast('Direct Launch disabled: Master password required on launch.');
+      }
+      setShowDirectUnlockModal(false);
+      setDirectUnlockPw('');
+    } catch (err: any) {
+      setDirectUnlockErr(isBridgeError(err) ? err.message : (err?.message || 'Verification failed'));
+    } finally {
+      setDirectUnlockBusy(false);
+    }
+  };
 
   const updatePref = <K extends keyof UiPreferences>(key: K, val: UiPreferences[K]) => {
     const next = { ...uiPrefs, [key]: val };
@@ -1174,6 +1253,51 @@ export function SettingsModal({
                 </div>
               </div>
 
+              {/* Direct Launch / Auto-Unlock on Startup */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <Zap className="h-4 w-4" style={{ color: accentColor }} />
+                        <span>Direct Launch (Bypass Master Password)</span>
+                      </h3>
+                      {directUnlockEnabled ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          Enabled
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-white/5 text-slate-400 border border-white/10">
+                          Disabled
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed max-w-xl">
+                      Automatically unlock your vault and navigate directly into the terminal workspace on application startup without prompting for authorization or your master password.
+                    </p>
+                    {directUnlockEnabled ? (
+                      <div className="flex items-center gap-1.5 pt-1 text-[11px] text-amber-400/90">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                        <span>Direct launch is active. Anyone with physical access to your device can launch your sessions.</span>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-500 pt-1">
+                        Master password or biometric authorization is required every time the application starts.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="shrink-0 pt-0.5">
+                    <ToggleSwitch
+                      checked={directUnlockEnabled}
+                      onChange={handleToggleDirectUnlock}
+                      accentColor={accentColor}
+                      ariaLabel="Toggle Direct Launch on startup"
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* Security Preferences */}
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-white">Auto-Lock Protection</h3>
@@ -1389,6 +1513,134 @@ export function SettingsModal({
             >
               Done
             </button>
+          </div>
+        )}
+
+        {/* Master Password Verification Modal for Direct Launch */}
+        {showDirectUnlockModal && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+            onClick={() => !directUnlockBusy && setShowDirectUnlockModal(false)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-md rounded-2xl border bg-slate-950 p-6 shadow-2xl text-slate-200 space-y-5"
+              style={{
+                borderColor: `${accentColor}40`,
+                boxShadow: `0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px ${accentColor}15`,
+              }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border"
+                    style={{
+                      backgroundColor: `${accentColor}15`,
+                      borderColor: `${accentColor}30`,
+                      color: accentColor,
+                    }}
+                  >
+                    <KeyRound className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-semibold text-white">
+                      {targetDirectUnlockState ? 'Enable Direct Launch' : 'Disable Direct Launch'}
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Master password verification required
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={directUnlockBusy}
+                  onClick={() => setShowDirectUnlockModal(false)}
+                  className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs text-slate-300 leading-relaxed">
+                {targetDirectUnlockState ? (
+                  <span>
+                    You are about to enable <strong>Direct Launch</strong>. NexusTerminal will store credentials in this device's secure vault and open directly into your workspace on startup without authorization.
+                  </span>
+                ) : (
+                  <span>
+                    Disabling <strong>Direct Launch</strong> will remove stored startup credentials from this device. You will be required to enter your master password to unlock NexusTerminal on startup.
+                  </span>
+                )}
+              </div>
+
+              <form onSubmit={handleConfirmDirectUnlock} className="space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-300">
+                    Confirm Master Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      ref={directPwInputRef}
+                      type={showDirectUnlockPw ? 'text' : 'password'}
+                      value={directUnlockPw}
+                      onChange={(e) => setDirectUnlockPw(e.target.value)}
+                      placeholder="Enter master password"
+                      autoFocus
+                      disabled={directUnlockBusy}
+                      className="w-full rounded-xl border border-white/15 bg-black/60 px-3.5 py-2.5 pr-10 text-xs text-white placeholder:text-slate-500 focus:outline-none transition"
+                      style={{
+                        borderColor: directUnlockErr ? '#f43f5e' : undefined,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onClick={() => setShowDirectUnlockPw((prev) => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 transition"
+                    >
+                      {showDirectUnlockPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
+
+                  {directUnlockErr && (
+                    <div className="flex items-center gap-1.5 text-xs text-rose-400 pt-1">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span>{directUnlockErr}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    disabled={directUnlockBusy}
+                    onClick={() => setShowDirectUnlockModal(false)}
+                    className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-xs font-medium text-slate-300 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={directUnlockBusy || !directUnlockPw}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed shadow-md"
+                    style={{
+                      backgroundColor: targetDirectUnlockState ? accentColor : '#f43f5e',
+                      color: targetDirectUnlockState ? '#000000' : '#ffffff',
+                    }}
+                  >
+                    {directUnlockBusy ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <span>{targetDirectUnlockState ? 'Verify & Enable' : 'Verify & Disable'}</span>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
       </div>

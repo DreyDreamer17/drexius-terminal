@@ -69,6 +69,7 @@ pub fn run() {
             // vault core
             vault::vault_status,
             vault::vault_unlock,
+            vault::vault_verify_password,
             vault::vault_recover,
             vault::vault_reset,
             vault::vault_get_recovery_key,
