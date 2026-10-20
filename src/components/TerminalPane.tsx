@@ -138,6 +138,9 @@ interface Props {
   host: Host;
   theme: DrexiusTheme;
   fontSize: number;
+  cursorStyle?: 'block' | 'underline' | 'bar';
+  cursorBlink?: boolean;
+  scrollback?: number;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
   lineHeight?: number;
@@ -191,6 +194,9 @@ export const TerminalPane = memo(function TerminalPane({
   host,
   theme,
   fontSize,
+  cursorStyle = 'bar',
+  cursorBlink = true,
+  scrollback = 10000,
   onFontSizeChange,
   lineHeight = 1.0,
   active,
@@ -1228,9 +1234,9 @@ export const TerminalPane = memo(function TerminalPane({
       fontSize,
       lineHeight,
       letterSpacing: 0,
-      cursorBlink: true,
-      cursorStyle: 'bar',
-      scrollback: 10000,
+      cursorBlink,
+      cursorStyle,
+      scrollback,
       allowProposedApi: true,
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
@@ -1602,8 +1608,18 @@ export const TerminalPane = memo(function TerminalPane({
         return false;
       }
 
+      // Allow directional split shortcuts (Alt+ArrowLeft/Right/Up/Down) to bubble to window listener
+      if (e.altKey && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+        return false;
+      }
+
+      // Allow Ctrl/Cmd+, (Settings) to bubble to window listener
+      if ((e.ctrlKey || e.metaKey) && e.key === ',' && e.type === 'keydown') {
+        return false;
+      }
+
       // Prevent xterm from sending control sequences on workspace shift shortcuts
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;
       }
 
@@ -1955,6 +1971,8 @@ export const TerminalPane = memo(function TerminalPane({
   useEffect(() => {
     if (!termRef.current) return;
     termRef.current.options.fontSize = fontSize;
+    termRef.current.options.cursorStyle = cursorStyle;
+    termRef.current.options.cursorBlink = cursorBlink;
     try {
       if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
     } catch {
@@ -1966,7 +1984,7 @@ export const TerminalPane = memo(function TerminalPane({
       const settle = pinchSettleRef.current;
       requestAnimationFrame(() => settle?.());
     }
-  }, [fontSize]);
+  }, [fontSize, cursorStyle, cursorBlink]);
 
   useEffect(() => {
     if (!termRef.current) return;

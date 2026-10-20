@@ -44,6 +44,7 @@ interface Props {
   onNewSession?: (h: Host) => void;
   onOpenTerminal: () => void;
   onOpenSerial: () => void;
+  showSerial?: boolean;
   onOpenShareModal: () => void;
   onOpenSshConfig: () => void;
   onOpenTailscale?: () => void;
@@ -110,6 +111,7 @@ export function HostSidebar({
   onNewSession,
   onOpenTerminal,
   onOpenSerial,
+  showSerial = true,
   onOpenShareModal,
   onOpenSshConfig,
   onOpenTailscale,
@@ -381,14 +383,16 @@ export function HostSidebar({
           <span>Terminal</span>
         </button>
 
-        <button
-          onClick={onOpenSerial}
-          title="Connect via Hardware Serial Port (UART / RS-232)"
-          className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs text-slate-300 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
-        >
-          <Radio className="h-3.5 w-3.5 text-amber-400" />
-          <span>Serial</span>
-        </button>
+        {showSerial && (
+          <button
+            onClick={onOpenSerial}
+            title="Connect via Hardware Serial Port (UART / RS-232)"
+            className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs text-slate-300 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
+          >
+            <Radio className="h-3.5 w-3.5 text-amber-400" />
+            <span>Serial</span>
+          </button>
+        )}
       </div>
 
       {/* Termius-style Team Steps Banner */}

@@ -48,6 +48,7 @@ import {
   Boxes,
   Search,
   Clipboard,
+  Settings,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -83,6 +84,17 @@ import { ConfirmHost, cancelPendingConfirm, confirmDialog, hasPendingConfirm } f
 import { DrawerGrip, DrawerShell, useBottomDrawer } from './components/BottomDrawer';
 import { ExtendedKeypad } from './components/ExtendedKeypad';
 import { CommandSearchModal } from './components/CommandSearchModal';
+import { SettingsModal } from './components/SettingsModal';
+import {
+  loadUiPreferences,
+  saveUiPreferences,
+  loadShortcuts,
+  saveShortcuts,
+  matchesShortcut,
+  getAdjacentPaneId,
+  type UiPreferences,
+  type ShortcutBinding,
+} from './lib/settings';
 
 const uid = safeUid;
 const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
@@ -478,6 +490,20 @@ export default function App() {
   const [activeVaultId, setActiveVaultId] = useState<string | 'all'>(
     () => localStorage.getItem('drx.vault.active') ?? 'personal'
   );
+  const [showSettings, setShowSettings] = useState(false);
+  const [uiPrefs, setUiPrefs] = useState<UiPreferences>(() => loadUiPreferences());
+  const [shortcuts, setShortcuts] = useState<Record<string, ShortcutBinding>>(() => loadShortcuts());
+
+  const handleUpdateUiPrefs = useCallback((next: UiPreferences) => {
+    setUiPrefs(next);
+    saveUiPreferences(next);
+  }, []);
+
+  const handleUpdateShortcuts = useCallback((next: Record<string, ShortcutBinding>) => {
+    setShortcuts(next);
+    saveShortcuts(next);
+  }, []);
+
   const [shareModal, setShareModal] = useState<{ initialTab?: 'share' | 'import' } | null>(null);
   const [showSerial, setShowSerial] = useState(false);
   const [showPairing, setShowPairing] = useState<{ initialTab?: 'share' | 'join' | 'devices' } | null>(null);
@@ -767,6 +793,18 @@ export default function App() {
     setTabs((ts) => ts.map((t) => t.id !== activeTab.id ? t : { ...t, panes: [...t.panes, pane], layout: layoutFor(t.panes.length + 1, pref), activePaneId: pane.id, title: t.panes.length ? `${t.title.split(' +')[0]} +${t.panes.length}` : h.label }));
   }, [activeTab, openHost, toast]);
 
+  const navigateSplitDirection = useCallback((direction: 'left' | 'right' | 'up' | 'down') => {
+    if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
+    const nextPaneId = getAdjacentPaneId(activeTab.activePaneId, activeTab.panes, activeTab.layout, direction);
+    if (nextPaneId && nextPaneId !== activeTab.activePaneId) {
+      setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: nextPaneId } : t)));
+      const live = registry.get(nextPaneId);
+      if (live?.term) {
+        live.term.focus();
+      }
+    }
+  }, [activeTab]);
+
   const cleanupPaneSession = useCallback((p: Pane) => {
     bridge.sftpClose(p.id).catch(() => {});
     const sid =
@@ -976,7 +1014,7 @@ export default function App() {
         if (hasPendingConfirm()) return;
         // A terminal-screen drawer (AI / snippets) is the topmost layer on mobile: Escape dismisses it first.
         if (closeTerminalDrawerRef.current?.()) { e.preventDefault(); e.stopPropagation(); return; }
-        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu) {
+        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu || showSettings) {
           e.preventDefault();
           e.stopPropagation();
           setQuick(false);
@@ -986,6 +1024,7 @@ export default function App() {
           setShowAutoLockMenu(false);
           setShowDockerModal(false);
           setSplitMenu(null);
+          setShowSettings(false);
         }
         return;
       }
@@ -998,6 +1037,80 @@ export default function App() {
       const inTerminal = !!(target && target.closest && target.closest('.xterm'));
       const isInput = target && !inTerminal && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (isInput) return;
+
+      // ── Directional Split Navigation (Ghostty / tmux style) ──
+      if (matchesShortcut(e, shortcuts.focus_split_left?.keys || 'Alt+ArrowLeft')) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigateSplitDirection('left');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.focus_split_right?.keys || 'Alt+ArrowRight')) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigateSplitDirection('right');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.focus_split_up?.keys || 'Alt+ArrowUp')) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigateSplitDirection('up');
+        return;
+      }
+      if (matchesShortcut(e, shortcuts.focus_split_down?.keys || 'Alt+ArrowDown')) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigateSplitDirection('down');
+        return;
+      }
+
+      // ── Open Settings (Ctrl/Cmd + ,) ──
+      if (matchesShortcut(e, shortcuts.open_settings?.keys || 'Ctrl+,')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowSettings((v) => !v);
+        return;
+      }
+
+      // ── Close Active Split Pane (Ctrl+Shift+W) ──
+      if (matchesShortcut(e, shortcuts.close_pane?.keys || 'Ctrl+Shift+W')) {
+        if (activeTab && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          closePane(activeTab.id, activeTab.activePaneId);
+          return;
+        }
+      }
+
+      // ── Next / Previous Split Pane (Ctrl+] / Ctrl+[) ──
+      if (matchesShortcut(e, shortcuts.next_pane?.keys || 'Ctrl+]')) {
+        if (activeTab && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = activeTab.panes.findIndex((p) => p.id === activeTab.activePaneId);
+          const nextIdx = (idx + 1) % activeTab.panes.length;
+          const nextP = activeTab.panes[nextIdx];
+          if (nextP) {
+            setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: nextP.id } : t)));
+            registry.get(nextP.id)?.term?.focus();
+          }
+          return;
+        }
+      }
+      if (matchesShortcut(e, shortcuts.prev_pane?.keys || 'Ctrl+[')) {
+        if (activeTab && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = activeTab.panes.findIndex((p) => p.id === activeTab.activePaneId);
+          const prevIdx = (idx - 1 + activeTab.panes.length) % activeTab.panes.length;
+          const prevP = activeTab.panes[prevIdx];
+          if (prevP) {
+            setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: prevP.id } : t)));
+            registry.get(prevP.id)?.term?.focus();
+          }
+          return;
+        }
+      }
 
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
@@ -1039,7 +1152,28 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [toggleQuick, openLocalTerminal, openSftpTab, broadcast, tabs, quick, showThemes, panel, modal, showAutoLockMenu, showDockerModal, splitMenu, toast, terminalContext, activePaneId]);
+  }, [
+    toggleQuick,
+    openLocalTerminal,
+    openSftpTab,
+    broadcast,
+    tabs,
+    quick,
+    showThemes,
+    panel,
+    modal,
+    showAutoLockMenu,
+    showDockerModal,
+    splitMenu,
+    showSettings,
+    shortcuts,
+    navigateSplitDirection,
+    closePane,
+    toast,
+    terminalContext,
+    activePaneId,
+    activeTab,
+  ]);
 
   // ── Hosts / snippets CRUD ──
   const saveHost = async (h: Host, s?: HostSecret, alreadySaved?: boolean) => {
@@ -1111,7 +1245,7 @@ export default function App() {
 
   const rail = [
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
-    {
+    ...(uiPrefs.showDocker ? [{
       id: 'docker',
       icon: Boxes,
       label: 'Docker Containers (⌘⇧U)',
@@ -1121,17 +1255,29 @@ export default function App() {
         setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
         setShowDockerModal((v) => !v);
       },
-    },
-    { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
-    { id: 'tunnels', icon: Network, label: 'Port Forwarding (Tunnels)', on: panel === 'tunnels', act: () => setPanel((p) => (p === 'tunnels' ? null : 'tunnels')) },
-    { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
+    }] : []),
+    ...(uiPrefs.showTunnels ? [
+      { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
+      { id: 'tunnels', icon: Network, label: 'Port Forwarding (Tunnels)', on: panel === 'tunnels', act: () => setPanel((p) => (p === 'tunnels' ? null : 'tunnels')) },
+    ] : []),
+    ...(uiPrefs.showSnippets ? [
+      { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
+    ] : []),
     { id: 'logs', icon: History, label: 'Session History & Audit', on: panel === 'logs', act: () => setPanel((p) => (p === 'logs' ? null : 'logs')) },
     { id: 'known_hosts', icon: ShieldCheck, label: 'Known Hosts', on: panel === 'known_hosts', act: () => setPanel((p) => (p === 'known_hosts' ? null : 'known_hosts')) },
-    { id: 'sftp', icon: HardDrive, label: 'SFTP (⌘⇧F)', on: activeTab?.kind === 'sftp', act: () => openSftpTab() },
-    { id: 'ai', icon: Sparkles, label: 'AI Assistant (⌘⇧A)', on: showAI, act: () => setShowAI((v) => !v) },
+    ...(uiPrefs.showSftp ? [
+      { id: 'sftp', icon: HardDrive, label: 'SFTP (⌘⇧F)', on: activeTab?.kind === 'sftp', act: () => openSftpTab() },
+    ] : []),
+    ...(uiPrefs.showAi ? [
+      { id: 'ai', icon: Sparkles, label: 'AI Assistant (⌘⇧A)', on: showAI, act: () => setShowAI((v) => !v) },
+    ] : []),
   ];
 
   const navigateMobile = (page: MobilePage) => {
+    if (page === 'settings') {
+      setShowSettings(true);
+      return;
+    }
     setMobilePage(page);
     setTerminalDrawer(null);
     setPanel(page === 'hosts' ? 'hosts' : null);
@@ -1241,28 +1387,30 @@ export default function App() {
               <Server className="h-3.5 w-3.5 transition-colors" style={{ color: panel === 'hosts' ? theme.accent : (theme?.accent || '#22d3ee') }} />
               <span className="font-semibold hidden sm:inline">Hosts</span>
             </button>
-            <button
-              onClick={() => openSftpTab()}
-              title="SFTP File Browser (⌘⇧F)"
-              className={cn(
-                'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
-                activeTab?.kind === 'sftp'
-                  ? 'text-white'
-                  : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
-              )}
-              style={
-                activeTab?.kind === 'sftp'
-                  ? {
-                      backgroundColor: `${theme.accent}18`,
-                      borderColor: `${theme.accent}45`,
-                      boxShadow: `0 0 16px ${theme.accent}25`,
-                    }
-                  : undefined
-              }
-            >
-              <HardDrive className="h-3.5 w-3.5 transition-colors" style={{ color: activeTab?.kind === 'sftp' ? theme.accent : '#10b981' }} />
-              <span className="font-semibold hidden sm:inline">SFTP</span>
-            </button>
+            {uiPrefs.showSftp && (
+              <button
+                onClick={() => openSftpTab()}
+                title="SFTP File Browser (⌘⇧F)"
+                className={cn(
+                  'flex h-7 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium transition-all duration-150 border shadow-sm select-none',
+                  activeTab?.kind === 'sftp'
+                    ? 'text-white'
+                    : 'bg-white/[0.05] border-white/10 text-slate-300 hover:bg-white/[0.1] hover:text-white hover:border-white/20'
+                )}
+                style={
+                  activeTab?.kind === 'sftp'
+                    ? {
+                        backgroundColor: `${theme.accent}18`,
+                        borderColor: `${theme.accent}45`,
+                        boxShadow: `0 0 16px ${theme.accent}25`,
+                      }
+                    : undefined
+                }
+              >
+                <HardDrive className="h-3.5 w-3.5 transition-colors" style={{ color: activeTab?.kind === 'sftp' ? theme.accent : '#10b981' }} />
+                <span className="font-semibold hidden sm:inline">SFTP</span>
+              </button>
+            )}
           </div>
 
           <div className="h-4 w-[1px] bg-white/10 mx-0.5 shrink-0" />
@@ -1371,26 +1519,30 @@ export default function App() {
               <TerminalIcon className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Local Shell</span>
             </button>
-            <button
-              onClick={() => setShowSerial(true)}
-              title="Serial terminal (UART / RS-232)"
-              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-amber-400/10 hover:text-amber-200 transition"
-            >
-              <Radio className="h-3.5 w-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Serial</span>
-            </button>
-            <button
-              onClick={() => {
-                const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
-                setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
-                setShowDockerModal(true);
-              }}
-              title="Docker Containers (⌘⇧U)"
-              className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
-            >
-              <Boxes className="h-3.5 w-3.5 text-cyan-400" />
-              <span className="hidden sm:inline">Docker</span>
-            </button>
+            {uiPrefs.showSerial && (
+              <button
+                onClick={() => setShowSerial(true)}
+                title="Serial terminal (UART / RS-232)"
+                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-amber-400/10 hover:text-amber-200 transition"
+              >
+                <Radio className="h-3.5 w-3.5 text-amber-400" />
+                <span className="hidden sm:inline">Serial</span>
+              </button>
+            )}
+            {uiPrefs.showDocker && (
+              <button
+                onClick={() => {
+                  const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+                  setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+                  setShowDockerModal(true);
+                }}
+                title="Docker Containers (⌘⇧U)"
+                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition"
+              >
+                <Boxes className="h-3.5 w-3.5 text-cyan-400" />
+                <span className="hidden sm:inline">Docker</span>
+              </button>
+            )}
             {activeTab && activeTab.panes.length === 1 && (
               <div className="flex items-center gap-1 shrink-0">
                 <div className="h-4 w-px bg-white/10 mx-0.5" />
@@ -1848,6 +2000,29 @@ export default function App() {
                   </>
                 )}
               </div>
+              <button
+                type="button"
+                title="General Settings (⌘,)"
+                onClick={() => setShowSettings(true)}
+                className={cn(
+                  'grid h-8 w-8 place-items-center rounded-xl transition shadow-sm',
+                  showSettings
+                    ? 'border shadow-[0_0_12px_rgba(34,211,238,0.25)]'
+                    : 'bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white'
+                )}
+                style={
+                  showSettings
+                    ? {
+                        backgroundColor: `${theme.accent}20`,
+                        borderColor: `${theme.accent}50`,
+                        color: theme.accent,
+                        boxShadow: `0 0 12px ${theme.accent}30`,
+                      }
+                    : undefined
+                }
+              >
+                <Settings className="h-4 w-4" />
+              </button>
               <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
             </div>
           </nav>
@@ -1894,6 +2069,7 @@ export default function App() {
                     onDelete={deleteHost}
                     onOpenTerminal={openLocalTerminal}
                     onOpenSerial={() => setShowSerial(true)}
+                    showSerial={uiPrefs.showSerial}
                     onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
                     onOpenSshConfig={() => setShowSshConfig(true)}
                     onOpenTailscale={() => setShowTailscale(true)}
@@ -2025,6 +2201,9 @@ export default function App() {
                         fontSize={fontSize}
                         onFontSizeChange={setFontSize}
                         lineHeight={lineHeight}
+                        cursorStyle={uiPrefs.cursorStyle}
+                        cursorBlink={uiPrefs.cursorBlink}
+                        scrollback={uiPrefs.scrollback}
                         active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
                         mobileHidden={t.activePaneId !== p.id}
                         showHeader={isSplit && !mobile}
@@ -2857,6 +3036,49 @@ export default function App() {
           onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
           toast={toast}
           theme={theme}
+        />
+      )}
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          theme={theme}
+          themeId={themeId}
+          onThemeSelect={setThemeId}
+          fontSize={fontSize}
+          onFontSizeChange={setFontSize}
+          lineHeight={lineHeight}
+          onLineHeightChange={setLineHeight}
+          zen={zen}
+          onZenChange={setZen}
+          showRail={showRail}
+          onShowRailChange={setShowRail}
+          showStatusBar={showStatusBar}
+          onShowStatusBarChange={setShowStatusBar}
+          autoLockMinutes={autoLockMinutes}
+          onAutoLockChange={(m) => {
+            setAutoLockMinutes(m);
+            try { localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(m)); } catch {}
+          }}
+          uiPrefs={uiPrefs}
+          onUiPrefsChange={handleUpdateUiPrefs}
+          shortcuts={shortcuts}
+          onShortcutsChange={handleUpdateShortcuts}
+          onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
+          onOpenSync={() => setShowSync(true)}
+          onOpenTailscale={() => setShowTailscale(true)}
+          onOpenNetbird={() => setShowNetbird(true)}
+          onOpenCloudSync={() => setShowCloudSync(true)}
+          onOpenDocker={() => setShowDockerModal(true)}
+          onLockVault={lock}
+          storageGranted={storageGranted}
+          onRequestStoragePermission={async () => {
+            try {
+              await bridge.requestStoragePermission();
+              const ok = await bridge.checkStoragePermission();
+              setStorageGranted(ok);
+            } catch {}
+          }}
+          toast={toast}
         />
       )}
       {toastMsg && <div role="status" className="nx-toast nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}
