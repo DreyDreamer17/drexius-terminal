@@ -34,6 +34,7 @@ import {
   DEFAULT_SHORTCUTS,
 } from '../lib/settings';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
+import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -172,10 +173,14 @@ export function SettingsModal({
   }, [shortcuts]);
 
   return (
-    <ResponsiveOverlay onClose={onClose} label="General Settings">
+    <ResponsiveOverlay
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 max-md:p-0 max-md:items-end backdrop-blur-sm"
+      onClose={onClose}
+      label="General Settings"
+    >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="nx-sheet relative flex flex-col w-full max-w-4xl h-[86vh] max-md:h-[94dvh] rounded-2xl border shadow-2xl overflow-hidden text-slate-200"
+        className="nx-sheet relative flex flex-col w-full max-w-3xl max-h-[85vh] max-md:max-h-[92dvh] rounded-2xl border shadow-2xl overflow-hidden text-slate-200"
         style={
           {
             backgroundColor: bgColor,
@@ -475,16 +480,18 @@ export function SettingsModal({
                     <label className="text-xs font-medium text-slate-300">
                       Scrollback History Lines
                     </label>
-                    <select
+                    <CustomSelect
                       value={uiPrefs.scrollback}
-                      onChange={(e) => updatePref('scrollback', Number(e.target.value))}
-                      className="w-full rounded-lg border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400"
-                    >
-                      <option value="5000">5,000 lines</option>
-                      <option value="10000">10,000 lines (Default)</option>
-                      <option value="25000">25,000 lines</option>
-                      <option value="50000">50,000 lines</option>
-                    </select>
+                      onChange={(val) => updatePref('scrollback', Number(val))}
+                      options={[
+                        { value: 5000, label: '5,000 lines' },
+                        { value: 10000, label: '10,000 lines (Default)' },
+                        { value: 25000, label: '25,000 lines' },
+                        { value: 50000, label: '50,000 lines' },
+                      ]}
+                      theme={activeTheme}
+                      accentColor={accentColor}
+                    />
                   </div>
 
                   {/* Confirm Close */}
@@ -794,7 +801,7 @@ export function SettingsModal({
               {/* Security Preferences */}
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5 space-y-4">
                 <h3 className="text-sm font-semibold text-white">Auto-Lock Protection</h3>
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   <div>
                     <div className="text-xs font-medium text-slate-200">Vault Inactivity Timeout</div>
                     <div className="text-[11px] text-slate-400">
@@ -802,18 +809,22 @@ export function SettingsModal({
                     </div>
                   </div>
 
-                  <select
-                    value={autoLockMinutes}
-                    onChange={(e) => onAutoLockChange(Number(e.target.value))}
-                    className="rounded-lg border border-white/10 bg-slate-900/80 px-3 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400"
-                  >
-                    <option value="0">Never (Manual Lock Only)</option>
-                    <option value="1">1 minute</option>
-                    <option value="5">5 minutes (Recommended)</option>
-                    <option value="15">15 minutes</option>
-                    <option value="30">30 minutes</option>
-                    <option value="60">1 hour</option>
-                  </select>
+                  <div className="w-full sm:w-56 shrink-0">
+                    <CustomSelect
+                      value={autoLockMinutes}
+                      onChange={(val) => onAutoLockChange(Number(val))}
+                      options={[
+                        { value: 0, label: 'Never (Manual Lock Only)' },
+                        { value: 1, label: '1 minute' },
+                        { value: 5, label: '5 minutes (Recommended)' },
+                        { value: 15, label: '15 minutes' },
+                        { value: 30, label: '30 minutes' },
+                        { value: 60, label: '1 hour' },
+                      ]}
+                      theme={activeTheme}
+                      accentColor={accentColor}
+                    />
+                  </div>
                 </div>
               </div>
 
