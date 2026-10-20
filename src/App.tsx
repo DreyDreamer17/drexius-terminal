@@ -117,6 +117,25 @@ import {
 const uid = safeUid;
 const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
 
+const RECENT_HOSTS_STORAGE_KEY = 'drx.recent_hosts.v1';
+
+function loadRecentHostIds(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_HOSTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentHostIds(ids: string[]): void {
+  try {
+    localStorage.setItem(RECENT_HOSTS_STORAGE_KEY, JSON.stringify(ids.slice(0, 20)));
+  } catch {}
+}
+
 function getSplitContainerClasses(layout: Layout, paneCount: number): string {
   if (paneCount <= 1) return 'flex p-0';
   switch (layout) {
@@ -393,6 +412,17 @@ export default function App() {
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [dropTargetPaneId, setDropTargetPaneId] = useState<string | null>(null);
+  const [recentHostIds, setRecentHostIds] = useState<string[]>(() => loadRecentHostIds());
+
+  const markHostRecent = useCallback((hostId: string) => {
+    if (!hostId || hostId === LOCAL_HOST.id) return;
+    setRecentHostIds((prev) => {
+      const next = [hostId, ...prev.filter((id) => id !== hostId)].slice(0, 20);
+      saveRecentHostIds(next);
+      return next;
+    });
+  }, []);
+
   const [showAI, setShowAI] = useState(false);
 
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
@@ -765,6 +795,9 @@ export default function App() {
 
   // ── Tabs / panes ──
   const openHost = useCallback((h: Host) => {
+    if (h.id && h.id !== LOCAL_HOST.id) {
+      markHostRecent(h.id);
+    }
     const pane: Pane = { id: uid(), hostId: h.id, resume: false };
     const tab: Tab = { id: uid(), title: h.label, color: h.color, panes: [pane], layout: 'single', activePaneId: pane.id };
     setTabs((t) => [...t, tab]);
@@ -774,7 +807,7 @@ export default function App() {
     setShowAI(false);
     setNewConnNonce((n) => n + 1);
     setMobilePage('terminals');
-  }, []);
+  }, [markHostRecent]);
 
   const openLocalTerminal = useCallback(() => {
     const pane: Pane = { id: uid(), hostId: LOCAL_HOST.id, isLocal: true };
@@ -908,6 +941,9 @@ export default function App() {
   const splitPaneInDirection = useCallback(
     (direction: 'right' | 'down' | 'left' | 'up', hostToUse?: Host) => {
       const h = hostToUse || (activePane ? hostMap.get(activePane.hostId) : undefined) || LOCAL_HOST;
+      if (h.id && h.id !== LOCAL_HOST.id) {
+        markHostRecent(h.id);
+      }
       if (!activeTab || activeTab.kind === 'sftp') return openHost(h);
       if (activeTab.panes.length >= 4) {
         toast('Maximum 4 panes per tab');
@@ -2925,11 +2961,14 @@ export default function App() {
           {(!tabs.length || (mobile && mobilePage === 'terminals' && !tabs.some(t => t.panes.length))) && (
             <Welcome
               hosts={hosts}
+              recentHostIds={recentHostIds}
+              theme={theme}
               onOpen={openHost}
               onLocal={openLocalTerminal}
               onTermux={isAndroid ? openTermuxPreset : undefined}
               onNew={() => setModal({ host: null })}
               onSshConfig={() => setShowSshConfig(true)}
+              onViewAll={() => setPanel('hosts')}
             />
           )}
           {workspaceReady && tabs.map((t) => {
@@ -4149,19 +4188,52 @@ export default function App() {
 
 function Welcome({
   hosts,
+  recentHostIds,
+  theme,
   onOpen,
   onLocal,
   onTermux,
   onNew,
   onSshConfig,
+  onViewAll,
 }: {
   hosts: Host[];
+  recentHostIds: string[];
+  theme: DrexiusTheme;
   onOpen: (h: Host) => void;
   onLocal: () => void;
   onTermux?: () => void;
   onNew: () => void;
   onSshConfig: () => void;
+  onViewAll?: () => void;
 }) {
+  const displayHosts = useMemo(() => {
+    const hostMap = new Map(hosts.map((h) => [h.id, h]));
+    const seen = new Set<string>();
+    const list: (Host & { isRecent?: boolean })[] = [];
+
+    // Prioritize recently used hosts
+    for (const id of recentHostIds) {
+      const h = hostMap.get(id);
+      if (h && !seen.has(id)) {
+        seen.add(id);
+        list.push({ ...h, isRecent: true });
+      }
+    }
+
+    // Then fill with any other saved hosts
+    for (const h of hosts) {
+      if (!seen.has(h.id)) {
+        seen.add(h.id);
+        list.push({ ...h, isRecent: false });
+      }
+    }
+
+    return list.slice(0, 6);
+  }, [hosts, recentHostIds]);
+
+  const hasRecent = recentHostIds.some((id) => hosts.some((h) => h.id === id));
+
   return (
     <div className="relative grid h-full place-items-center overflow-y-auto overflow-x-hidden no-scrollbar">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -4173,31 +4245,71 @@ function Welcome({
         <img src={drexiusLogo} alt="Drexius" className="nx-float mx-auto h-20 w-20 rounded-2xl shadow-[0_0_60px_-10px_rgba(34,211,238,0.5)]" />
         <h1 className="mt-6 text-3xl font-bold tracking-tight text-white">Where to today?</h1>
         <p className="mt-2 text-sm text-slate-500">Pick a host to open an encrypted session. Select a host to get started; your sessions stay connected while you switch.</p>
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-3 text-left">
-          {hosts.slice(0, 4).map((h) => (
-            <button key={h.id} onClick={() => onOpen(h)} className="group flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-3 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.04]">
-              <OsIcon os={h.os} color={h.color} size={40} />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-200">{h.label}</div>
-                <div className="truncate font-mono text-[11px] text-slate-500">{h.username}@{h.hostname}</div>
-              </div>
-              <span className="ml-auto text-xs text-cyan-300 opacity-0 transition group-hover:opacity-100">Connect →</span>
-            </button>
-          ))}
-        </div>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <button onClick={onLocal} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20 transition">
+        
+        {displayHosts.length > 0 && (
+          <div className="mt-8 text-left">
+            <div className="flex items-center justify-between px-1 mb-2.5">
+              <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <History className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                <span>{hasRecent ? 'Recent & Saved Hosts' : 'Saved Hosts'}</span>
+              </span>
+              {hosts.length > displayHosts.length && onViewAll && (
+                <button
+                  type="button"
+                  onClick={onViewAll}
+                  className="text-xs font-medium hover:underline transition cursor-pointer"
+                  style={{ color: theme.accent }}
+                >
+                  View all ({hosts.length}) →
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {displayHosts.map((h) => (
+                <button
+                  key={h.id}
+                  onClick={() => onOpen(h)}
+                  className="group relative flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-3 transition hover:-translate-y-0.5 hover:border-white/15 hover:bg-white/[0.05] cursor-pointer"
+                >
+                  <OsIcon os={h.os} color={h.color} size={38} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium text-slate-200 truncate">{h.label}</span>
+                      {h.isRecent && (
+                        <span
+                          className="text-[9px] font-mono px-1.5 py-0 rounded border shrink-0"
+                          style={{
+                            backgroundColor: `${theme.accent}15`,
+                            borderColor: `${theme.accent}30`,
+                            color: theme.accent,
+                          }}
+                        >
+                          Recent
+                        </span>
+                      )}
+                    </div>
+                    <div className="truncate font-mono text-[11px] text-slate-500">{h.username}@{h.hostname}</div>
+                  </div>
+                  <span className="ml-auto text-xs opacity-0 transition group-hover:opacity-100 shrink-0" style={{ color: theme.accent }}>Connect →</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <button onClick={onLocal} className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-4 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-400/20 transition cursor-pointer">
             <TerminalIcon className="h-3.5 w-3.5" />Open Local Terminal
           </button>
           {onTermux && (
-            <button onClick={onTermux} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-400/20 transition">
+            <button onClick={onTermux} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-400/20 transition cursor-pointer">
               <TerminalIcon className="h-3.5 w-3.5" />Termux (Local :8022)
             </button>
           )}
-          <button onClick={onNew} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 px-4 py-2 text-xs text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200 transition">
+          <button onClick={onNew} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-white/15 px-4 py-2 text-xs text-slate-400 hover:border-cyan-400/40 hover:text-cyan-200 transition cursor-pointer">
             <Plus className="h-3.5 w-3.5" />Add a new host
           </button>
-          <button onClick={onSshConfig} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-amber-400/25 bg-amber-400/[0.03] px-4 py-2 text-xs text-amber-300/80 hover:border-amber-400/50 hover:text-amber-200 transition">
+          <button onClick={onSshConfig} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-amber-400/25 bg-amber-400/[0.03] px-4 py-2 text-xs text-amber-300/80 hover:border-amber-400/50 hover:text-amber-200 transition cursor-pointer">
             <FolderInput className="h-3.5 w-3.5 text-amber-400" />Import ~/.ssh/config
           </button>
         </div>
