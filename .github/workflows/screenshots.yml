@@ -47,6 +47,8 @@ jobs:
           node-version: '22'
           cache: npm
 
+      - run: npm ci
+
       # playwright-core ships no browser of its own, so install one explicitly.
       # --with-deps pulls the shared libraries Chromium needs on a bare runner.
       - name: Install Chromium
@@ -55,8 +57,6 @@ jobs:
           # playwright-core does not export a getter for the download path, so ask
           # the CLI where it put the browser.
           echo "CHROMIUM_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())")" >> "$GITHUB_ENV"
-
-      - run: npm ci
 
       - name: Start the dev server
         run: |
