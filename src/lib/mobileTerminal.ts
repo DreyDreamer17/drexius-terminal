@@ -1,4 +1,4 @@
-import { KittyGraphicsProcessor } from './kittyGraphics';
+import { KittyGraphicsProcessor } from './kittyGraphics.ts';
 
 export interface TerminalModifiers { ctrl: boolean; alt: boolean }
 
