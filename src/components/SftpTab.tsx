@@ -150,10 +150,15 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   leftHostIdRef.current = leftHostId;
   const rightHostIdRef = useRef(rightHostId);
   rightHostIdRef.current = rightHostId;
+  const leftEntriesRef = useRef<FileEntry[]>([]);
+  leftEntriesRef.current = leftEntries;
+  const rightEntriesRef = useRef<FileEntry[]>([]);
+  rightEntriesRef.current = rightEntries;
 
   // ── Connection & Lifecycle Refs ──
   const mountedRef = useRef(true);
   const connectGenerationRef = useRef({ left: 0, right: 0 });
+  const connectingRef = useRef<{ left: boolean; right: boolean }>({ left: false, right: false });
   const [connectingHostId, setConnectingHostId] = useState<string | null>(null);
   const [connectingSide, setConnectingSide] = useState<'left' | 'right' | null>(null);
 
@@ -273,6 +278,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         }
       } catch (err) {
         toast(isBridgeError(err) ? err.message : String(err));
+        throw err;
       } finally {
         if (isLeft) setLeftLoading(false);
         else setRightLoading(false);
@@ -285,7 +291,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   const connectHost = useCallback(
     async (side: 'left' | 'right', hostId: string) => {
       const isLeft = side === 'left';
-      if (isLeft ? leftConnecting : rightConnecting) return;
+      if (connectingRef.current[side]) return;
+      connectingRef.current[side] = true;
+
       const targetHost = hosts.find((h) => h.id === hostId);
       const hostLabel = targetHost?.label || 'Host';
 
@@ -330,7 +338,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           onUpdateTab({
             sftpLeftHostId: hostId,
             sftpLeftSessionId: sid,
-            title: rightHostId ? `SFTP: ${hostLabel} ↔ ${hosts.find((h) => h.id === rightHostId)?.label || 'Remote'}` : `SFTP: ${hostLabel}`,
+            title: rightHostIdRef.current ? `SFTP: ${hostLabel} ↔ ${hosts.find((h) => h.id === rightHostIdRef.current)?.label || 'Remote'}` : `SFTP: ${hostLabel}`,
           });
         } else {
           const prev = rightSessionRef.current;
@@ -346,7 +354,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
             sftpRightSessionId: sid,
             sftpHostId: hostId,
             sftpSessionId: sid,
-            title: leftHostId ? `SFTP: ${hosts.find((h) => h.id === leftHostId)?.label || 'Local'} ↔ ${hostLabel}` : `SFTP: ${hostLabel}`,
+            title: leftHostIdRef.current ? `SFTP: ${hosts.find((h) => h.id === leftHostIdRef.current)?.label || 'Local'} ↔ ${hostLabel}` : `SFTP: ${hostLabel}`,
           });
         }
         setHostPickerSide(null);
@@ -357,6 +365,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           toast(isBridgeError(err) ? err.message : `Connection failed: ${err}`);
         }
       } finally {
+        connectingRef.current[side] = false;
         if (mountedRef.current) {
           if (isLeft) setLeftConnecting(false);
           else setRightConnecting(false);
@@ -365,7 +374,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         }
       }
     },
-    [hosts, leftConnecting, rightConnecting, leftHostId, rightHostId, onUpdateTab, toast]
+    [hosts, onUpdateTab, toast]
   );
 
   // ── Switch Side to Local Filesystem ──
@@ -508,21 +517,86 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     toast,
   ]);
 
-  // ── Initialize on Mount ──
+  // ── Initial Mount: Connect configured panes once ──
   useEffect(() => {
-    // Left pane initializes to local if not remote
+    // Left pane
     if (tab.sftpLeftHostId) {
       connectHost('left', tab.sftpLeftHostId);
     } else {
-      loadPane('left', '', true, null, null);
+      loadPane('left', '', true, null, null).catch(() => {});
     }
 
-    // Right pane connects if hostId provided
+    // Right pane
     const targetRight = tab.sftpRightHostId || tab.sftpHostId;
-    if (targetRight && !rightSessionId && !rightConnecting) {
+    if (targetRight) {
       connectHost('right', targetRight);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Tab Active Transition: revalidate when user switches back to SFTP ──
+  const prevActiveRef = useRef(active);
+  useEffect(() => {
+    const wasActive = prevActiveRef.current;
+    prevActiveRef.current = active;
+
+    if (!wasActive && active) {
+      // Re-check Left side
+      if (leftHostIdRef.current) {
+        if (leftSessionRef.current) {
+          loadPane('left', undefined, false).catch(() => {
+            if (leftHostIdRef.current) connectHost('left', leftHostIdRef.current);
+          });
+        } else {
+          connectHost('left', leftHostIdRef.current);
+        }
+      } else if (leftEntriesRef.current.length === 0) {
+        loadPane('left', undefined, false, null, null).catch(() => {});
+      }
+
+      // Re-check Right side
+      const targetRight = rightHostIdRef.current || tab.sftpRightHostId || tab.sftpHostId;
+      if (targetRight) {
+        if (rightSessionRef.current) {
+          loadPane('right', undefined, false).catch(() => {
+            if (targetRight) connectHost('right', targetRight);
+          });
+        } else {
+          connectHost('right', targetRight);
+        }
+      }
+    }
+  }, [active, connectHost, loadPane, tab.sftpRightHostId, tab.sftpHostId]);
+
+  // ── Window Focus / App Resume from Background ──
+  useEffect(() => {
+    if (!active) return;
+    const handleResume = () => {
+      if (document.visibilityState !== 'visible') return;
+
+      // Check Right remote session
+      const targetRight = rightHostIdRef.current || tab.sftpRightHostId || tab.sftpHostId;
+      if (targetRight && rightSessionRef.current) {
+        loadPane('right', undefined, false).catch(() => {
+          if (targetRight) connectHost('right', targetRight);
+        });
+      }
+
+      // Check Left remote session
+      if (leftHostIdRef.current && leftSessionRef.current) {
+        loadPane('left', undefined, false).catch(() => {
+          if (leftHostIdRef.current) connectHost('left', leftHostIdRef.current);
+        });
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleResume);
+    return () => {
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleResume);
+    };
+  }, [active, connectHost, loadPane, tab.sftpRightHostId, tab.sftpHostId]);
 
   // ── Navigation Handlers ──
   const navigateBack = (side: 'left' | 'right') => {

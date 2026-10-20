@@ -247,7 +247,15 @@ function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mo
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.tabs)) return null;
     const tabs = (parsed.tabs as Tab[]).map((tab) => {
-      if (tab.kind === 'sftp' || !Array.isArray(tab.panes)) return tab;
+      if (tab.kind === 'sftp') {
+        return {
+          ...tab,
+          sftpSessionId: null,
+          sftpLeftSessionId: null,
+          sftpRightSessionId: null,
+        };
+      }
+      if (!Array.isArray(tab.panes)) return tab;
       return {
         ...tab,
         panes: tab.panes.map((pane) => {
@@ -396,7 +404,10 @@ export default function App() {
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
   const [tabs, setTabs] = useState<Tab[]>(() => persistedWorkspace?.tabs ?? []);
   const [activeTabId, setActiveTabId] = useState<string | null>(() => persistedWorkspace?.activeTabId ?? null);
-  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(null);
+  const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(() => {
+    if (persistedWorkspace?.mobilePage === 'hosts') return 'hosts';
+    return null;
+  });
   const [showDockerModal, setShowDockerModal] = useState(false);
   const [dockerHostId, setDockerHostId] = useState<string | null>(null);
   const [splitMenu, setSplitMenu] = useState<{
@@ -707,6 +718,32 @@ export default function App() {
     setVaults(v);
   }, []);
   useEffect(() => { if (unlocked) refresh(); }, [unlocked, refresh]);
+
+  // Keep mobile hosts panel in sync with mobilePage
+  useEffect(() => {
+    if (mobile && mobilePage === 'hosts' && panel !== 'hosts') {
+      setPanel('hosts');
+    }
+  }, [mobile, mobilePage, panel]);
+
+  // Re-sync vault & UI on app resume / window focus
+  useEffect(() => {
+    if (!unlocked) return;
+    const handleResume = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+        if (mobile && mobilePage === 'hosts') {
+          setPanel('hosts');
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', handleResume);
+    window.addEventListener('focus', handleResume);
+    return () => {
+      document.removeEventListener('visibilitychange', handleResume);
+      window.removeEventListener('focus', handleResume);
+    };
+  }, [unlocked, refresh, mobile, mobilePage]);
 
   const refreshCloudStatuses = useCallback(async (silent = false) => {
     if (!unlocked) return;

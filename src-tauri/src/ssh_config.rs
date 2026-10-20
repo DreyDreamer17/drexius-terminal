@@ -53,13 +53,41 @@ fn local_username() -> String {
         .unwrap_or_default()
 }
 
-/// Detect standard ~/.ssh/config path if it exists.
+/// Detect standard ~/.ssh/config path or Android external candidate paths if it exists.
 #[tauri::command]
 pub fn ssh_config_detect() -> AppResult<Option<String>> {
+    #[cfg(target_os = "android")]
+    {
+        let candidates = [
+            "/data/data/com.termux/files/home/.ssh/config",
+            "/storage/emulated/0/Download/config",
+            "/storage/emulated/0/Download/ssh_config",
+            "/storage/emulated/0/Documents/config",
+            "/storage/emulated/0/Documents/ssh_config",
+            "/sdcard/Download/config",
+            "/sdcard/Download/ssh_config",
+        ];
+        for c in &candidates {
+            if std::path::Path::new(c).is_file() {
+                return Ok(Some(c.to_string()));
+            }
+        }
+    }
     if let Some(home) = dirs::home_dir() {
         let p = home.join(".ssh").join("config");
         if p.is_file() {
             return Ok(Some(p.to_string_lossy().to_string()));
+        }
+    }
+    let fallback_candidates = [
+        "/storage/emulated/0/Download/config",
+        "/storage/emulated/0/Download/ssh_config",
+        "/storage/emulated/0/Documents/config",
+        "/storage/emulated/0/Documents/ssh_config",
+    ];
+    for c in &fallback_candidates {
+        if std::path::Path::new(c).is_file() {
+            return Ok(Some(c.to_string()));
         }
     }
     Ok(None)
@@ -357,6 +385,8 @@ pub fn ssh_config_preview(
     } else {
         let p = if let Some(custom) = path {
             PathBuf::from(custom)
+        } else if let Ok(Some(detected)) = ssh_config_detect() {
+            PathBuf::from(detected)
         } else if let Some(home) = dirs::home_dir() {
             home.join(".ssh").join("config")
         } else {
