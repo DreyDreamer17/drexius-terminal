@@ -84,9 +84,9 @@ jobs:
           retention-days: 14
 
       # Open a pull request with the refreshed images so a human can eyeball the
-      # diff before it lands. Skipped on forks, which have no write token.
+      # diff before it lands. Skipped on forks.
       - name: Open a pull request with the refreshed images
-        if: github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch'
+        if: github.repository == 'DreyDreamer17/drexius-terminal' && github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -103,7 +103,7 @@ jobs:
               --base master \
               --head "$branch" \
               --title "chore(docs): refresh demo screenshots" \
-              --body "Regenerated \`docs/images/\` from the browser preview build. Please eyeball the diff before merging."
+              --body "Regenerated \`docs/images/\` from the browser preview build. Please eyeball the diff before merging." || echo "::warning::GitHub Actions does not have permission to create pull requests. Enable 'Allow GitHub Actions to create and approve pull requests' in repo Settings -> Actions -> General if desired."
           else
             echo "Screenshots are unchanged."
           fi
