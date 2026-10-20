@@ -160,6 +160,7 @@ pub fn run() {
             local_pty::local_pty_write,
             local_pty::local_pty_resize,
             local_pty::local_pty_close,
+            local_pty::read_file_base64,
             // native serial port
             serial::serial_open,
             serial::serial_write,

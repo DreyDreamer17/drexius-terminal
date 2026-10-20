@@ -9,6 +9,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { ImageAddon } from '@xterm/addon-image';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import {
@@ -488,7 +489,10 @@ export const TerminalPane = memo(function TerminalPane({
         }
         lastSentSize.current = { cols: size.cols, rows: size.rows };
         if (isLocal) {
-          void bridge.resizeLocalPty(sid, size.cols, size.rows).catch(() => {});
+          const t = termRef.current as any;
+          const cw = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.width || 9);
+          const ch = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.height || 18);
+          void bridge.resizeLocalPty(sid, size.cols, size.rows, cw, ch).catch(() => {});
         } else {
           void bridge.resize(sid, size.cols, size.rows).catch(() => {});
         }
@@ -948,7 +952,10 @@ export const TerminalPane = memo(function TerminalPane({
 
         term.write(`\r\n\x1b[90m→ Spawning ${pane.customShell ? 'custom session' : 'local PTY shell'}…\x1b[0m\r\n`);
         try {
-          const sid = await bridge.spawnLocalPty(initCols, initRows, pane.customShell, undefined, onLocalEvent);
+          const t = term as any;
+          const cw = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.width || 9);
+          const ch = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.height || 18);
+          const sid = await bridge.spawnLocalPty(initCols, initRows, pane.customShell, undefined, onLocalEvent, cw, ch);
           if (dead()) {
             bridge.closeLocalPty(sid);
             return;
@@ -959,7 +966,7 @@ export const TerminalPane = memo(function TerminalPane({
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
           if (term.cols && term.rows) {
-            bridge.resizeLocalPty(sid, term.cols, term.rows);
+            bridge.resizeLocalPty(sid, term.cols, term.rows, cw, ch);
           }
           const startupCmd = pane.startupCommand || host.startupCommand;
           if (startupCmd && startupCmd.trim()) {
@@ -1299,6 +1306,23 @@ export const TerminalPane = memo(function TerminalPane({
       console.warn('Unicode11 addon failed to load:', e);
     }
 
+    // Inline image rendering (SIXEL & iTerm2 IIP graphics protocol)
+    // Configured with a strict 32MB FIFO storage limit and pixel safety cap to avoid memory hogging
+    try {
+      const imageAddon = new ImageAddon({
+        enableSizeReports: true,
+        pixelLimit: 16777216,
+        storageLimit: 64,
+        showPlaceholder: true,
+        sixelSupport: true,
+        sixelScrolling: true,
+        iipSupport: true,
+      });
+      term.loadAddon(imageAddon);
+    } catch (e) {
+      console.warn('Image addon failed to load:', e);
+    }
+
     term.open(elRef.current!);
 
     // Prefer the hardware-accelerated WebGL renderer for gapless box/block drawing.
@@ -1552,7 +1576,17 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     termRef.current = term;
-    smartWriterRef.current = new SmartTerminalWriter(term);
+    const smartWriter = new SmartTerminalWriter(term);
+    smartWriter.kittyProcessor.onDirectFile = (filePath, ctrl) => {
+      bridge.readFileBase64(filePath).then((b64) => {
+        if (!b64) return;
+        const byteLen = Math.floor((b64.length * 3) / 4);
+        const cols = ctrl.c || 'auto';
+        const rows = ctrl.r || 'auto';
+        term.write(`\x1b]1337;File=inline=1;size=${byteLen};width=${cols};height=${rows}:${b64}\x07`);
+      }).catch((e) => console.warn('Direct image file read failed:', e));
+    };
+    smartWriterRef.current = smartWriter;
     fitRef.current = fit;
     searchRef.current = search;
     setTermInstance(term);
@@ -1756,7 +1790,9 @@ export const TerminalPane = memo(function TerminalPane({
         modifiersRef.current = { ctrl: false, alt: false };
         setModifiers(modifiersRef.current);
       }
-      smartWriterRef.current?.notifyUserInput(data);
+      if (!data.startsWith('\x1b')) {
+        smartWriterRef.current?.notifyUserInput(data);
+      }
       const sid = sessionRef.current;
       if (!sid) return;
       if (isSerial) {

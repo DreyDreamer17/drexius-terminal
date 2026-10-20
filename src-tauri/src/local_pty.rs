@@ -43,11 +43,15 @@ pub struct LocalPtyRequest {
     pub rows: u32,
     pub shell: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub cell_width: Option<u32>,
+    #[serde(default)]
+    pub cell_height: Option<u32>,
 }
 
 enum PtyCmd {
     Write(Vec<u8>),
-    Resize(u32, u32),
+    Resize(u32, u32, Option<u32>, Option<u32>),
     Close,
 }
 
@@ -174,12 +178,16 @@ pub fn local_pty_spawn(
     mgr: State<'_, LocalPtyManager>,
 ) -> AppResult<String> {
     let pty_system = native_pty_system();
+    let cols = req.cols.max(10) as u16;
+    let rows = req.rows.max(5) as u16;
+    let cell_w = req.cell_width.unwrap_or(9).max(1) as u16;
+    let cell_h = req.cell_height.unwrap_or(18).max(1) as u16;
     let pair = pty_system
         .openpty(PtySize {
-            rows: req.rows.max(5) as u16,
-            cols: req.cols.max(10) as u16,
-            pixel_width: 0,
-            pixel_height: 0,
+            rows,
+            cols,
+            pixel_width: cols.saturating_mul(cell_w),
+            pixel_height: rows.saturating_mul(cell_h),
         })
         .map_err(|e| AppError::Other(format!("Failed to open PTY: {e}")))?;
 
@@ -190,6 +198,27 @@ pub fn local_pty_spawn(
     let mut cmd = CommandBuilder::new(&shell_path);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+
+    // Strip host terminal environment variables that deceive child processes (like yazi / fastfetch)
+    // into believing they are running directly inside Kitty's native C/Rust engine.
+    for key in &[
+        "KITTY_WINDOW_ID",
+        "KITTY_PID",
+        "KITTY_INSTALLATION_DIR",
+        "KITTY_PUBLIC_KEY",
+        "KITTY_LISTEN_ON",
+        "GHOSTTY_RESOURCES_DIR",
+        "WEZTERM_EXECUTABLE",
+        "ALACRITTY_LOG",
+        "WT_SESSION",
+    ] {
+        cmd.env_remove(key);
+    }
+    if let Ok(ti) = std::env::var("TERMINFO") {
+        if ti.contains("kitty") {
+            cmd.env_remove("TERMINFO");
+        }
+    }
 
     let requested_cwd = req
         .cwd
@@ -328,6 +357,8 @@ pub fn local_pty_attach(
     session_id: String,
     cols: u32,
     rows: u32,
+    cell_width: Option<u32>,
+    cell_height: Option<u32>,
     on_event: IpcChannel<PtyEvent>,
     mgr: State<'_, LocalPtyManager>,
 ) -> AppResult<bool> {
@@ -352,7 +383,7 @@ pub fn local_pty_attach(
         });
     }
     if cols > 0 && rows > 0 {
-        let _ = h.tx.try_send(PtyCmd::Resize(cols, rows));
+        let _ = h.tx.try_send(PtyCmd::Resize(cols, rows, cell_width, cell_height));
     }
     Ok(true)
 }
@@ -363,8 +394,15 @@ pub fn local_pty_write(session_id: String, data: String, mgr: State<'_, LocalPty
 }
 
 #[tauri::command]
-pub fn local_pty_resize(session_id: String, cols: u32, rows: u32, mgr: State<'_, LocalPtyManager>) -> AppResult<()> {
-    mgr.send(&session_id, PtyCmd::Resize(cols, rows))
+pub fn local_pty_resize(
+    session_id: String,
+    cols: u32,
+    rows: u32,
+    cell_width: Option<u32>,
+    cell_height: Option<u32>,
+    mgr: State<'_, LocalPtyManager>,
+) -> AppResult<()> {
+    mgr.send(&session_id, PtyCmd::Resize(cols, rows, cell_width, cell_height))
 }
 
 #[tauri::command]
@@ -382,6 +420,13 @@ pub fn local_pty_close(session_id: String, mgr: State<'_, LocalPtyManager>) -> A
         let _ = h.tx.try_send(PtyCmd::Close);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn read_file_base64(path: String) -> Result<String, String> {
+    std::fs::read(&path)
+        .map(|bytes| B64.encode(&bytes))
+        .map_err(|e| e.to_string())
 }
 
 fn pty_io_loop(
@@ -412,12 +457,16 @@ fn pty_io_loop(
                         break;
                     }
                 }
-                Ok(PtyCmd::Resize(cols, rows)) => {
+                Ok(PtyCmd::Resize(cols, rows, cell_w_opt, cell_h_opt)) => {
+                    let c = cols.max(10) as u16;
+                    let r = rows.max(5) as u16;
+                    let cw = cell_w_opt.unwrap_or(9).max(1) as u16;
+                    let ch = cell_h_opt.unwrap_or(18).max(1) as u16;
                     let _ = master.resize(PtySize {
-                        rows: rows.max(5) as u16,
-                        cols: cols.max(10) as u16,
-                        pixel_width: 0,
-                        pixel_height: 0,
+                        rows: r,
+                        cols: c,
+                        pixel_width: c.saturating_mul(cw),
+                        pixel_height: r.saturating_mul(ch),
                     });
                 }
                 Ok(PtyCmd::Close) => break,

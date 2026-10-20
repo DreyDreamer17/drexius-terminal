@@ -1,3 +1,5 @@
+import { KittyGraphicsProcessor } from './kittyGraphics';
+
 export interface TerminalModifiers { ctrl: boolean; alt: boolean }
 
 export function isTerminalModifierKey(data: string): boolean {
@@ -240,6 +242,7 @@ export function getWrappedRowsAbove(term: TerminalLike): number {
  */
 export class SmartTerminalWriter {
   private term: TerminalLike;
+  public kittyProcessor = new KittyGraphicsProcessor();
   private pendingCr = false;
   private decoder: TextDecoder | null = null;
   private editingPrompt = false;
@@ -290,6 +293,10 @@ export class SmartTerminalWriter {
 
   write(data: string | Uint8Array) {
     let chunk = typeof data === 'string' ? data : (this.decoder ??= new TextDecoder()).decode(data);
+    if (!chunk) return;
+
+    // Filter and convert Kitty graphics protocol escape codes before terminal processing
+    chunk = this.kittyProcessor.feed(chunk);
     if (!chunk) return;
 
     if (this.pendingCr) {
@@ -401,5 +408,6 @@ export class SmartTerminalWriter {
   dispose() {
     this.pendingCr = false;
     this.inFlightWrappedRows = null;
+    this.kittyProcessor.reset();
   }
 }

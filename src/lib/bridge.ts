@@ -1325,6 +1325,8 @@ export const bridge = {
     shell?: string,
     cwd?: string,
     onEvent?: (e: SessionEvent) => void,
+    cellWidth?: number,
+    cellHeight?: number,
   ): Promise<string> {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
@@ -1338,7 +1340,7 @@ export const bridge = {
           case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
-      return invoke<string>('local_pty_spawn', { req: { cols, rows, shell, cwd }, onEvent: channel });
+      return invoke<string>('local_pty_spawn', { req: { cols, rows, shell, cwd, cellWidth, cellHeight }, onEvent: channel });
     }
 
     // Sandbox local shell fallback
@@ -1385,8 +1387,13 @@ export const bridge = {
     demoSessions.get(sessionId)?.shell.input(data);
   },
 
-  async resizeLocalPty(sessionId: string, cols: number, rows: number): Promise<void> {
-    if (isTauri) return invoke('local_pty_resize', { sessionId, cols, rows });
+  async resizeLocalPty(sessionId: string, cols: number, rows: number, cellWidth?: number, cellHeight?: number): Promise<void> {
+    if (isTauri) return invoke('local_pty_resize', { sessionId, cols, rows, cellWidth, cellHeight });
+  },
+
+  async readFileBase64(path: string): Promise<string> {
+    if (isTauri) return invoke('read_file_base64', { path });
+    return '';
   },
 
   async closeLocalPty(sessionId: string): Promise<void> {

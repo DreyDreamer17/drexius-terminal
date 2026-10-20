@@ -704,7 +704,9 @@ pub fn ssh_connect(
 
     let initial_size = (req.cols, req.rows);
     let mut channel = sess.channel_session()?;
-    channel.request_pty("xterm-256color", None, Some((req.cols, req.rows, 0, 0)))?;
+    let px_w = req.cols.saturating_mul(9);
+    let px_h = req.rows.saturating_mul(18);
+    channel.request_pty("xterm-256color", None, Some((req.cols, req.rows, px_w, px_h)))?;
     channel.handle_extended_data(ExtendedData::Merge)?; // stderr → same stream
     channel.shell()?;
     // CRITICAL: Disable libssh2's user-space keepalive_send (`keepalive.c:74`).
@@ -904,8 +906,10 @@ fn write_all_nb(ch: &mut Channel, mut data: &[u8]) -> std::io::Result<()> {
 /// writes (`send_existing` at `transport.c:919`) to fail with "Address is different" (`EAGAIN`).
 fn request_pty_size_nb(ch: &mut Channel, cols: u32, rows: u32) -> std::io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
+    let px_w = cols.saturating_mul(9);
+    let px_h = rows.saturating_mul(18);
     loop {
-        match ch.request_pty_size(cols, rows, None, None) {
+        match ch.request_pty_size(cols, rows, Some(px_w), Some(px_h)) {
             Ok(()) => return Ok(()),
             Err(e) if ssh2_would_block(&e) => {
                 if Instant::now() > deadline {
