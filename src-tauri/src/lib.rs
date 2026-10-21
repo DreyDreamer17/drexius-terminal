@@ -73,6 +73,7 @@ pub fn run() {
             vault::vault_recover,
             vault::vault_reset,
             vault::vault_get_recovery_key,
+            vault::vault_regenerate_recovery_key,
             vault::vault_save_emergency_kit,
             vault::vault_lock,
             vault::vault_list,

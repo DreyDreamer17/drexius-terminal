@@ -11,6 +11,7 @@ interface Props {
   tunnels: TunnelConfig[];
   onSave: (t: TunnelConfig) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onClose?: () => void;
   toast: (m: string) => void;
 }
 
@@ -20,7 +21,7 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }: Props) {
+export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, onClose, toast }: Props) {
   const [q, setQ] = useState('');
   const [activeList, setActiveList] = useState<ActiveTunnelInfo[]>([]);
   const [editing, setEditing] = useState<TunnelConfig | null>(null);
@@ -138,25 +139,36 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, toast }:
           <h2 className="text-sm font-semibold text-white">Port Forwarding</h2>
           <p className="text-[11px] text-slate-500">Local, Remote (reverse) & SOCKS5 dynamic SSH tunnels</p>
         </div>
-        <button
-          onClick={() =>
-            setEditing({
-              id: '',
-              label: '',
-              hostId: hosts[0]?.id ?? '',
-              forwardType: 'local',
-              localHost: '127.0.0.1',
-              localPort: 8080,
-              remoteHost: 'localhost',
-              remotePort: 80,
-            })
-          }
-          disabled={!hosts.length}
-          className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/20 hover:bg-cyan-400/20 disabled:opacity-40"
-          title="New Tunnel"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() =>
+              setEditing({
+                id: '',
+                label: '',
+                hostId: hosts[0]?.id ?? '',
+                forwardType: 'local',
+                localHost: '127.0.0.1',
+                localPort: 8080,
+                remoteHost: 'localhost',
+                remotePort: 80,
+              })
+            }
+            disabled={!hosts.length}
+            className="grid h-7 w-7 place-items-center rounded-lg bg-cyan-400/10 text-cyan-300 ring-1 ring-cyan-400/20 hover:bg-cyan-400/20 disabled:opacity-40 cursor-pointer"
+            title="New Tunnel"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close panel"
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="px-3 pb-2">

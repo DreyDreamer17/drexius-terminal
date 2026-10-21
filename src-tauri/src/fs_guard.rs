@@ -220,3 +220,44 @@ pub fn ensure_local_path_not_sensitive(raw: &str) -> AppResult<PathBuf> {
     }
     Ok(full)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_paths_are_blocked() {
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        assert!(is_sensitive_path(&home.join(".ssh/id_rsa")));
+        assert!(is_sensitive_path(&home.join(".aws/credentials")));
+        assert!(is_sensitive_path(&home.join(".gnupg/secring.gpg")));
+        assert!(is_sensitive_path(&home.join("drexius.salt")));
+        assert!(is_sensitive_path(&home.join("drexius.recovery")));
+        assert!(is_sensitive_path(&home.join("drexius.vault")));
+    }
+
+    #[test]
+    fn temp_dir_and_home_subpaths_are_allowed_if_not_sensitive() {
+        let tmp = std::env::temp_dir();
+        let safe_file = tmp.join("safe_test_file.txt");
+        assert!(!is_sensitive_path(&safe_file));
+        assert!(ensure_within_roots(&safe_file).is_ok());
+    }
+
+    #[test]
+    fn sensitive_paths_fail_ensure_local_path_allowed() {
+        let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+        let ssh_key = home.join(".ssh").join("id_ed25519");
+        let res = ensure_local_path_allowed(ssh_key.to_str().unwrap());
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn outside_roots_paths_fail_ensure_local_path_in_roots() {
+        #[cfg(unix)]
+        {
+            let etc_shadow = "/etc/shadow";
+            assert!(ensure_local_path_in_roots(etc_shadow).is_err());
+        }
+    }
+}

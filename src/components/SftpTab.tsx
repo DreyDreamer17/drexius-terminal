@@ -1710,7 +1710,6 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                   onChange={(e) => setHostPickerSearch(e.target.value)}
                   disabled={!!connectingHostId}
                   placeholder="Search by label, host, username or tag..."
-                  autoFocus
                   className={cn(
                     "h-9 w-full rounded-xl bg-white/[0.05] pl-10 pr-4 text-xs text-slate-200 placeholder-slate-500 border border-white/10 focus:outline-none focus:ring-1 transition",
                     connectingHostId && "opacity-50 cursor-not-allowed"

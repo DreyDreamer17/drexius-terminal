@@ -373,9 +373,16 @@ export const bridge = {
     localStorage.removeItem('drx.os_keychain');
   },
 
-  async vaultGetRecoveryKey(): Promise<string> {
+  async vaultGetRecoveryKey(): Promise<string | null> {
     if (isTauri) return invoke('vault_get_recovery_key');
-    return 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
+    return localStorage.getItem('drx.demo.recovery_key') || 'DRX-DEMO-RECO-VERY-KEY1-2345-6789-ABCD';
+  },
+
+  async vaultRegenerateRecoveryKey(): Promise<string> {
+    if (isTauri) return invoke('vault_regenerate_recovery_key');
+    const newKey = `DRX-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    localStorage.setItem('drx.demo.recovery_key', newKey);
+    return newKey;
   },
 
   async vaultSaveEmergencyKit(content: string, filename?: string): Promise<string> {
@@ -720,7 +727,7 @@ export const bridge = {
         provider,
         apiToken,
         apiUrl: apiUrl || null,
-        allowInsecure: allowInsecure ?? true,
+        allowInsecure: allowInsecure ?? false,
       });
     }
     if (provider === 'hetzner') {
@@ -810,7 +817,7 @@ export const bridge = {
       digitaloceanToken: localStorage.getItem('drx.cloud.do'),
       proxmoxUrl: localStorage.getItem('drx.cloud.pve.url'),
       proxmoxToken: localStorage.getItem('drx.cloud.pve.token'),
-      proxmoxInsecure: localStorage.getItem('drx.cloud.pve.insecure') !== '0',
+      proxmoxInsecure: localStorage.getItem('drx.cloud.pve.insecure') === '1',
     };
   },
 

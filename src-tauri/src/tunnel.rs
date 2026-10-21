@@ -828,3 +828,59 @@ fn proxy_remote_channel(
     let channel_to_local_counter = bytes_up;
     proxy_bidirectional(local, channel, stop, local_to_channel_counter, channel_to_local_counter);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_tunnel_ports() {
+        let mut t = TunnelConfig {
+            id: "t1".into(),
+            label: "Test".into(),
+            host_id: "h1".into(),
+            forward_type: "local".into(),
+            local_host: "127.0.0.1".into(),
+            local_port: 0,
+            remote_host: "127.0.0.1".into(),
+            remote_port: 8080,
+            updated_at: 0,
+            vault_id: Some("personal".into()),
+        };
+        assert!(validate_tunnel(&t).is_err(), "local_port 0 must be rejected");
+
+        t.local_port = 8080;
+        t.remote_port = 0;
+        assert!(validate_tunnel(&t).is_err(), "remote_port 0 for local forward must be rejected");
+
+        t.remote_port = 80;
+        assert!(validate_tunnel(&t).is_ok());
+    }
+
+    #[test]
+    fn test_validate_dynamic_tunnel_security() {
+        let mut t = TunnelConfig {
+            id: "t2".into(),
+            label: "Dynamic SOCKS5".into(),
+            host_id: "h1".into(),
+            forward_type: "dynamic".into(),
+            local_host: "0.0.0.0".into(),
+            local_port: 1080,
+            remote_host: "".into(),
+            remote_port: 0,
+            updated_at: 0,
+            vault_id: Some("personal".into()),
+        };
+        // Rejects non-loopback bind address to prevent open proxy on network
+        assert!(validate_tunnel(&t).is_err());
+
+        t.local_host = "192.168.1.100".into();
+        assert!(validate_tunnel(&t).is_err());
+
+        t.local_host = "127.0.0.1".into();
+        assert!(validate_tunnel(&t).is_ok());
+
+        t.local_host = "localhost".into();
+        assert!(validate_tunnel(&t).is_ok());
+    }
+}

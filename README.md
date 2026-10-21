@@ -185,7 +185,7 @@ reverse search, a searchable scrollback, and broadcast input across every open p
 - **LAN enrollment and relay sync** — X25519 + HKDF + XChaCha20-Poly1305 pairing, and a
   self-hosted relay for ongoing sync that only ever sees ciphertext.
 - **Multi-vault and team bundles** — partition personal and team workspaces, and export
-  encrypted `.nxvault` bundles that never leak AI settings.
+  encrypted `.drxvault` bundles that never leak AI settings.
 
 ### AI workspace and OpenCode
 

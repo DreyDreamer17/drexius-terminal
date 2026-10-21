@@ -139,7 +139,7 @@ every 10 s. On reconnect with `resume: true`, the session replays `cd <cwd>`.
 * **Multi-vault:** rows carry a `vault_id` (default `personal`); team vaults are exported as an
   encrypted bundle (`EncryptedTeamVaultBundle`, XChaCha20-Poly1305 under a passphrase-derived
   key). Bundles contain hosts, keychain, tunnels and snippets — **not** AI settings.
-* **Device pairing (`pairing.rs`):** Device A shows a pairing link (`nxpair://host:port?pin=…&pk=…`) with a
+* **Device pairing (`pairing.rs`):** Device A shows a pairing link (`drxpair://host:port?pin=…&pk=…`) with a
   6-digit PIN and its X25519 public key, and runs an ephemeral listener (port 48291, falling back to an
   OS-assigned port). Device B pastes the link. The `pk` is pinned, not taken from the wire. B sends its
   ephemeral key plus an HMAC proof of PIN knowledge, bound to the ECDH secret and both public keys. The PIN

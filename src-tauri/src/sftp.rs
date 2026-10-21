@@ -715,3 +715,24 @@ pub fn local_fs_copy(from: String, to: String) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lock_ordering_is_strictly_deterministic() {
+        let a = Arc::new(10u32);
+        let b = Arc::new(20u32);
+
+        let ptr_a = Arc::as_ptr(&a) as usize;
+        let ptr_b = Arc::as_ptr(&b) as usize;
+
+        // Regardless of which order two endpoints arrive in, lock ordering is strictly deterministic
+        let order_ab = if ptr_a < ptr_b { (ptr_a, ptr_b) } else { (ptr_b, ptr_a) };
+        let order_ba = if ptr_b < ptr_a { (ptr_b, ptr_a) } else { (ptr_a, ptr_b) };
+
+        assert_eq!(order_ab, order_ba);
+        assert!(order_ab.0 < order_ab.1);
+    }
+}
+

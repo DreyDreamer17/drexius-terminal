@@ -56,6 +56,7 @@ import {
   PanelLeft,
   Columns3,
   Layers,
+  ArrowLeft,
   ArrowLeftRight,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
@@ -102,7 +103,7 @@ import { ConfirmHost, cancelPendingConfirm, confirmDialog, hasPendingConfirm } f
 import { DrawerGrip, DrawerShell, useBottomDrawer } from './components/BottomDrawer';
 import { ExtendedKeypad } from './components/ExtendedKeypad';
 import { CommandSearchModal } from './components/CommandSearchModal';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, type SettingsTab } from './components/SettingsModal';
 import {
   loadUiPreferences,
   saveUiPreferences,
@@ -296,6 +297,8 @@ export default function App() {
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [copiedRecovery, setCopiedRecovery] = useState(false);
   const [downloadedRecoveryPath, setDownloadedRecoveryPath] = useState<string | null>(null);
+  const [regeneratingRecovery, setRegeneratingRecovery] = useState(false);
+  const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const [quickUnlockPw, setQuickUnlockPw] = useState('');
   const [quickUnlockBusy, setQuickUnlockBusy] = useState(false);
   const [quickUnlockErr, setQuickUnlockErr] = useState(null as string | null);
@@ -649,6 +652,39 @@ export default function App() {
     () => localStorage.getItem('drx.vault.active') ?? 'personal'
   );
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(() => (mobile ? 'appearance' : 'general'));
+  const [returnToSettingsTab, setReturnToSettingsTab] = useState<SettingsTab | null>(null);
+
+  const openFromSettings = useCallback((action: () => void, tab: SettingsTab) => {
+    setReturnToSettingsTab(tab);
+    setSettingsTab(tab);
+    action();
+  }, []);
+
+  const handleReturnToSettings = useCallback(() => {
+    if (returnToSettingsTab) {
+      const tab = returnToSettingsTab;
+      setReturnToSettingsTab(null);
+      setSettingsTab(tab);
+      setShowSettings(true);
+    }
+  }, [returnToSettingsTab]);
+
+  const closePanel = useCallback(() => {
+    if (returnToSettingsTab) {
+      const tab = returnToSettingsTab;
+      setPanel(null);
+      setReturnToSettingsTab(null);
+      setSettingsTab(tab);
+      setShowSettings(true);
+    } else if (mobile && mobilePage === 'hosts') {
+      setPanel('hosts');
+    } else {
+      setPanel(null);
+    }
+  }, [returnToSettingsTab, mobile, mobilePage]);
+
+  const [hostFabsVisible, setHostFabsVisible] = useState(true);
   const [uiPrefs, setUiPrefs] = useState<UiPreferences>(() => loadUiPreferences());
   const [shortcuts, setShortcuts] = useState<Record<string, ShortcutBinding>>(() => loadShortcuts());
 
@@ -722,7 +758,7 @@ export default function App() {
 
   // Keep mobile hosts panel in sync with mobilePage
   useEffect(() => {
-    if (mobile && mobilePage === 'hosts' && panel !== 'hosts') {
+    if (mobile && mobilePage === 'hosts' && !panel) {
       setPanel('hosts');
     }
   }, [mobile, mobilePage, panel]);
@@ -733,7 +769,7 @@ export default function App() {
     const handleResume = () => {
       if (document.visibilityState === 'visible') {
         refresh();
-        if (mobile && mobilePage === 'hosts') {
+        if (mobile && mobilePage === 'hosts' && !panel) {
           setPanel('hosts');
         }
       }
@@ -988,6 +1024,9 @@ export default function App() {
         return;
       }
 
+      if (maximizedPaneId) {
+        setMaximizedPaneId(null);
+      }
       const newPane: Pane = { id: uid(), hostId: h.id, isLocal: h.id === LOCAL_HOST.id };
       const currentPanes = activeTab.panes;
       const activeIdx = Math.max(0, currentPanes.findIndex((p) => p.id === activeTab.activePaneId));
@@ -1086,6 +1125,9 @@ export default function App() {
   const changeActiveTabLayout = useCallback(
     (newLayout: Layout) => {
       if (!activeTab || activeTab.kind === 'sftp') return;
+      if (maximizedPaneId) {
+        setMaximizedPaneId(null);
+      }
       setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, layout: newLayout } : t)));
       toast(`Switched layout: ${getLayoutDescription(newLayout)}`);
     },
@@ -1570,6 +1612,9 @@ export default function App() {
           if (nextP) {
             setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: nextP.id } : t)));
             registry.get(nextP.id)?.term?.focus();
+            if (maximizedPaneId) {
+              setMaximizedPaneId(nextP.id);
+            }
           }
           return;
         }
@@ -1584,6 +1629,9 @@ export default function App() {
           if (prevP) {
             setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: prevP.id } : t)));
             registry.get(prevP.id)?.term?.focus();
+            if (maximizedPaneId) {
+              setMaximizedPaneId(prevP.id);
+            }
           }
           return;
         }
@@ -1802,6 +1850,7 @@ export default function App() {
 
   const rail = [
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
+    { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
     ...(uiPrefs.showDocker ? [{
       id: 'docker',
       icon: showDockerModal ? Loader2 : Boxes,
@@ -1815,7 +1864,6 @@ export default function App() {
       },
     }] : []),
     ...(uiPrefs.showTunnels ? [
-      { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
       { id: 'tunnels', icon: Network, label: 'Port Forwarding (Tunnels)', on: panel === 'tunnels', act: () => setPanel((p) => (p === 'tunnels' ? null : 'tunnels')) },
     ] : []),
     ...(uiPrefs.showSnippets ? [
@@ -1836,7 +1884,11 @@ export default function App() {
       setShowSettings(true);
       return;
     }
+    setReturnToSettingsTab(null);
     setMobilePage(page);
+    if (page === 'hosts') {
+      setHostFabsVisible(true);
+    }
     setTerminalDrawer(null);
     setPanel(page === 'hosts' ? 'hosts' : null);
     setShowAI(page === 'assistant');
@@ -2899,7 +2951,7 @@ export default function App() {
           <>
             <div
               className="max-md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm transition-opacity animate-in fade-in duration-150"
-              onClick={() => setPanel(null)}
+              onClick={closePanel}
             />
             <aside
               className="nx-mobile-panel fixed bottom-0 top-10 z-40 w-[340px] border-r border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-left-2 duration-150 flex flex-col"
@@ -2920,7 +2972,28 @@ export default function App() {
                 style={{ background: `linear-gradient(90deg, transparent, ${theme.accent}, transparent)` }}
               />
 
-              {mobile && mobilePage !== 'hosts' && <button className="nx-settings-row shrink-0 border-b border-white/10 px-4" onClick={() => { if (mobilePage === 'settings') setPanel(null); else navigateMobile('terminals'); }}>← {mobilePage === 'settings' ? 'Settings' : 'Back to terminals'}</button>}
+              {mobile && panel !== 'hosts' && (
+                <div className="flex h-11 shrink-0 items-center justify-between border-b border-white/10 bg-black/40 px-3">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300 hover:text-white transition cursor-pointer"
+                    onClick={closePanel}
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    <span>
+                      {returnToSettingsTab
+                        ? 'Back to Settings'
+                        : mobilePage === 'hosts'
+                        ? 'Back to Hosts'
+                        : 'Back to Terminals'}
+                    </span>
+                  </button>
+                  <span className="text-xs font-medium text-slate-300 capitalize">
+                    {panel === 'tunnels' ? 'Port Forwarding' : panel === 'known_hosts' ? 'Known Hosts' : panel}
+                  </span>
+                  <div className="w-12" />
+                </div>
+              )}
               <div className="relative flex flex-1 flex-col min-h-0 overflow-y-auto">
                 {panel === 'hosts' && (
                   <HostSidebar
@@ -2945,6 +3018,11 @@ export default function App() {
                     onRefreshCloudStatuses={() => refreshCloudStatuses(false)}
                     cloudRefreshing={cloudRefreshing}
                     onOpenTermuxPreset={isAndroid ? openTermuxPreset : undefined}
+                    onOpenKeychain={() => setPanel('keychain')}
+                    onOpenTunnels={() => setPanel('tunnels')}
+                    onOpenLogs={() => setPanel('logs')}
+                    onOpenDocker={() => setShowDockerModal(true)}
+                    onScrollFabVisibilityChange={setHostFabsVisible}
                     onQuickConnectSsh={handleQuickConnectSsh}
                     onClose={() => { if (mobile) navigateMobile('terminals'); else setPanel(null); }}
                     theme={theme}
@@ -2957,6 +3035,7 @@ export default function App() {
                     onSave={async (k) => { await bridge.saveKeychain(k); refresh(); }}
                     onDelete={async (id) => { await bridge.deleteKeychain(id); refresh(); }}
                     onRefresh={refresh}
+                    onClose={closePanel}
                     toast={toast}
                   />
                 )}
@@ -2966,6 +3045,7 @@ export default function App() {
                     tunnels={tunnels}
                     onSave={async (t) => { await bridge.saveTunnel(t); refresh(); }}
                     onDelete={async (id) => { await bridge.deleteTunnel(id); refresh(); }}
+                    onClose={closePanel}
                     toast={toast}
                   />
                 )}
@@ -2973,10 +3053,16 @@ export default function App() {
                   <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast} />
                 )}
                 {panel === 'logs' && (
-                  <LogsPanel toast={toast} />
+                  <LogsPanel
+                    onClose={closePanel}
+                    toast={toast}
+                  />
                 )}
                 {panel === 'known_hosts' && (
-                  <KnownHostsPanel toast={toast} />
+                  <KnownHostsPanel
+                    onClose={closePanel}
+                    toast={toast}
+                  />
                 )}
               </div>
             </aside>
@@ -2986,12 +3072,44 @@ export default function App() {
         {mobile && mobilePage === 'hosts' && panel === 'hosts' && (
           <button
             type="button"
-            className="nx-fab"
+            className={cn(
+              "nx-fab",
+              hostFabsVisible
+                ? "opacity-100 translate-y-0 scale-100 pointer-events-auto"
+                : "opacity-0 translate-y-12 scale-90 pointer-events-none"
+            )}
             aria-label="Add host"
             onClick={() => setModal({ host: null })}
             style={{ background: `linear-gradient(145deg, ${theme.accent}, ${theme.accent}c0)`, boxShadow: `0 10px 26px -8px ${theme.accent}b0, 0 3px 8px rgb(0 0 0 / .5), inset 0 1px 0 rgb(255 255 255 / .25)` }}
           >
             <Plus size={24} strokeWidth={2.5} />
+          </button>
+        )}
+
+        {mobile && unlocked && mobilePage === 'hosts' && panel === 'hosts' && !showSettings && uiPrefs.showDocker !== false && (
+          <button
+            type="button"
+            className={cn(
+              "nx-docker-fab",
+              hostFabsVisible
+                ? "opacity-100 translate-y-0 scale-100 pointer-events-auto"
+                : "opacity-0 translate-y-12 scale-90 pointer-events-none"
+            )}
+            aria-label="Docker containers"
+            title="Docker containers"
+            onClick={() => setShowDockerModal(true)}
+            style={{
+              bottom: 76,
+              borderColor: `${theme.accent}60`,
+              color: theme.accent,
+              boxShadow: `0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 0 18px ${theme.accent}33, inset 0 1px 0 rgba(255, 255, 255, 0.2)`,
+            }}
+          >
+            {showDockerModal ? (
+              <Loader2 size={22} className="animate-spin" />
+            ) : (
+              <Boxes size={22} strokeWidth={2} />
+            )}
           </button>
         )}
 
@@ -3009,7 +3127,13 @@ export default function App() {
               onTermux={isAndroid ? openTermuxPreset : undefined}
               onNew={() => setModal({ host: null })}
               onSshConfig={() => setShowSshConfig(true)}
-              onViewAll={() => setPanel('hosts')}
+              onViewAll={() => {
+                if (mobile) {
+                  navigateMobile('hosts');
+                } else {
+                  setPanel('hosts');
+                }
+              }}
             />
           )}
           {workspaceReady && tabs.map((t) => {
@@ -3043,7 +3167,7 @@ export default function App() {
                 className={cn(
                   'absolute inset-0',
                   (t.id !== activeTabId || (mobile && mobilePage !== 'terminals')) && 'invisible',
-                  isSplit ? getSplitContainerClasses(t.layout, t.panes.length) : 'flex p-0'
+                  isSplit && !currentTabMaximized ? getSplitContainerClasses(t.layout, t.panes.length) : 'flex p-0'
                 )}
               >
                 {[...t.panes]
@@ -3054,20 +3178,24 @@ export default function App() {
                     const slotIndex = t.panes.findIndex((item) => item.id === p.id);
                     const isPaneMaximized = currentTabMaximized === p.id;
                     const isPaneHidden = currentTabMaximized !== null && currentTabMaximized !== p.id;
-                    const spanClasses = isSplit && !isPaneMaximized ? getPaneSpanClasses(t.layout, slotIndex, t.panes.length) : '';
+                    const spanClasses = isSplit && !currentTabMaximized ? getPaneSpanClasses(t.layout, slotIndex, t.panes.length) : '';
                     const isDraggingThis = draggedPaneId === p.id;
                     const isDropTarget = dropTargetPaneId === p.id && draggedPaneId !== null && draggedPaneId !== p.id;
                     return (
                       <div
                         key={p.id}
                         inert={isPaneHidden || undefined}
-                        style={{ order: slotIndex }}
+                        style={{ order: currentTabMaximized ? (isPaneMaximized ? 0 : 99) : slotIndex }}
                         className={cn(
-                          'min-h-0 min-w-0 h-full w-full flex relative transition-all duration-150',
+                          'min-h-0 min-w-0 h-full w-full flex relative',
                           spanClasses,
                           isDraggingThis && 'opacity-50 ring-2 ring-cyan-400/60 ring-dashed',
                           t.activePaneId !== p.id && mobile && 'max-md:hidden',
-                          isPaneHidden && 'opacity-0 pointer-events-none select-none'
+                          isPaneHidden
+                            ? 'opacity-0 invisible pointer-events-none select-none absolute inset-0 -z-10'
+                            : isPaneMaximized
+                            ? 'flex-1 z-10'
+                            : undefined
                         )}
                       >
                       {/* Drop overlay to capture drag-and-drop swaps cleanly across xterm canvas */}
@@ -3134,7 +3262,7 @@ export default function App() {
                           active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
                           mobileHidden={t.activePaneId !== p.id}
                           hidden={isPaneHidden}
-                          showHeader={isSplit && !isPaneMaximized && !mobile}
+                          showHeader={isSplit && !currentTabMaximized && !mobile}
                           isSplit={isSplit}
                           isMaximized={isPaneMaximized}
                           onToggleMaximize={() => toggleMaximizePane(p.id)}
@@ -3657,78 +3785,151 @@ export default function App() {
         </MobileSheet>
       )}
       {mobile && settingsPicker === 'recovery_key' && (
-        <MobileSheet title="Emergency Recovery Kit" kicker="Vault Security" subtitle="Zero-knowledge recovery key for your vault" icon={KeyRound} theme={theme} onClose={() => { setSettingsPicker(null); setDownloadedRecoveryPath(null); }}>
+        <MobileSheet title="Emergency Recovery Kit" kicker="Vault Security" subtitle="Zero-knowledge recovery key for your vault" icon={KeyRound} theme={theme} onClose={() => { setSettingsPicker(null); setDownloadedRecoveryPath(null); setShowRegenConfirm(false); }}>
           <div className="space-y-4 p-2">
             <p className="text-xs text-slate-400 leading-relaxed">
               If you ever forget your master password, this 128-bit key is the <strong className="text-slate-200">ONLY way to recover your encrypted vault</strong>. Store it in a safe place.
             </p>
-            <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 text-center font-mono text-xs sm:text-sm font-bold tracking-wider select-all break-all" style={{ color: theme.accent }}>
-              {recoveryKey || 'Loading recovery key…'}
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-              <button
-                type="button"
-                disabled={!recoveryKey}
-                onClick={async () => {
-                  if (!recoveryKey) return;
-                  try {
-                    await bridge.writeClipboard(recoveryKey);
-                    setCopiedRecovery(true);
-                    setTimeout(() => setCopiedRecovery(false), 2000);
-                  } catch (_) {}
-                }}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
-              >
-                {copiedRecovery ? <Check size={14} style={{ color: theme.accent }} /> : <Copy size={14} />}
-                {copiedRecovery ? 'Copied' : 'Copy Key'}
-              </button>
+            {recoveryKey ? (
+              <>
+                <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 text-center font-mono text-xs sm:text-sm font-bold tracking-wider select-all break-all" style={{ color: theme.accent }}>
+                  {recoveryKey}
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await bridge.writeClipboard(recoveryKey);
+                        setCopiedRecovery(true);
+                        setTimeout(() => setCopiedRecovery(false), 2000);
+                      } catch (_) {}
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+                  >
+                    {copiedRecovery ? <Check size={14} style={{ color: theme.accent }} /> : <Copy size={14} />}
+                    {copiedRecovery ? 'Copied' : 'Copy Key'}
+                  </button>
 
-              {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                  {typeof navigator !== 'undefined' && typeof navigator.share === 'function' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.share({
+                            title: 'Drexius Recovery Kit',
+                            text: `DREXIUS EMERGENCY RECOVERY KEY:\n${recoveryKey}\n\nKeep this secret and offline.`,
+                          });
+                        } catch (e: any) {
+                          if (e?.name !== 'AbortError') console.warn(e);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+                    >
+                      <Share2 size={14} />
+                      <span>Share / Save</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = `=====================================================\nDREXIUS EMERGENCY RECOVERY KIT\n=====================================================\n\nEmergency Recovery Key:\n${recoveryKey}\n\nGenerated: ${new Date().toISOString()}\n=====================================================`;
+                        const path = await bridge.vaultSaveEmergencyKit(text);
+                        setDownloadedRecoveryPath(path);
+                      } catch (e) {
+                        console.error('Download failed', e);
+                      }
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+                  >
+                    {downloadedRecoveryPath ? <Check size={14} className="text-emerald-400" /> : <Download size={14} />}
+                    {downloadedRecoveryPath ? 'Saved' : 'Download .txt'}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl border border-white/10 bg-black/40 p-4 text-center space-y-3">
+                <p className="text-xs text-slate-300">
+                  No active recovery key is currently cached in this vault session.
+                </p>
                 <button
                   type="button"
-                  disabled={!recoveryKey}
+                  disabled={regeneratingRecovery}
                   onClick={async () => {
-                    if (!recoveryKey) return;
+                    setRegeneratingRecovery(true);
                     try {
-                      await navigator.share({
-                        title: 'Drexius Recovery Kit',
-                        text: `DREXIUS EMERGENCY RECOVERY KEY:\n${recoveryKey}\n\nKeep this secret and offline.`,
-                      });
-                    } catch (e: any) {
-                      if (e?.name !== 'AbortError') console.warn(e);
+                      const newKey = await bridge.vaultRegenerateRecoveryKey();
+                      setRecoveryKey(newKey);
+                    } catch (err) {
+                      console.error('Failed to generate recovery key', err);
+                    } finally {
+                      setRegeneratingRecovery(false);
                     }
                   }}
-                  className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
+                  className="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-medium text-cyan-300 hover:bg-cyan-500/20 transition"
                 >
-                  <Share2 size={14} />
-                  <span>Share / Save</span>
+                  {regeneratingRecovery ? 'Generating…' : 'Generate & Store Recovery Key'}
                 </button>
-              )}
-
-              <button
-                type="button"
-                disabled={!recoveryKey}
-                onClick={async () => {
-                  if (!recoveryKey) return;
-                  try {
-                    const text = `=====================================================\nDREXIUS EMERGENCY RECOVERY KIT\n=====================================================\n\nEmergency Recovery Key:\n${recoveryKey}\n\nGenerated: ${new Date().toISOString()}\n=====================================================`;
-                    const path = await bridge.vaultSaveEmergencyKit(text);
-                    setDownloadedRecoveryPath(path);
-                  } catch (e) {
-                    console.error('Download failed', e);
-                  }
-                }}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-medium text-slate-200 hover:bg-white/[0.08] transition"
-              >
-                {downloadedRecoveryPath ? <Check size={14} className="text-emerald-400" /> : <Download size={14} />}
-                {downloadedRecoveryPath ? 'Saved' : 'Download .txt'}
-              </button>
-            </div>
+              </div>
+            )}
 
             {downloadedRecoveryPath && (
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-200">
                 <p className="font-semibold text-white">Saved to Downloads:</p>
                 <p className="mt-1 font-mono text-[10.5px] select-all break-all text-slate-300">{downloadedRecoveryPath}</p>
+              </div>
+            )}
+
+            {recoveryKey && (
+              <div className="pt-2 border-t border-white/10">
+                {!showRegenConfirm ? (
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowRegenConfirm(true)}
+                      className="text-[11px] text-slate-400 hover:text-amber-400 transition underline underline-offset-2"
+                    >
+                      Regenerate Emergency Recovery Key
+                    </button>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs space-y-2">
+                    <p className="text-amber-200 font-medium leading-relaxed">
+                      Warning: Regenerating will immediately invalidate any previously saved, printed, or downloaded emergency recovery kits.
+                    </p>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={regeneratingRecovery}
+                        onClick={async () => {
+                          setRegeneratingRecovery(true);
+                          try {
+                            const newKey = await bridge.vaultRegenerateRecoveryKey();
+                            setRecoveryKey(newKey);
+                            setShowRegenConfirm(false);
+                            setDownloadedRecoveryPath(null);
+                          } catch (err) {
+                            console.error('Failed to regenerate recovery key', err);
+                          } finally {
+                            setRegeneratingRecovery(false);
+                          }
+                        }}
+                        className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-black hover:bg-amber-400 transition"
+                      >
+                        {regeneratingRecovery ? 'Regenerating…' : 'Yes, Replace Active Key'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowRegenConfirm(false)}
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5 transition"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -4063,9 +4264,13 @@ export default function App() {
         <TailscaleModal
           vaults={vaults}
           defaultVaultId={activeVaultId}
-          onClose={() => setShowTailscale(false)}
+          onClose={() => {
+            setShowTailscale(false);
+            handleReturnToSettings();
+          }}
           onSuccess={refresh}
           onDirectConnect={(h) => {
+            setReturnToSettingsTab(null);
             const tempHost: Host = {
               id: uid(),
               label: h.label || 'Tailscale Host',
@@ -4088,9 +4293,13 @@ export default function App() {
         <NetbirdModal
           vaults={vaults}
           defaultVaultId={activeVaultId}
-          onClose={() => setShowNetbird(false)}
+          onClose={() => {
+            setShowNetbird(false);
+            handleReturnToSettings();
+          }}
           onSuccess={refresh}
           onDirectConnect={(h) => {
+            setReturnToSettingsTab(null);
             const tempHost: Host = {
               id: uid(),
               label: h.label || 'NetBird Peer',
@@ -4113,12 +4322,16 @@ export default function App() {
         <CloudSyncModal
           vaults={vaults}
           defaultVaultId={activeVaultId}
-          onClose={() => setShowCloudSync(false)}
+          onClose={() => {
+            setShowCloudSync(false);
+            handleReturnToSettings();
+          }}
           onSuccess={(liveInstances) => {
             if (liveInstances?.length) mergeCloudStatuses(liveInstances);
             refresh();
           }}
           onDirectConnect={(h) => {
+            setReturnToSettingsTab(null);
             const tempHost: Host = {
               id: uid(),
               label: h.label || 'Cloud Instance',
@@ -4141,8 +4354,14 @@ export default function App() {
         <DockerModal
           hosts={hosts}
           activeHostId={dockerHostId || (terminalContext?.panes.find((p) => p.id === activePaneId)?.isLocal ? '__local__' : terminalContext?.panes.find((p) => p.id === activePaneId)?.hostId)}
-          onOpenTerminalWithCommand={openTerminalWithCommand}
-          onClose={() => setShowDockerModal(false)}
+          onOpenTerminalWithCommand={(cmd, hostId) => {
+            setReturnToSettingsTab(null);
+            openTerminalWithCommand(cmd, hostId);
+          }}
+          onClose={() => {
+            setShowDockerModal(false);
+            handleReturnToSettings();
+          }}
           toast={toast}
           theme={theme}
         />
@@ -4169,7 +4388,10 @@ export default function App() {
       {showPairing && (
         <DevicePairingModal
           initialTab={showPairing.initialTab}
-          onClose={() => setShowPairing(null)}
+          onClose={() => {
+            setShowPairing(null);
+            handleReturnToSettings();
+          }}
           onRefresh={refresh}
           toast={toast}
           theme={theme}
@@ -4177,15 +4399,26 @@ export default function App() {
       )}
       {showSync && (
         <SyncModal
-          onClose={() => setShowSync(false)}
-          onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
+          onClose={() => {
+            setShowSync(false);
+            handleReturnToSettings();
+          }}
+          onOpenPairing={() => {
+            setShowSync(false);
+            setShowPairing({ initialTab: 'share' });
+          }}
           toast={toast}
           theme={theme}
         />
       )}
       {showSettings && (
         <SettingsModal
-          onClose={() => setShowSettings(false)}
+          initialTab={settingsTab}
+          onTabChange={setSettingsTab}
+          onClose={() => {
+            setShowSettings(false);
+            setReturnToSettingsTab(null);
+          }}
           theme={theme}
           themeId={themeId}
           onThemeSelect={setThemeId}
@@ -4208,12 +4441,16 @@ export default function App() {
           onUiPrefsChange={handleUpdateUiPrefs}
           shortcuts={shortcuts}
           onShortcutsChange={handleUpdateShortcuts}
-          onOpenPairing={() => setShowPairing({ initialTab: 'share' })}
-          onOpenSync={() => setShowSync(true)}
-          onOpenTailscale={() => setShowTailscale(true)}
-          onOpenNetbird={() => setShowNetbird(true)}
-          onOpenCloudSync={() => setShowCloudSync(true)}
-          onOpenDocker={() => setShowDockerModal(true)}
+          onOpenPairing={(fromTab) => openFromSettings(() => setShowPairing({ initialTab: 'share' }), fromTab ?? 'sync')}
+          onOpenSync={(fromTab) => openFromSettings(() => setShowSync(true), fromTab ?? 'sync')}
+          onOpenTailscale={(fromTab) => openFromSettings(() => setShowTailscale(true), fromTab ?? 'sync')}
+          onOpenNetbird={(fromTab) => openFromSettings(() => setShowNetbird(true), fromTab ?? 'sync')}
+          onOpenCloudSync={(fromTab) => openFromSettings(() => setShowCloudSync(true), fromTab ?? 'sync')}
+          onOpenDocker={(fromTab) => openFromSettings(() => setShowDockerModal(true), fromTab ?? 'sync')}
+          onOpenKeychain={(fromTab) => openFromSettings(() => setPanel('keychain'), fromTab ?? 'security')}
+          onOpenTunnels={(fromTab) => openFromSettings(() => setPanel('tunnels'), fromTab ?? 'sync')}
+          onOpenLogs={(fromTab) => openFromSettings(() => setPanel('logs'), fromTab ?? (settingsTab === 'terminal' ? 'terminal' : 'security'))}
+          onOpenKnownHosts={(fromTab) => openFromSettings(() => setPanel('known_hosts'), fromTab ?? 'security')}
           onLockVault={lock}
           storageGranted={storageGranted}
           onRequestStoragePermission={async () => {

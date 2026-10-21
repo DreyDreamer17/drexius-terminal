@@ -141,8 +141,9 @@ This is the most important thing to understand about the architecture.
 - Your **master password** is typed into a React form and crosses IPC.
 - Your **Emergency Recovery Key** is rendered in React.
 - **Host credentials** and imported key material are entered in React forms.
-- A **Tailscale API token** is returned to the WebView **in the clear** by
-  `tailscale_get_credentials`, because the panel needs it to prefill the field.
+- **Tailscale, NetBird, and Cloud provider (Hetzner, DO, Proxmox) API tokens** are returned to the
+  WebView **in the clear** by their respective `*_get_credentials` commands, because the modal
+  settings panels need them to prefill edit fields.
 
 The one deliberate exception is **freshly generated** key material:
 `keychain_generate_and_save` creates the key pair and writes the private key into the vault
@@ -183,7 +184,7 @@ credentials in it, and do not treat it as a deployment target.
 | Host password / imported private key | React input → Rust vault write | IPC on entry; the **private key never returns** |
 | Generated private key | Rust only | Never crosses IPC |
 | AI provider API key | SQLCipher | Rust injects it at request time; the WebView only ever sees a mask |
-| Tailscale API token | SQLCipher | Returned to the WebView **in the clear** |
+| Tailscale, NetBird & Cloud API tokens | SQLCipher | Returned to the WebView in the clear to prefill modal fields |
 | Sync group seed | SQLCipher on each device | Inside the encrypted pairing archive; never in the clear on the wire |
 | Terminal output | Rust → xterm buffer | Only if you explicitly attach it to an AI prompt |
 | Relay payload | — | CBOR → padded → XChaCha20-Poly1305 → HTTP(S) |

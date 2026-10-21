@@ -1193,10 +1193,12 @@ export function AIPanel({
       return;
     }
 
+    // ARCHITECTURE.md: send last 10 turns for context to protect tokens & avoid unbounded replay
+    const cappedHistory = history.slice(-10);
     const wire: ChatMsg[] = [
       { role: 'system', content: SYSTEM_PROMPT_CHAT },
       { role: 'user', content: ctxBlock },
-      ...history.map((m) => ({
+      ...cappedHistory.map((m) => ({
         role: (m.role === 'tool' ? 'user' : m.role) as 'user' | 'assistant',
         content: m.role === 'user' ? scrub(m.content) : m.content,
       })),

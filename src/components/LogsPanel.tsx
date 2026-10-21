@@ -11,6 +11,7 @@ import {
   Code2,
   Check,
   Folder,
+  X,
 } from 'lucide-react';
 import type { ConnectionLog, CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
@@ -19,6 +20,7 @@ import { safeUid } from '../utils/uuid';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
+  onClose?: () => void;
   toast: (m: string) => void;
 }
 
@@ -42,7 +44,7 @@ const timeAgo = (ts: number): string => {
   return `${Math.floor(h / 24)}d ago`;
 };
 
-export function LogsPanel({ toast }: Props) {
+export function LogsPanel({ onClose, toast }: Props) {
   const [tab, setTab] = useState<'sessions' | 'commands'>('sessions');
   const [logs, setLogs] = useState<ConnectionLog[]>([]);
   const [commands, setCommands] = useState<CommandHistoryItem[]>([]);
@@ -201,11 +203,20 @@ export function LogsPanel({ toast }: Props) {
           </button>
           <button
             onClick={tab === 'sessions' ? handleClearSessions : handleClearCommands}
-            className="grid h-7 w-7 place-items-center rounded-lg bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/20 hover:bg-rose-500/20 transition"
+            className="grid h-7 w-7 place-items-center rounded-lg bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/20 hover:bg-rose-500/20 transition cursor-pointer"
             title={tab === 'sessions' ? 'Clear unsaved session logs' : 'Clear unstarred command history'}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close panel"
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer ml-0.5"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 

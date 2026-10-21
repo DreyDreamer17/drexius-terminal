@@ -426,8 +426,9 @@ const MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024; // 20 MB ceiling for inlin
 
 #[tauri::command]
 pub fn read_file_base64(path: String) -> Result<String, String> {
-    let p = std::path::Path::new(&path);
-    let meta = std::fs::metadata(p).map_err(|e| format!("Cannot access path: {e}"))?;
+    let canonical = crate::fs_guard::ensure_local_path_allowed(&path)
+        .map_err(|e| format!("Access denied by filesystem guardrails: {e}"))?;
+    let meta = std::fs::metadata(&canonical).map_err(|e| format!("Cannot access path: {e}"))?;
     if !meta.is_file() {
         return Err("Path is not a regular file (special devices and directories are blocked)".into());
     }
@@ -437,7 +438,7 @@ pub fn read_file_base64(path: String) -> Result<String, String> {
             MAX_INLINE_IMAGE_BYTES / (1024 * 1024)
         ));
     }
-    std::fs::read(p)
+    std::fs::read(&canonical)
         .map(|bytes| B64.encode(&bytes))
         .map_err(|e| e.to_string())
 }

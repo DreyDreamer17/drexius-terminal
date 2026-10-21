@@ -128,6 +128,7 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 }
 
 .xterm-screen { padding-bottom: 4px; }
+.nx-alternate-screen .xterm-screen { padding-bottom: 0 !important; }
 
 @keyframes nx-drift { 0%,100% { transform: translate(0,0) scale(1); } 33% { transform: translate(40px,-30px) scale(1.08); } 66% { transform: translate(-30px,20px) scale(0.95); } }
 @keyframes nx-rise { from { opacity: 0; transform: translateY(10px) scale(0.98); } to { opacity: 1; transform: none; } }
@@ -219,9 +220,29 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   .nx-connect-menu button { display: flex; width: 100%; min-height: 46px; align-items: center; gap: 12px; padding: 0 12px; border-radius: 11px; font-size: 13px; color: #e2e8f0; text-align: left; }
   .nx-connect-menu button:active { background: rgb(255 255 255 / .08); }
   /* Floating "add host" action on the Hosts page; sits above the list, below sheets (z-50+). */
-  .nx-fab { position: absolute; right: 16px; bottom: 16px; z-index: 42; display: grid; place-items: center; width: 52px; height: 52px; border-radius: 9999px; color: #050810; transition: transform .15s ease, filter .15s ease; }
+  .nx-fab {
+    position: absolute; right: 16px; bottom: 16px; z-index: 42;
+    display: grid; place-items: center;
+    width: 52px; height: 52px; border-radius: 9999px;
+    color: #050810;
+    transition: transform .28s cubic-bezier(0.16, 1, 0.3, 1), opacity .22s ease, filter .15s ease;
+  }
   .nx-fab:active { transform: scale(.93); filter: brightness(1.08); }
   [data-keyboard="true"] .nx-fab { display: none; }
+  /* Floating Docker container action on mobile screens */
+  .nx-docker-fab {
+    position: absolute; right: 16px; z-index: 42;
+    display: grid; place-items: center;
+    width: 50px; height: 50px; border-radius: 9999px;
+    background: linear-gradient(145deg, rgba(14, 20, 35, 0.94), rgba(7, 12, 22, 0.98));
+    border: 1.5px solid;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    transition: transform .28s cubic-bezier(0.16, 1, 0.3, 1), opacity .22s ease, filter .15s ease, bottom .2s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .nx-docker-fab:active { transform: scale(.92); filter: brightness(1.15); }
+  [data-keyboard="true"] .nx-docker-fab { display: none; }
   .nx-mobile-panel { position: absolute; inset: 0 !important; width: 100%; border-right: 0; box-shadow: none !important; }
   .nx-mobile-ai:not(.hidden) { position: absolute; inset: 0; width: 100% !important; z-index: 20; background: #0b1019; border: 0; }
   /* Drawers over the terminal screen (AI, snippets): anchored to the bottom of the workspace, height = detent.

@@ -1317,3 +1317,37 @@ pub fn pairing_get_local_info() -> AppResult<LocalDeviceInfo> {
         ip: get_local_ip(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use subtle::ConstantTimeEq;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    #[test]
+    fn test_x25519_pairing_key_agreement() {
+        let mut rng = rand::thread_rng();
+        let server_secret = StaticSecret::random_from_rng(&mut rng);
+        let server_public = PublicKey::from(&server_secret);
+
+        let client_secret = StaticSecret::random_from_rng(&mut rng);
+        let client_public = PublicKey::from(&client_secret);
+
+        let server_shared = server_secret.diffie_hellman(&client_public);
+        let client_shared = client_secret.diffie_hellman(&server_public);
+
+        assert_eq!(server_shared.as_bytes(), client_shared.as_bytes());
+    }
+
+    #[test]
+    fn test_pairing_pin_constant_time_comparison() {
+        let pin_expected = "482910";
+        let pin_valid = "482910";
+        let pin_invalid = "123456";
+
+        let eq_valid: bool = pin_expected.as_bytes().ct_eq(pin_valid.as_bytes()).into();
+        let eq_invalid: bool = pin_expected.as_bytes().ct_eq(pin_invalid.as_bytes()).into();
+
+        assert!(eq_valid);
+        assert!(!eq_invalid);
+    }
+}

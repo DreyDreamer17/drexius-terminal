@@ -1,6 +1,6 @@
 import { useMobile } from '../hooks/useMobile';
 import { MobileSheet } from './MobileSheet';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   Search,
   Plus,
@@ -24,6 +24,8 @@ import {
   Globe2,
   Cloud,
   RefreshCw,
+  Activity,
+  Boxes,
 } from 'lucide-react';
 import type { CloudInstance, Host, Vault } from '../lib/types';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
@@ -54,6 +56,11 @@ interface Props {
   onRefreshCloudStatuses?: () => void;
   cloudRefreshing?: boolean;
   onOpenTermuxPreset?: () => void;
+  onOpenKeychain?: () => void;
+  onOpenTunnels?: () => void;
+  onOpenLogs?: () => void;
+  onOpenDocker?: () => void;
+  onScrollFabVisibilityChange?: (visible: boolean) => void;
   onQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
   onClose?: () => void;
   theme?: DrexiusTheme;
@@ -121,6 +128,11 @@ export function HostSidebar({
   onRefreshCloudStatuses,
   cloudRefreshing,
   onOpenTermuxPreset,
+  onOpenKeychain,
+  onOpenTunnels,
+  onOpenLogs,
+  onOpenDocker,
+  onScrollFabVisibilityChange,
   onQuickConnectSsh,
   onClose,
   theme,
@@ -129,6 +141,25 @@ export function HostSidebar({
   const [actionHost, setActionHost] = useState<Host | null>(null);
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
+  const lastScrollTop = useRef(0);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!mobile || !onScrollFabVisibilityChange) return;
+    const current = e.currentTarget.scrollTop;
+    if (current <= 16) {
+      onScrollFabVisibilityChange(true);
+      lastScrollTop.current = current;
+      return;
+    }
+    const delta = current - lastScrollTop.current;
+    if (delta > 8) {
+      onScrollFabVisibilityChange(false);
+      lastScrollTop.current = current;
+    } else if (delta < -8) {
+      onScrollFabVisibilityChange(true);
+      lastScrollTop.current = current;
+    }
+  };
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0f141f';
@@ -369,10 +400,69 @@ export function HostSidebar({
                   <Cloud className="h-3.5 w-3.5 text-sky-400" />
                   <span>Cloud Fleet Sync…</span>
                 </button>
+                {onOpenKeychain && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onOpenKeychain();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition border-t border-white/5 pt-2 mt-1"
+                  >
+                    <KeyRound className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Keychain Identities…</span>
+                  </button>
+                )}
+                {onOpenTunnels && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onOpenTunnels();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                  >
+                    <Network className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Port Forwarding & Tunnels…</span>
+                  </button>
+                )}
+                {onOpenLogs && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onOpenLogs();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                  >
+                    <Activity className="h-3.5 w-3.5 text-rose-400" />
+                    <span>Command & Session Logs…</span>
+                  </button>
+                )}
+                {onOpenDocker && (
+                  <button
+                    onClick={() => {
+                      setShowMenu(false);
+                      onOpenDocker();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-left text-slate-300 hover:bg-white/10 hover:text-white transition"
+                  >
+                    <Boxes className="h-3.5 w-3.5 text-cyan-400" />
+                    <span>Docker Containers…</span>
+                  </button>
+                )}
               </div>
             </>
           )}
         </div>
+
+        {onOpenKeychain && (
+          <button
+            onClick={onOpenKeychain}
+            title="Manage Keychain Identities (SSH Keys & Passwords)"
+            className="flex h-7 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-xs text-slate-300 hover:bg-cyan-400/10 hover:border-cyan-400/30 hover:text-cyan-200 transition cursor-pointer"
+          >
+            <KeyRound className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Keychain</span>
+          </button>
+        )}
 
         <button
           onClick={onOpenTerminal}
@@ -478,7 +568,7 @@ export function HostSidebar({
         </div>
       </MobileSheet>}
       {/* Host List */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 max-md:pb-24">
+      <div onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 max-md:pb-24">
         {groups.map(([g, list]) => {
           const isCloudGroup =
             g === 'Hetzner Cloud' ||

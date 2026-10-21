@@ -360,6 +360,10 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL,
     line_count INTEGER NOT NULL, source TEXT, copied_at INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS vault_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 fn now() -> i64 {
@@ -806,6 +810,13 @@ impl Vault {
                         // predate the crash. Regenerate it and show the code.
                         let (code, normalized) = generate_recovery_code();
                         self.save_recovery_envelope(&key, &normalized)?;
+                        if let Some(ref u) = *self.inner.lock() {
+                            let _ = u.conn.execute(
+                                "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+                                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                params![&code],
+                            );
+                        }
                         self.clear_rekey_artifacts();
                         self.clear_saved_credentials();
                         return Ok(Some(code));
@@ -819,6 +830,13 @@ impl Vault {
                 if !self.recovery_path().exists() {
                     let (code, normalized) = generate_recovery_code();
                     self.save_recovery_envelope(&key, &normalized)?;
+                    if let Some(ref u) = *self.inner.lock() {
+                        let _ = u.conn.execute(
+                            "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+                             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            params![&code],
+                        );
+                    }
                     return Ok(Some(code));
                 }
                 // No pending rekey: a leftover snapshot is stale.
@@ -840,6 +858,13 @@ impl Vault {
                 write_atomic(&self.salt_path(), &new_salt)?;
                 let (code, normalized) = generate_recovery_code();
                 self.save_recovery_envelope(&key2, &normalized)?;
+                if let Some(ref u) = *self.inner.lock() {
+                    let _ = u.conn.execute(
+                        "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        params![&code],
+                    );
+                }
                 self.clear_rekey_artifacts();
                 if let Some(ref mut u) = *self.inner.lock() {
                     u.root_key = key2;
@@ -876,11 +901,14 @@ impl Vault {
             Ok(c) => c,
             Err(_) => return Ok(false),
         };
-        let key_hex = hex::encode(&key);
-        if conn.pragma_update(None, "key", &key_hex).is_err() {
+        let key_hex = Zeroizing::new(hex::encode(&key));
+        if conn.execute_batch(&format!(
+            "PRAGMA key = \"x'{}'\"; PRAGMA cipher_page_size = 4096; PRAGMA cipher_memory_security = ON;",
+            key_hex.as_str()
+        )).is_err() {
             return Ok(false);
         }
-        let valid = conn.execute_batch("SELECT count(*) FROM sqlite_master;").is_ok();
+        let valid = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0)).is_ok();
         Ok(valid)
     }
 
@@ -932,6 +960,11 @@ impl Vault {
                 self.clear_rekey_artifacts();
                 if let Some(ref mut u) = *self.inner.lock() {
                     u.root_key = new_key;
+                    let _ = u.conn.execute(
+                        "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+                         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        params![&fresh_code],
+                    );
                 }
                 self.clear_saved_credentials();
                 return Ok(fresh_code);
@@ -984,6 +1017,11 @@ impl Vault {
 
         if let Some(ref mut u) = *self.inner.lock() {
             u.root_key = new_key;
+            let _ = u.conn.execute(
+                "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![&new_code],
+            );
         }
 
         self.clear_saved_credentials();
@@ -994,6 +1032,28 @@ impl Vault {
         let key = self.root_key()?;
         let (code, normalized) = generate_recovery_code();
         self.save_recovery_envelope(&key, &normalized)?;
+        let g = self.inner.lock();
+        let u = g.as_ref().ok_or(AppError::VaultLocked)?;
+        u.conn.execute(
+            "INSERT INTO vault_metadata(key, value) VALUES('recovery_code', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![&code],
+        ).map_err(|e| AppError::Other(e.to_string()))?;
+        Ok(code)
+    }
+
+    pub fn get_recovery_key(&self) -> AppResult<Option<String>> {
+        let g = self.inner.lock();
+        let u = g.as_ref().ok_or(AppError::VaultLocked)?;
+        let code: Option<String> = u
+            .conn
+            .query_row(
+                "SELECT value FROM vault_metadata WHERE key = 'recovery_code'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| AppError::Other(e.to_string()))?;
         Ok(code)
     }
 
@@ -1301,7 +1361,12 @@ pub async fn vault_reset(app: tauri::AppHandle, vault: State<'_, Vault>) -> AppR
 }
 
 #[tauri::command]
-pub fn vault_get_recovery_key(vault: State<'_, Vault>) -> AppResult<String> {
+pub fn vault_get_recovery_key(vault: State<'_, Vault>) -> AppResult<Option<String>> {
+    vault.get_recovery_key()
+}
+
+#[tauri::command]
+pub fn vault_regenerate_recovery_key(vault: State<'_, Vault>) -> AppResult<String> {
     vault.regenerate_recovery_key()
 }
 
@@ -3215,18 +3280,50 @@ pub async fn team_vault_import(
                 host_id_map.insert(h.id.clone(), host_id);
             }
 
+            // Pass 1.5: import keychain entries belonging to this team bundle
+            let mut keychain_id_map: HashMap<String, String> = HashMap::new();
+            for kc in &payload.keychain {
+                let is_collision = tx.query_row(
+                    "SELECT vault_id FROM keychain WHERE id = ?1",
+                    [&kc.id],
+                    |r| r.get::<_, String>(0),
+                ).optional()?;
+
+                let has_secret: bool = tx.query_row(
+                    "SELECT 1 FROM keychain WHERE id = ?1 AND (password IS NOT NULL OR private_key IS NOT NULL)",
+                    [&kc.id],
+                    |_| Ok(true),
+                ).optional()?.unwrap_or(false);
+
+                let kc_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    kc.id.clone()
+                };
+                keychain_id_map.insert(kc.id.clone(), kc_id.clone());
+
+                tx.execute(
+                    "INSERT INTO keychain(id, label, username, auth_method, vault_id, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4, vault_id=?5, updated_at=?6",
+                    params![kc_id, kc.label, kc.username, kc.auth_method.as_str(), payload.vault.id, kc.updated_at],
+                )?;
+                log_sync_mutation(&tx, "keychain", &kc_id)?;
+            }
+
             // Pass 2: write host records with internal references fully mapped
             for h in &payload.hosts {
                 let host_id = host_id_map.get(&h.id).cloned().unwrap_or_else(|| h.id.clone());
 
                 // Imported hosts should only bind to keychains that exist within this team vault
                 let safe_keychain_id = if let Some(ref kid) = h.keychain_id {
+                    let mapped_kid = keychain_id_map.get(kid).unwrap_or(kid);
                     let exists: bool = tx.query_row(
                         "SELECT 1 FROM keychain WHERE id = ?1 AND vault_id = ?2",
-                        params![kid, payload.vault.id],
+                        params![mapped_kid, payload.vault.id],
                         |_| Ok(true),
                     ).optional()?.unwrap_or(false);
-                    if exists { Some(kid.clone()) } else { None }
+                    if exists { Some(mapped_kid.clone()) } else { None }
                 } else {
                     None
                 };
@@ -3696,6 +3793,41 @@ mod tests {
         // 5. Cleanup
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(vault.salt_path());
+        let _ = std::fs::remove_file(db_path.with_extension("vault-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("vault-shm"));
+    }
+
+    #[test]
+    fn test_locked_vault_verify_password_and_recovery_metadata() {
+        let unique = format!("test_verify_{}.vault", rand::random::<u64>());
+        let db_path = std::env::temp_dir().join(unique);
+        let vault = Vault::new(db_path.clone());
+        let pw = "correct-master-password-1234";
+
+        // Unlock creates the vault and generates initial recovery key in vault_metadata
+        let rec = vault.unlock(pw).expect("initial unlock").expect("recovery code generated");
+        assert!(rec.starts_with("DRX-"));
+
+        // When unlocked, get_recovery_key returns the saved recovery code
+        let fetched = vault.get_recovery_key().expect("fetch recovery key");
+        assert_eq!(fetched, Some(rec.clone()));
+
+        // Verification while unlocked
+        assert_eq!(vault.verify_password(pw).expect("verify unlocked correct"), true);
+        assert_eq!(vault.verify_password("wrong-pw-1234").expect("verify unlocked wrong"), false);
+
+        // Lock the vault
+        vault.lock();
+        assert_eq!(vault.is_unlocked(), false);
+
+        // Verification while LOCKED (uses raw hex key PRAGMA)
+        assert_eq!(vault.verify_password(pw).expect("verify locked correct"), true);
+        assert_eq!(vault.verify_password("wrong-pw-1234").expect("verify locked wrong"), false);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(vault.salt_path());
+        let _ = std::fs::remove_file(vault.recovery_path());
         let _ = std::fs::remove_file(db_path.with_extension("vault-wal"));
         let _ = std::fs::remove_file(db_path.with_extension("vault-shm"));
     }

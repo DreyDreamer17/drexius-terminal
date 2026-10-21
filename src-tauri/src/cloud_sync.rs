@@ -777,7 +777,7 @@ pub fn cloud_get_credentials(vault: State<'_, Vault>) -> AppResult<CloudCredenti
         let proxmox_token = get_key("cloud_proxmox_token")?;
         let proxmox_insecure = get_key("cloud_proxmox_insecure")?
             .map(|v| v != "0" && v != "false")
-            .unwrap_or(true);
+            .unwrap_or(false);
 
         Ok(CloudCredentials {
             hetzner_token,

@@ -179,7 +179,7 @@ relay before you pair.
 1. On the **existing** device: click the QR icon in the icon rail → **Direct Device
    Pairing** → **Share Vault**.
 2. You get a **6-digit PIN**, a **QR code**, and a pairing link
-   (`nxpair://host:port?pin=…&pk=…`). The device listens on LAN port **48291**, falling
+   (`drxpair://host:port?pin=…&pk=…`). The device listens on LAN port **48291**, falling
    back to an OS-assigned port.
 3. On the **new** device: choose **Link to Device**, then scan the QR or paste the link.
 4. Type the PIN to confirm.

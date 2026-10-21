@@ -29,10 +29,11 @@ interface Props {
   onSave: (k: KeychainInput) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRefresh?: () => Promise<void>;
+  onClose?: () => void;
   toast: (m: string) => void;
 }
 
-export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRefresh, toast }: Props) {
+export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRefresh, onClose, toast }: Props) {
   const targetVault = activeVaultId && activeVaultId !== 'all' ? activeVaultId : 'personal';
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<KeychainInput | null>(null);
@@ -236,6 +237,15 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
           >
             <Plus className="h-4 w-4" />
           </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close panel"
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition ml-0.5 cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 

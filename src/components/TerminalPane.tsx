@@ -302,6 +302,11 @@ export const TerminalPane = memo(function TerminalPane({
   const [matchCase, setMatchCase] = useState(false);
   const [matchRegex, setMatchRegex] = useState(false);
   const [matchWholeWord, setMatchWholeWord] = useState(false);
+  const [isAlternateBuffer, setIsAlternateBuffer] = useState(false);
+
+  useEffect(() => {
+    refreshTerminal();
+  }, [isAlternateBuffer, refreshTerminal]);
 
   const isSerial = pane.kind === 'serial';
   const isLocal = (!isSerial) && (pane.isLocal || host.id === '__local__' || host.id.startsWith('local'));
@@ -1311,6 +1316,33 @@ export const TerminalPane = memo(function TerminalPane({
       theme: theme.xterm,
     });
     const fit = new FitAddon();
+    // NexusTerminal uses a zero-width overlay scrollbar (and no scrollbar in alternate buffer mode),
+    // so we override proposeDimensions to avoid subtracting FitAddon's hardcoded 14px scrollbar reservation.
+    fit.proposeDimensions = () => {
+      if (!term.element || !term.element.parentElement) return undefined;
+      const core = (term as any)._core;
+      const dims = core?._renderService?.dimensions;
+      if (!dims || dims.css.cell.width === 0 || dims.css.cell.height === 0) return undefined;
+
+      const parent = term.element.parentElement;
+      const parentStyle = window.getComputedStyle(parent);
+      const parentHeight = parseInt(parentStyle.getPropertyValue('height')) || parent.clientHeight;
+      const parentWidth = Math.max(0, parseInt(parentStyle.getPropertyValue('width')) || parent.clientWidth);
+
+      const elemStyle = window.getComputedStyle(term.element);
+      const padTop = parseInt(elemStyle.getPropertyValue('padding-top')) || 0;
+      const padBottom = parseInt(elemStyle.getPropertyValue('padding-bottom')) || 0;
+      const padLeft = parseInt(elemStyle.getPropertyValue('padding-left')) || 0;
+      const padRight = parseInt(elemStyle.getPropertyValue('padding-right')) || 0;
+
+      const availHeight = parentHeight - (padTop + padBottom);
+      const availWidth = parentWidth - (padLeft + padRight);
+
+      return {
+        cols: Math.max(2, Math.floor(availWidth / dims.css.cell.width)),
+        rows: Math.max(1, Math.floor(availHeight / dims.css.cell.height)),
+      };
+    };
     const search = new SearchAddon();
     term.loadAddon(fit);
     term.loadAddon(search);
@@ -1351,7 +1383,7 @@ export const TerminalPane = memo(function TerminalPane({
     // Note: @xterm/addon-canvas only supports xterm 5 and crashes on dispose under
     // xterm 6, so it must not be used as a fallback here.
     try {
-      const webgl = new WebglAddon();
+      const webgl = new WebglAddon(true);
       webglRef.current = webgl;
       webgl.onContextLoss(() => {
         console.warn('WebGL context lost; terminal switched to the DOM renderer');
@@ -1687,6 +1719,16 @@ export const TerminalPane = memo(function TerminalPane({
     const dCursor = term.onCursorMove(updateGhostPos);
     const dRender = term.onRender(updateGhostPos);
     const dScroll = term.onScroll(updateGhostPos);
+    const dBuffer = term.buffer.onBufferChange((buf) => {
+      const isAlt = buf.type === 'alternate';
+      setIsAlternateBuffer(isAlt);
+      if (isAlt) {
+        setGhostPos(null);
+      }
+    });
+    if (term.buffer.active.type === 'alternate') {
+      setIsAlternateBuffer(true);
+    }
 
     term.attachCustomKeyEventHandler((e) => {
       if (mobile) {
@@ -1983,20 +2025,25 @@ export const TerminalPane = memo(function TerminalPane({
       },
     });
 
+    let roFrame: number | null = null;
     const fitAndScheduleResize = () => {
-      if (hiddenRef.current || document.visibilityState === 'hidden') return;
-      const el = elRef.current;
-      if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
-      try {
-        fit.fit();
-        term.refresh(0, Math.max(0, (term.rows || 1) - 1));
-        updateGhostPos();
-        if (term.cols && term.rows) {
-          scheduleResize(term.cols, term.rows);
+      if (roFrame !== null) cancelAnimationFrame(roFrame);
+      roFrame = requestAnimationFrame(() => {
+        roFrame = null;
+        if (hiddenRef.current || document.visibilityState === 'hidden') return;
+        const el = elRef.current;
+        if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
+        try {
+          fit.fit();
+          term.refresh(0, Math.max(0, (term.rows || 1) - 1));
+          updateGhostPos();
+          if (term.cols && term.rows) {
+            scheduleResize(term.cols, term.rows);
+          }
+        } catch {
+          /* not visible */
         }
-      } catch {
-        /* not visible */
-      }
+      });
     };
 
     const ro = new ResizeObserver(fitAndScheduleResize);
@@ -2035,10 +2082,15 @@ export const TerminalPane = memo(function TerminalPane({
       helperTextarea?.removeEventListener('paste', handleHelperPaste as EventListener);
       helperTextarea?.removeEventListener('focus', handleFocus);
       helperTextarea?.removeEventListener('blur', handleBlur);
+      if (roFrame !== null) {
+        cancelAnimationFrame(roFrame);
+        roFrame = null;
+      }
       ro.disconnect();
       dCursor.dispose();
       dRender.dispose();
       dScroll.dispose();
+      dBuffer.dispose();
       dBinary.dispose();
       // Only close serial ports on component unmount; SSH and local PTY sessions
       // stay alive in the Rust backend across WebView/layout remounts and are
@@ -2143,11 +2195,13 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, [active, mobile]);
 
-  useLayoutEffect(() => {
-    if (!hidden) {
+  const prevHiddenRef = useRef(hidden);
+  useEffect(() => {
+    if (prevHiddenRef.current && !hidden) {
       refreshTerminal();
     }
-  }, [isMaximized, showHeader, hidden, refreshTerminal]);
+    prevHiddenRef.current = hidden;
+  }, [hidden, refreshTerminal]);
 
   // Handle Ctrl+F / Cmd+F for search inside active terminal
   useEffect(() => {
@@ -2388,8 +2442,8 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }}
       className={cn(
-        'flex min-h-0 min-w-0 flex-col overflow-hidden transition-[border-color,box-shadow]',
-        isMaximized ? 'absolute inset-0 z-30' : 'relative h-full w-full',
+        'flex min-h-0 min-w-0 flex-col overflow-hidden',
+        'relative h-full w-full',
         mobileHidden && 'max-md:hidden',
         isSplit && !isMaximized
           ? cn(
@@ -2751,7 +2805,16 @@ export const TerminalPane = memo(function TerminalPane({
         </div>
       )}
 
-      <div ref={containerRef} className={cn('relative min-h-0 flex-1 isolate z-0', showHeader ? 'px-2 pt-2' : 'max-md:px-1 max-md:py-1 px-3 py-1.5')}
+      <div
+        ref={containerRef}
+        className={cn(
+          'relative min-h-0 flex-1 isolate z-0',
+          isAlternateBuffer
+            ? 'p-0 nx-alternate-screen'
+            : showHeader
+            ? 'px-2 pt-2'
+            : 'max-md:px-1 max-md:py-1 px-3 py-1.5'
+        )}
         // A half-open drawer takes the bottom of the pane; the rows refit to what is left so the prompt stays in view.
         // Mirrors the drawer's settled min-height (min(320px, 70%)) so the terminal never runs under it.
         style={mobile && active && drawerInset > 0 ? { flex: `0 0 ${(1 - drawerInset) * 100}%`, maxHeight: 'max(calc(100% - 320px), 30%)' } : undefined}>

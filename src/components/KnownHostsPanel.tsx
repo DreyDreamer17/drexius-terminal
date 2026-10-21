@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, ShieldCheck, Trash2, RotateCw, Fingerprint } from 'lucide-react';
+import { Search, ShieldCheck, Trash2, RotateCw, Fingerprint, X } from 'lucide-react';
 import type { KnownHost } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
+  onClose?: () => void;
   toast: (m: string) => void;
 }
 
-export function KnownHostsPanel({ toast }: Props) {
+export function KnownHostsPanel({ onClose, toast }: Props) {
   const [hosts, setHosts] = useState<KnownHost[]>([]);
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
@@ -60,13 +61,24 @@ export function KnownHostsPanel({ toast }: Props) {
           <h2 className="text-sm font-semibold text-white">Known Hosts</h2>
           <p className="text-[11px] text-slate-500">Pinned SSH server public key fingerprints</p>
         </div>
-        <button
-          onClick={refresh}
-          className="grid h-7 w-7 place-items-center rounded-lg bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white"
-          title="Refresh known hosts"
-        >
-          <RotateCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={refresh}
+            className="grid h-7 w-7 place-items-center rounded-lg bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+            title="Refresh known hosts"
+          >
+            <RotateCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Close panel"
+              className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="px-3 pb-2">
