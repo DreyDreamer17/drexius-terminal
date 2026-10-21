@@ -748,11 +748,11 @@ export default function App() {
       bridge.listTunnels(),
       bridge.listVaults(),
     ]);
-    setHosts(h);
-    setSnippets(s);
-    setKeychain(k);
-    setTunnels(tun);
-    setVaults(v);
+    setHosts((prev) => (JSON.stringify(prev) === JSON.stringify(h) ? prev : h));
+    setSnippets((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
+    setKeychain((prev) => (JSON.stringify(prev) === JSON.stringify(k) ? prev : k));
+    setTunnels((prev) => (JSON.stringify(prev) === JSON.stringify(tun) ? prev : tun));
+    setVaults((prev) => (JSON.stringify(prev) === JSON.stringify(v) ? prev : v));
   }, []);
   useEffect(() => { if (unlocked) refresh(); }, [unlocked, refresh]);
 
@@ -763,7 +763,7 @@ export default function App() {
     }
   }, [mobile, mobilePage, panel]);
 
-  // Re-sync vault & UI on app resume / window focus
+  // Re-sync vault & UI on app resume (mobile or visibilitychange)
   useEffect(() => {
     if (!unlocked) return;
     const handleResume = () => {
@@ -775,10 +775,14 @@ export default function App() {
       }
     };
     document.addEventListener('visibilitychange', handleResume);
-    window.addEventListener('focus', handleResume);
+    if (mobile) {
+      window.addEventListener('focus', handleResume);
+    }
     return () => {
       document.removeEventListener('visibilitychange', handleResume);
-      window.removeEventListener('focus', handleResume);
+      if (mobile) {
+        window.removeEventListener('focus', handleResume);
+      }
     };
   }, [unlocked, refresh, mobile, mobilePage]);
 

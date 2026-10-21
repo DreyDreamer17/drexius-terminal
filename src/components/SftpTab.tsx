@@ -534,15 +534,11 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Tab Active Transition: revalidate when user switches back to SFTP ──
-  const prevActiveRef = useRef(active);
-  useEffect(() => {
-    const wasActive = prevActiveRef.current;
-    prevActiveRef.current = active;
-
-    if (!wasActive && active) {
-      // Re-check Left side
-      if (leftHostIdRef.current) {
+  // ── Ensure Connected: Only connects or reloads IF pane is configured but currently empty ──
+  const ensureConnectedIfEmpty = useCallback(() => {
+    // Re-check Left side: only connect if configured but no files currently displayed
+    if (leftHostIdRef.current) {
+      if (leftEntriesRef.current.length === 0 && !connectingRef.current.left) {
         if (leftSessionRef.current) {
           loadPane('left', undefined, false).catch(() => {
             if (leftHostIdRef.current) connectHost('left', leftHostIdRef.current);
@@ -550,13 +546,15 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         } else {
           connectHost('left', leftHostIdRef.current);
         }
-      } else if (leftEntriesRef.current.length === 0) {
-        loadPane('left', undefined, false, null, null).catch(() => {});
       }
+    } else if (leftEntriesRef.current.length === 0 && !leftLoading) {
+      loadPane('left', '', true, null, null).catch(() => {});
+    }
 
-      // Re-check Right side
-      const targetRight = rightHostIdRef.current || tab.sftpRightHostId || tab.sftpHostId;
-      if (targetRight) {
+    // Re-check Right side: only connect if configured but no files currently displayed
+    const targetRight = rightHostIdRef.current || tab.sftpRightHostId || tab.sftpHostId;
+    if (targetRight) {
+      if (rightEntriesRef.current.length === 0 && !connectingRef.current.right) {
         if (rightSessionRef.current) {
           loadPane('right', undefined, false).catch(() => {
             if (targetRight) connectHost('right', targetRight);
@@ -566,37 +564,32 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         }
       }
     }
-  }, [active, connectHost, loadPane, tab.sftpRightHostId, tab.sftpHostId]);
+  }, [connectHost, loadPane, tab.sftpRightHostId, tab.sftpHostId, leftLoading]);
 
-  // ── Window Focus / App Resume from Background ──
+  // ── Tab Active Transition: connect only if pane has no files loaded ──
+  const prevActiveRef = useRef(active);
+  useEffect(() => {
+    const wasActive = prevActiveRef.current;
+    prevActiveRef.current = active;
+
+    if (!wasActive && active) {
+      ensureConnectedIfEmpty();
+    }
+  }, [active, ensureConnectedIfEmpty]);
+
+  // ── App Resume from Background: reconnect only if connection dropped and no files displayed ──
   useEffect(() => {
     if (!active) return;
     const handleResume = () => {
       if (document.visibilityState !== 'visible') return;
-
-      // Check Right remote session
-      const targetRight = rightHostIdRef.current || tab.sftpRightHostId || tab.sftpHostId;
-      if (targetRight && rightSessionRef.current) {
-        loadPane('right', undefined, false).catch(() => {
-          if (targetRight) connectHost('right', targetRight);
-        });
-      }
-
-      // Check Left remote session
-      if (leftHostIdRef.current && leftSessionRef.current) {
-        loadPane('left', undefined, false).catch(() => {
-          if (leftHostIdRef.current) connectHost('left', leftHostIdRef.current);
-        });
-      }
+      ensureConnectedIfEmpty();
     };
 
     document.addEventListener('visibilitychange', handleResume);
-    window.addEventListener('focus', handleResume);
     return () => {
       document.removeEventListener('visibilitychange', handleResume);
-      window.removeEventListener('focus', handleResume);
     };
-  }, [active, connectHost, loadPane, tab.sftpRightHostId, tab.sftpHostId]);
+  }, [active, ensureConnectedIfEmpty]);
 
   // ── Navigation Handlers ──
   const navigateBack = (side: 'left' | 'right') => {
