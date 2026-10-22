@@ -397,9 +397,25 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
 
         let sync_seed = crate::sync::sync_seed_if_configured(c)?;
         let (sync_relay_url, sync_relay_token) = if sync_seed.is_some() {
-            let url: Option<String> = c.query_row(
-                "SELECT value FROM ai_settings WHERE key='sync_relay_url'", [], |r| r.get(0),
-            ).optional()?;
+            let url: Option<String> = c
+                .query_row(
+                    "SELECT value FROM ai_settings WHERE key='sync_relay_url'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .map(|raw_url: String| {
+                    let lan_ip = get_local_ip();
+                    if lan_ip != "127.0.0.1" && !lan_ip.is_empty() {
+                        if let Ok(mut parsed) = reqwest::Url::parse(&raw_url) {
+                            if matches!(parsed.host_str(), Some("localhost") | Some("127.0.0.1")) {
+                                let _ = parsed.set_host(Some(&lan_ip));
+                                return parsed.to_string().trim_end_matches('/').to_string();
+                            }
+                        }
+                    }
+                    raw_url
+                });
             let token: Option<String> = c.query_row(
                 "SELECT value FROM ai_settings WHERE key='sync_device_token'", [], |r| r.get(0),
             ).optional()?;
@@ -627,13 +643,27 @@ fn restore_full_vault(
             )?;
         }
 
-        // 7. Record paired device
-        let dev_id = uuid::Uuid::new_v4().to_string();
-        tx.execute(
-            "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![dev_id, peer_name, "desktop", peer_ip, peer_pk, now, now],
-        )?;
+        // 7. Record paired device (upsert by peer_name + peer_ip so re-pairing doesn't duplicate)
+        let existing_peer_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM paired_devices WHERE revoked_at IS NULL AND device_name = ?1 AND ip_address = ?2 ORDER BY last_sync DESC LIMIT 1",
+                params![peer_name, peer_ip],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing_peer_id {
+            tx.execute(
+                "UPDATE paired_devices SET public_key=?1, last_sync=?2 WHERE id=?3",
+                params![peer_pk, now, id],
+            )?;
+        } else {
+            let dev_id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![dev_id, peer_name, "desktop", peer_ip, peer_pk, now, now],
+            )?;
+        }
 
         if let Some(ref seed) = archive.sync_seed {
             tx.execute(
@@ -996,30 +1026,49 @@ async fn handle_incoming_pairing(
                     .encrypt(nonce, archive_json.as_ref())
                     .map_err(|e| AppError::Crypto(format!("Pairing encryption failed: {e}")))?;
 
-                // Record peer in paired_devices. Peers with a stable device id are
-                // upserted so re-pairing updates one row per device (and the blocklist
-                // check above stays authoritative).
+                // Record peer in paired_devices. Peers with a stable device id or matching
+                // (device_name, device_type, ip_address) are upserted so re-pairing updates
+                // one row per device (and the blocklist check above stays authoritative).
                 let now = chrono::Utc::now().timestamp();
                 let peer_device_id = req.client_device_id.trim().to_string();
+                let peer_ip = peer_addr.ip().to_string();
                 let _ = vault.with(|c| {
-                    if peer_device_id.is_empty() {
+                    let existing_id: Option<String> = if !peer_device_id.is_empty() {
+                        c.query_row(
+                            "SELECT id FROM paired_devices
+                             WHERE revoked_at IS NULL
+                               AND (device_id = ?1 OR (device_name = ?2 AND device_type = ?3 AND ip_address = ?4))
+                             ORDER BY last_sync DESC LIMIT 1",
+                            params![peer_device_id, req.client_device_name, req.client_os, peer_ip],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                    } else {
+                        c.query_row(
+                            "SELECT id FROM paired_devices
+                             WHERE revoked_at IS NULL
+                               AND device_name = ?1 AND device_type = ?2 AND ip_address = ?3
+                             ORDER BY last_sync DESC LIMIT 1",
+                            params![req.client_device_name, req.client_os, peer_ip],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                    };
+
+                    if let Some(id) = existing_id {
+                        c.execute(
+                            "UPDATE paired_devices
+                             SET device_name=?1, device_type=?2, ip_address=?3, public_key=?4, last_sync=?5,
+                                 device_id=CASE WHEN ?6 != '' THEN ?6 ELSE device_id END
+                             WHERE id=?7",
+                            params![req.client_device_name, req.client_os, peer_ip, req.client_public_key, now, peer_device_id, id],
+                        )?;
+                    } else {
                         let dev_id = uuid::Uuid::new_v4().to_string();
                         c.execute(
                             "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync, device_id, revoked_at)
-                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, '', NULL)",
-                            params![dev_id, req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, now],
-                        )?;
-                    } else {
-                        c.execute(
-                            "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync, device_id, revoked_at)
-                             SELECT lower(hex(randomblob(16))), ?1, ?2, ?3, ?4, ?5, ?5, ?6, NULL
-                             WHERE NOT EXISTS (SELECT 1 FROM paired_devices WHERE device_id = ?6 AND revoked_at IS NULL)",
-                            params![req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, peer_device_id],
-                        )?;
-                        c.execute(
-                            "UPDATE paired_devices SET device_name=?1, device_type=?2, ip_address=?3, public_key=?4, last_sync=?5
-                             WHERE device_id=?6 AND revoked_at IS NULL",
-                            params![req.client_device_name, req.client_os, peer_addr.ip().to_string(), req.client_public_key, now, peer_device_id],
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+                            params![dev_id, req.client_device_name, req.client_os, peer_ip, req.client_public_key, now, now, peer_device_id],
                         )?;
                     }
                     Ok(())
@@ -1250,6 +1299,25 @@ pub async fn pairing_join_client(
 #[tauri::command]
 pub fn pairing_list_devices(vault: State<'_, Vault>) -> AppResult<Vec<PairedDevice>> {
     vault.with(|c| {
+        // Deduplicate older non-revoked entries for the same (device_name, device_type, ip_address),
+        // keeping only the most recent pairing record per device.
+        let _ = c.execute(
+            "DELETE FROM paired_devices
+             WHERE revoked_at IS NULL
+               AND ip_address IS NOT NULL AND ip_address != ''
+               AND EXISTS (
+                   SELECT 1 FROM paired_devices p2
+                   WHERE p2.revoked_at IS NULL
+                     AND p2.device_name = paired_devices.device_name
+                     AND p2.device_type = paired_devices.device_type
+                     AND p2.ip_address = paired_devices.ip_address
+                     AND (p2.last_sync > paired_devices.last_sync
+                          OR (p2.last_sync = paired_devices.last_sync AND p2.paired_at > paired_devices.paired_at)
+                          OR (p2.last_sync = paired_devices.last_sync AND p2.paired_at = paired_devices.paired_at AND p2.rowid > paired_devices.rowid))
+               )",
+            [],
+        );
+
         let mut st = c.prepare(
             "SELECT id, device_name, device_type, ip_address, public_key, paired_at, last_sync,
                     device_id, revoked_at
@@ -1271,6 +1339,18 @@ pub fn pairing_list_devices(vault: State<'_, Vault>) -> AppResult<Vec<PairedDevi
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(items)
+    })
+}
+
+/// Permanently removes a paired device entry from the list.
+#[tauri::command]
+pub fn pairing_remove_device(id: String, vault: State<'_, Vault>) -> AppResult<()> {
+    vault.with(|c| {
+        let changed = c.execute("DELETE FROM paired_devices WHERE id = ?1", params![id])?;
+        if changed == 0 {
+            return Err(AppError::Other("Device not found.".into()));
+        }
+        Ok(())
     })
 }
 

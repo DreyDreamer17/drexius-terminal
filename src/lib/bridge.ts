@@ -1652,6 +1652,12 @@ export const bridge = {
     ];
   },
 
+  async pairingRemoveDevice(id: string): Promise<void> {
+    if (isTauri) return invoke('pairing_remove_device', { id });
+    const list = await this.pairingListDevices();
+    localStorage.setItem('drx.paired.devices', JSON.stringify(list.filter((d) => d.id !== id)));
+  },
+
   async pairingRevokeDevice(id: string): Promise<void> {
     if (isTauri) return invoke('pairing_revoke_device', { id });
     const list = await this.pairingListDevices();

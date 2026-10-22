@@ -239,6 +239,14 @@ export function SyncModal({
     }
   };
 
+  const formatErr = (e: unknown): string => {
+    if (e instanceof Error) return e.message;
+    if (e && typeof e === 'object' && 'message' in e && typeof (e as any).message === 'string') {
+      return (e as any).message;
+    }
+    return String(e);
+  };
+
   const save = async () => {
     try {
       if (isTauri) {
@@ -254,7 +262,9 @@ export function SyncModal({
       toast(url ? 'Relay settings saved — pair your other devices via LAN to share its sync key' : 'Relay sync disabled');
       onClose();
     } catch (e) {
-      toast(`Could not save relay settings: ${String(e)}`);
+      const msg = formatErr(e);
+      setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
+      toast(`Could not save relay settings: ${msg}`);
     }
   };
 
@@ -275,7 +285,7 @@ export function SyncModal({
       });
       toast('Encrypted sync completed');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = formatErr(e);
       setStatus((s) => ({ ...(s ?? { lastSync: null, deviceId: '?' }), lastError: msg }));
       toast(`Sync failed: ${msg}`);
     } finally {

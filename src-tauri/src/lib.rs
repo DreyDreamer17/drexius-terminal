@@ -203,6 +203,7 @@ pub fn run() {
             pairing::pairing_stop_host,
             pairing::pairing_join_client,
             pairing::pairing_list_devices,
+            pairing::pairing_remove_device,
             pairing::pairing_revoke_device,
             pairing::pairing_allow_device,
             pairing::pairing_get_local_info,

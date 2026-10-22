@@ -368,13 +368,32 @@ pub fn sync_status(engine: tauri::State<'_, SyncEngine>, vault: tauri::State<'_,
     out
 }
 
-/// M5: the device token is sent as a bearer credential, so relays must use https.
-/// Plain http is accepted only for loopback (local development relays).
+/// M5: the device token is sent as a bearer credential, so public internet relays must use https.
+/// Plain http is accepted for loopback and private LAN / VPN addresses (local development & LAN relays).
 pub fn relay_url_is_allowed(url: &str) -> bool {
     match reqwest::Url::parse(url.trim()) {
         Ok(u) => match u.scheme() {
             "https" => true,
-            "http" => matches!(u.host_str(), Some("localhost") | Some("127.0.0.1") | Some("[::1]")),
+            "http" => match u.host_str() {
+                Some("localhost") | Some("127.0.0.1") | Some("[::1]") => true,
+                Some(h) if h.ends_with(".local") || h.ends_with(".lan") => true,
+                Some(h) => {
+                    let trimmed = h.trim_matches(|c| c == '[' || c == ']');
+                    match trimmed.parse::<std::net::IpAddr>() {
+                        Ok(std::net::IpAddr::V4(ip)) => {
+                            ip.is_loopback()
+                                || ip.is_private()
+                                || ip.is_link_local()
+                                || (ip.octets()[0] == 100 && (ip.octets()[1] & 0b1100_0000) == 64)
+                        }
+                        Ok(std::net::IpAddr::V6(ip)) => {
+                            ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00
+                        }
+                        Err(_) => false,
+                    }
+                }
+                None => false,
+            },
             _ => false,
         },
         Err(_) => false,
@@ -392,7 +411,7 @@ pub fn sync_configure(
         .filter(|u| !u.is_empty());
     if let Some(ref url) = relay_url {
         if !relay_url_is_allowed(url) {
-            let msg = "Sync relay must use https:// (http:// is allowed only for localhost).";
+            let msg = "Public sync relays must use https:// (http:// is allowed only for localhost or private LAN IPs).";
             engine.status.lock().last_error = Some(msg.into());
             return Err(AppError::Network(msg.into()));
         }

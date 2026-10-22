@@ -12,6 +12,7 @@ import {
   RefreshCw,
   ArrowRight,
   Trash2,
+  Ban,
   CheckCircle2,
   Share2,
   Lock,
@@ -266,6 +267,16 @@ export function DevicePairingModal({
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     await executeJoin(joinLink);
+  };
+
+  const handleRemove = async (id: string, name: string) => {
+    try {
+      await bridge.pairingRemoveDevice(id);
+      setDevices((prev) => prev.filter((d) => d.id !== id));
+      toast(`Removed ${name} from list`);
+    } catch (err: any) {
+      toast(`Failed to remove: ${err?.message || err}`);
+    }
   };
 
   const handleRevoke = async (id: string, name: string) => {
@@ -673,7 +684,7 @@ export function DevicePairingModal({
                     >
                       <div className="flex items-center gap-2.5">
                         <div className="grid h-7 w-7 place-items-center rounded-lg bg-white/5 text-slate-300">
-                          {d.deviceType.toLowerCase().includes('phone') || d.deviceType.toLowerCase().includes('mobile') ? (
+                          {['phone', 'mobile', 'android', 'ios'].some((k) => d.deviceType.toLowerCase().includes(k)) ? (
                             <Smartphone className="h-4 w-4" />
                           ) : (
                             <Laptop className="h-4 w-4" />
@@ -693,23 +704,32 @@ export function DevicePairingModal({
                           </div>
                         </div>
                       </div>
-                      {d.revokedAt != null ? (
+                      <div className="flex items-center gap-1">
+                        {d.revokedAt != null ? (
+                          <button
+                            onClick={() => handleAllow(d.id, d.deviceName)}
+                            title="Allow this device to pair again (still requires a fresh PIN)"
+                            className="rounded p-1.5 text-slate-500 hover:bg-emerald-500/20 hover:text-emerald-300 transition"
+                          >
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleRevoke(d.id, d.deviceName)}
+                            title="Block this device from pairing again"
+                            className="rounded p-1.5 text-slate-500 hover:bg-amber-500/20 hover:text-amber-300 transition"
+                          >
+                            <Ban className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         <button
-                          onClick={() => handleAllow(d.id, d.deviceName)}
-                          title="Allow this device to pair again (still requires a fresh PIN)"
-                          className="rounded p-1 text-slate-500 hover:bg-emerald-500/20 hover:text-emerald-300 transition"
-                        >
-                          <ShieldCheck className="h-3.5 w-3.5" />
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleRevoke(d.id, d.deviceName)}
-                          title="Revoke: block this device from pairing again"
-                          className="rounded p-1 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition"
+                          onClick={() => handleRemove(d.id, d.deviceName)}
+                          title="Remove from device list"
+                          className="rounded p-1.5 text-slate-500 hover:bg-rose-500/20 hover:text-rose-300 transition"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
-                      )}
+                      </div>
                     </div>
                   ))}
                 </div>
