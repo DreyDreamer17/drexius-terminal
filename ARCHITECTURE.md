@@ -64,6 +64,8 @@ drexiusterminal/
         ├── serial.rs                   # Hardware serial port connections (UART) via serialport
         ├── opencode.rs                 # OpenCode runner: isolated scratch workspace, streaming, security filters
         ├── tailscale.rs                # Tailscale tailnet discovery (CLI or REST API) → import hosts
+        ├── netbird.rs                  # NetBird mesh network discovery (CLI or API token) → import hosts
+        ├── cloud_sync.rs               # Cloud fleet sync (Hetzner, DigitalOcean, Proxmox VE) → import hosts
         └── docker.rs                   # Container listing / lifecycle / logs, locally or over SSH
 ```
 
@@ -214,7 +216,7 @@ ai_client::ai_stream_proxy
 * **OpenCode CLI (`opencode.rs`):** runs a local or remote `opencode` binary; remote execution uses an SSH exec channel streaming JSON events and falls back to local execution if OpenCode is unavailable on the host. Local runs use `~/DrexiusTerminal/ai-workspace`. Tool permissions are deny-by-default: read-only and autonomous modes differ in which actions they allow/ask for; sensitive paths and dangerous shell patterns are denied. This is policy-based filtering, not a sandbox or a guarantee against every shell escape.
 * **Serial UART (`serial.rs`):** enumerates local serial hardware ports and bridges interactive terminal streams over configurable baud rates, data bits, parity, and stop bits directly to xterm.js.
 
-## 7. Tailscale & Docker
+## 7. Tailscale, NetBird, Cloud Sync & Docker
 
 * **Tailscale (`tailscale.rs`):** discovers the tailnet two ways. `tailscale_detect_cli` shells out
   to the local `tailscale status --json` (5 s timeout, absent on Android, where it returns `None`),
@@ -228,6 +230,20 @@ ai_client::ai_stream_proxy
   the first place — but it is not the masking treatment `ai_configs_list` applies to provider keys.
   In browser demo mode the token is kept in `localStorage` in plain text, which the demo sandbox
   already documents as not being a security boundary.
+* **NetBird (`netbird.rs`):** discovers peers across a NetBird mesh overlay network via either the
+  local CLI (`netbird status --json`, 5 s timeout) or the NetBird Management API (`/api/peers`).
+  Supports custom Management URLs for self-hosted NetBird control planes. Peers are imported into
+  the vault as host profiles with `netbird_import` along with assigned tags, latency metrics, and
+  connection mode (direct P2P vs relayed). Credentials and custom management URLs are stored in the
+  encrypted vault (`ai_settings`).
+* **Cloud Fleet Sync (`cloud_sync.rs`):** queries cloud provider APIs using read-only API tokens
+  stored in the encrypted SQLCipher vault:
+  * **Hetzner Cloud:** `/v1/servers` (captures IPv4/IPv6, server status, datacenter/region, labels).
+  * **DigitalOcean:** `/v2/droplets` (captures public/private networks, droplet tags, status).
+  * **Proxmox VE:** `/api2/json/cluster/resources?type=vm` (captures QEMU VMs and LXC containers, node
+    affinities, VM IDs, and running status, skipping cluster templates).
+  Instances can be bulk-imported into target host groups with `cloud_sync_import`, with automatic
+  credential prefilling and live server power status reporting (`running`, `active`, `stopped`, `off`).
 * **Docker (`docker.rs`):** lists containers (`docker ps -a --no-trunc --format '{{json .}}'`) and
   runs lifecycle actions (`start`/`stop`/`restart`/`pause`/`unpause`, allowlisted) plus
   `docker logs --tail N`. The target is either the local machine — `sh -c`, via the local terminal

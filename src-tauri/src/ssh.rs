@@ -265,7 +265,7 @@ fn parse_banner_os(banner: Option<&str>) -> Option<String> {
 fn detect_remote_os(sess: &Session, banner: Option<&str>) -> Option<String> {
     let mut ch = sess.channel_session().ok()?;
     // Short timeout so a hung exec doesn't stall connect.
-    let _ = sess.set_timeout(4000);
+    sess.set_timeout(4000);
     ch.exec("cat /etc/os-release 2>/dev/null; echo ---; uname -o 2>/dev/null; uname -s 2>/dev/null").ok()?;
     let mut out = String::new();
     let _ = (&mut ch).take(64 * 1024).read_to_string(&mut out);
@@ -438,7 +438,7 @@ fn connect_proxy_command(
             Ok(s)
         }
         Err(e) => {
-            let _ = TcpStream::connect(&local_addr);
+            let _ = TcpStream::connect(local_addr);
             Err(AppError::Network(format!("Failed to connect to proxy process stream: {e}")))
         }
     }
@@ -493,7 +493,7 @@ fn open_authenticated_inner(
                     Err(_) => return,
                 };
                 let _ = client_stream.set_nodelay(true);
-                let _ = jump_sess_clone.set_blocking(false);
+                jump_sess_clone.set_blocking(false);
                 // Non-blocking open: EAGAIN means "still in flight" — retry
                 // until the deadline instead of dropping the connection.
                 let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -521,7 +521,7 @@ fn open_authenticated_inner(
             }
             Err(e) => {
                 // Connect failed - poke listener so thread doesn't hang indefinitely
-                let _ = TcpStream::connect(&local_addr);
+                let _ = TcpStream::connect(local_addr);
                 return Err(AppError::Network(format!("Failed to connect to jump proxy: {e}")));
             }
         }
@@ -725,7 +725,7 @@ pub fn ssh_connect(
 
     // Best-effort OS fingerprint (exec channel, ~ms). Never fails connect.
     let os = detect_remote_os(&sess, banner.as_deref());
-    let _ = sess.set_timeout(20_000);
+    sess.set_timeout(20_000);
     // Persist so the sidebar shows the icon without reconnecting.
     if let Some(ref os_id) = os {
         let _ = vault.set_host_os(&host.id, os_id);
@@ -946,11 +946,12 @@ fn request_pty_size_nb(ch: &mut Channel, cols: u32, rows: u32) -> std::io::Resul
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            Err(e) => return Err(std::io::Error::new(ErrorKind::Other, e.to_string())),
+            Err(e) => return Err(std::io::Error::other(e.to_string())),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn io_loop(
     _sess: Session,
     mut ch: Channel,

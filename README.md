@@ -170,6 +170,10 @@ reverse search, a searchable scrollback, and broadcast input across every open p
 
 - **Tailscale** — discover tailnet devices from the local `tailscale` CLI or the Tailscale
   REST API, and import them as host profiles in one step.
+- **NetBird** — discover overlay mesh network peers via the local `netbird` CLI or Management REST
+  API (including self-hosted control planes), importing them directly into your vault with latency and tag info.
+- **Cloud Fleet Sync** — import cloud instances, droplets, and LXC containers directly from Hetzner
+  Cloud, DigitalOcean, and Proxmox VE clusters with real-time power state tracking.
 - **Docker** — list containers, run lifecycle actions and read logs, on the local machine or
   on any saved SSH host.
 

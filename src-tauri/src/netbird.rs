@@ -189,7 +189,7 @@ pub fn parse_netbird_api_json(raw: &str) -> AppResult<Vec<NetbirdDevice>> {
         });
     }
 
-    devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    devices.sort_by_key(|a| a.name.to_lowercase());
     Ok(devices)
 }
 

@@ -594,6 +594,7 @@ fn build_client(
 /// destination with the wrong address override attached. Pinned clients are
 /// also short-lived by design — a long-lived one would keep using a stale
 /// address for a provider whose DNS legitimately rotates.
+#[allow(clippy::type_complexity)]
 fn client_for(
     proxy_url: Option<&str>,
     timeout_secs: Option<u64>,

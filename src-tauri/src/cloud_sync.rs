@@ -218,7 +218,7 @@ pub fn parse_hetzner_response(body: &str) -> AppResult<Vec<CloudInstance>> {
         });
     }
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     Ok(out)
 }
 
@@ -338,7 +338,7 @@ pub fn parse_digitalocean_response(body: &str) -> AppResult<Vec<CloudInstance>> 
         });
     }
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     Ok(out)
 }
 
@@ -424,7 +424,7 @@ pub fn parse_proxmox_resources(
 
         let mut tags = vec!["proxmox".to_string(), vm_type.clone(), node.clone()];
         if let Some(raw_tags) = res.tags {
-            for t in raw_tags.split(|c| c == ';' || c == ',' || c == ' ') {
+            for t in raw_tags.split([';', ',', ' ']) {
                 let trimmed = t.trim();
                 if !trimmed.is_empty() && !tags.iter().any(|x| x == trimmed) {
                     tags.push(trimmed.to_string());
@@ -458,7 +458,7 @@ pub fn parse_proxmox_resources(
         ));
     }
 
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort_by_key(|a| a.0);
     Ok(out)
 }
 
@@ -717,7 +717,7 @@ pub fn cloud_import_instances(
                 } else {
                     item.username.trim().to_string()
                 },
-                auth_method: prev.auth_method.clone(),
+                auth_method: prev.auth_method,
                 group: prev.group.clone().or_else(|| Some(group_name.to_string())),
                 tags,
                 color: prev.color.clone().or_else(|| Some(group_color.to_string())),

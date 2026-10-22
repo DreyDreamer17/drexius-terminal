@@ -237,7 +237,7 @@ pub fn tunnel_start(
                     .map_err(|e| AppError::Network(format!("Failed to bind {bind_addr}: {e}")))?;
                 listener
                     .set_nonblocking(true)
-                    .map_err(|e| AppError::Io(e))?;
+                    .map_err(AppError::Io)?;
                 let local_port = tunnel.local_port;
                 spawn_local_worker(
                     id.clone(),
@@ -395,7 +395,7 @@ fn spawn_remote_worker(
             // Use non-blocking mode on the session so we can poll Listener::accept
             // cooperatively and react promptly to the stop flag. We poll with a
             // short sleep rather than blocking indefinitely.
-            let _ = session.set_blocking(false);
+            session.set_blocking(false);
             loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -510,10 +510,10 @@ pub fn ai_tunnel_start(
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|e| AppError::Network(format!("Failed to bind local port: {e}")))?;
 
-        let local_port = listener.local_addr().map_err(|e| AppError::Io(e))?.port();
+        let local_port = listener.local_addr().map_err(AppError::Io)?.port();
         listener
             .set_nonblocking(true)
-            .map_err(|e| AppError::Io(e))?;
+            .map_err(AppError::Io)?;
 
         let cfg = TunnelConfig {
             id: tunnel_id.clone(),
@@ -644,7 +644,7 @@ fn handle_client(
                     cfg.remote_port,
                     e
                 );
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                return Err(std::io::Error::other(e.to_string()));
             }
         }
     };

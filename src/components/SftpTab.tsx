@@ -213,6 +213,19 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     filename: string;
     progress: number;
   } | null>(null);
+  const isCancelledRef = useRef<boolean>(false);
+
+  const handleCancelTransfer = async () => {
+    isCancelledRef.current = true;
+    if (leftSessionId) {
+      await bridge.sftpCancel(leftSessionId).catch(() => {});
+    }
+    if (rightSessionId) {
+      await bridge.sftpCancel(rightSessionId).catch(() => {});
+    }
+    setTransferStatus(null);
+    toast('Transfer cancelled');
+  };
 
   // Text file editor
   const [editingFile, setEditingFile] = useState<(EditorFile & { side: 'left' | 'right' }) | null>(null);
@@ -727,8 +740,10 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       return;
     }
 
+    isCancelledRef.current = false;
     try {
       for (let i = 0; i < items.length; i++) {
+        if (isCancelledRef.current) break;
         const entry = items[i];
         const targetDestPath = `${toPath.replace(/\/$/, '')}/${entry.name}`;
         const labelName = items.length > 1 ? `${entry.name} (${i + 1}/${items.length})` : entry.name;
@@ -769,16 +784,25 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           );
         }
       }
-      if (items.length === 1) {
-        toast(`Transferred ${items[0].name} to ${toLabel}`);
-      } else {
-        toast(`Transferred ${items.length} items to ${toLabel}`);
+      if (!isCancelledRef.current) {
+        if (items.length === 1) {
+          toast(`Transferred ${items[0].name} to ${toLabel}`);
+        } else {
+          toast(`Transferred ${items.length} items to ${toLabel}`);
+        }
       }
       await loadPane(toSide, toPath, false);
     } catch (err) {
-      toast(isBridgeError(err) ? err.message : `Transfer failed: ${err}`);
+      if (isCancelledRef.current || String(err).toLowerCase().includes('cancel')) {
+        toast('Transfer cancelled');
+      } else {
+        toast(isBridgeError(err) ? err.message : `Transfer failed: ${err}`);
+      }
     } finally {
-      setTimeout(() => setTransferStatus(null), 400);
+      setTimeout(() => {
+        setTransferStatus(null);
+        isCancelledRef.current = false;
+      }, 300);
     }
   };
 
@@ -2004,9 +2028,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       {/* ── Transfer Float Toast / Banner ── */}
       {transferStatus && (
         <div className="absolute top-3 right-6 z-50 flex items-center gap-3 rounded-xl border border-cyan-500/40 bg-slate-900/95 px-4 py-2.5 shadow-2xl backdrop-blur-md animate-in fade-in slide-in-from-top-2 duration-150">
-          <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />
+          <Loader2 className="h-4 w-4 animate-spin text-cyan-400 shrink-0" />
           <div className="flex flex-col text-xs">
-            <span className="font-medium text-slate-100">
+            <span className="font-medium text-slate-100 max-w-[200px] sm:max-w-xs truncate">
               {transferStatus.type === 'upload' ? 'Transferring' : 'Downloading'} {transferStatus.filename}
             </span>
             <div className="mt-1 h-1.5 w-40 overflow-hidden rounded-full bg-slate-800">
@@ -2016,9 +2040,18 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               />
             </div>
           </div>
-          <span className="font-mono text-[11px] text-cyan-300">
+          <span className="font-mono text-[11px] text-cyan-300 shrink-0">
             {Math.round(transferStatus.progress * 100)}%
           </span>
+          <button
+            type="button"
+            onClick={handleCancelTransfer}
+            title="Cancel transfer"
+            aria-label="Cancel transfer"
+            className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white/10 hover:text-red-400 focus:outline-none focus:ring-1 focus:ring-red-400"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 

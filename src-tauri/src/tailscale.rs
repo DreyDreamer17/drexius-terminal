@@ -270,7 +270,7 @@ pub async fn tailscale_fetch_api(
         });
     }
 
-    devices.sort_by(|a, b| a.hostname.to_lowercase().cmp(&b.hostname.to_lowercase()));
+    devices.sort_by_key(|a| a.hostname.to_lowercase());
     Ok(devices)
 }
 

@@ -26,6 +26,7 @@ pub struct OpencodeHostStatus {
     pub binary_path: Option<String>,
 }
 
+#[allow(clippy::type_complexity)]
 static REMOTE_PROBE_CACHE: OnceLock<Mutex<HashMap<String, (bool, Option<String>, Instant)>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -191,7 +192,7 @@ pub async fn detect_remote_opencode(host_id: &str, vault: &Vault) -> Result<Opti
     let (host, secret) = vault.host_with_secret(host_id).map_err(|e| e.to_string())?;
     let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
         .map_err(|e| format!("Failed to reach host: {}", e))?;
-    let _ = sess.set_timeout(3500);
+    sess.set_timeout(3500);
     let mut ch = sess
         .channel_session()
         .map_err(|e| format!("Failed to open channel: {}", e))?;
@@ -1024,6 +1025,7 @@ fn build_remote_cd_prefix(cwd: Option<&str>) -> String {
 }
 
 /// Stream OpenCode execution remotely over SSH.
+#[allow(clippy::too_many_arguments)]
 async fn opencode_stream_remote(
     host: HostProfile,
     secret: HostSecret,
@@ -1050,7 +1052,7 @@ async fn opencode_stream_remote(
 
     let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
         .map_err(|e| format!("Failed to authenticate SSH for remote OpenCode: {}", e))?;
-    let _ = sess.set_timeout(30_000);
+    sess.set_timeout(30_000);
 
     let mut ch = sess
         .channel_session()
@@ -1335,6 +1337,7 @@ async fn opencode_stream_local(
 /// Dynamically routes to remote OpenCode on the active host if installed,
 /// otherwise falls back to local execution.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn opencode_stream(
     prompt: String,
     model: String,

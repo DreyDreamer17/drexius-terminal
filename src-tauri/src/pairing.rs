@@ -920,6 +920,7 @@ pub async fn pairing_start_host(
     Ok(installed_info)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_incoming_pairing(
     stream: &mut tokio::net::TcpStream,
     peer_addr: std::net::SocketAddr,
@@ -948,8 +949,8 @@ async fn handle_incoming_pairing(
         }
         n_total += n;
 
-        if header_pos.is_none() {
-            if n_total >= 4 && scan_from + 3 <= n_total {
+        if header_pos.is_none()
+            && n_total >= 4 && scan_from + 3 <= n_total {
                 if let Some(pos_rel) = buf[scan_from..n_total].windows(4).position(|w| w == b"\r\n\r\n") {
                     let pos = scan_from + pos_rel;
                     header_pos = Some(pos);
@@ -998,7 +999,6 @@ async fn handle_incoming_pairing(
                     scan_from = n_total.saturating_sub(3);
                 }
             }
-        }
 
         if let Some(pos) = header_pos {
             let body_start = pos + 4;
@@ -1582,21 +1582,18 @@ pub async fn pairing_discover_lan() -> AppResult<Vec<DiscoveredPairingHost>> {
             }
         }
         let wait = deadline.duration_since(now).min(Duration::from_millis(120));
-        match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
-            Ok(Ok((len, peer))) => {
-                if let Ok(mut host) = serde_json::from_slice::<DiscoveredPairingHost>(&buf[..len]) {
-                    if host.ip.is_empty() || host.ip == "0.0.0.0" || host.ip == "127.0.0.1" {
-                        host.ip = peer.ip().to_string();
-                    }
-                    if host.port > 0
-                        && !host.server_public_key.is_empty()
-                        && !found.iter().any(|h| h.ip == host.ip && h.port == host.port)
-                    {
-                        found.push(host);
-                    }
+        if let Ok(Ok((len, peer))) = tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
+            if let Ok(mut host) = serde_json::from_slice::<DiscoveredPairingHost>(&buf[..len]) {
+                if host.ip.is_empty() || host.ip == "0.0.0.0" || host.ip == "127.0.0.1" {
+                    host.ip = peer.ip().to_string();
+                }
+                if host.port > 0
+                    && !host.server_public_key.is_empty()
+                    && !found.iter().any(|h| h.ip == host.ip && h.port == host.port)
+                {
+                    found.push(host);
                 }
             }
-            _ => {}
         }
     }
 

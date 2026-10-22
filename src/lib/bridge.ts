@@ -1155,6 +1155,12 @@ export const bridge = {
     }
   },
 
+  async sftpCancel(sessionId: string): Promise<void> {
+    if (isTauri) {
+      await invoke('sftp_cancel', { sessionId }).catch(() => {});
+    }
+  },
+
   async sftpClose(sessionId: string): Promise<void> {
     if (isTauri) {
       await invoke('sftp_close', { sessionId }).catch(() => {});

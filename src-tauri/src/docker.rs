@@ -61,7 +61,7 @@ fn exec_on_target(
         let (host, secret) = vault.host_with_secret(host_id)?;
         let (sess, _fp) = crate::ssh::open_authenticated(&host, &secret, vault)?;
         let mut ch = sess.channel_session()?;
-        let _ = sess.set_timeout(10000);
+        sess.set_timeout(10000);
         ch.exec(cmd)?;
         let mut out = String::new();
         let _ = ch.read_to_string(&mut out);

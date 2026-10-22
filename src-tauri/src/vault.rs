@@ -463,7 +463,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> AppResult<()> {
 }
 
 fn normalize_recovery_code(code: &str) -> String {
-    let clean = code.trim().replace('-', "").replace(' ', "").to_uppercase();
+    let clean = code.trim().replace(['-', ' '], "").to_uppercase();
     if let Some(stripped) = clean.strip_prefix("DRX").or_else(|| clean.strip_prefix("NX")) {
         stripped.to_string()
     } else {
@@ -2187,7 +2187,7 @@ pub fn import_hosts_keys_internal(c: &Connection) -> AppResult<usize> {
 
 #[tauri::command]
 pub fn keychain_import_from_hosts(vault: State<'_, Vault>) -> AppResult<usize> {
-    vault.with(|c| import_hosts_keys_internal(c))
+    vault.with(import_hosts_keys_internal)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2282,7 +2282,7 @@ pub fn keychain_detect_local_keys() -> AppResult<Vec<DetectedLocalKey>> {
         let has_public = pub_path.exists();
         let comment = if has_public {
             if let Ok(pub_content) = std::fs::read_to_string(&pub_path) {
-                let parts: Vec<&str> = pub_content.trim().split_whitespace().collect();
+                let parts: Vec<&str> = pub_content.split_whitespace().collect();
                 if parts.len() >= 3 {
                     Some(parts[2..].join(" "))
                 } else {
@@ -2344,7 +2344,7 @@ pub fn keychain_import_local_key(
             let pub_path = key_path.with_extension("pub");
             let comment = if pub_path.exists() {
                 std::fs::read_to_string(pub_path).ok().and_then(|p| {
-                    let parts: Vec<&str> = p.trim().split_whitespace().collect();
+                    let parts: Vec<&str> = p.split_whitespace().collect();
                     if parts.len() >= 3 {
                         Some(parts[2..].join(" "))
                     } else {
@@ -3024,6 +3024,7 @@ pub fn known_host_delete(host: String, port: u16, vault: State<'_, Vault>) -> Ap
 // a recent connect attempt. The WebView can ask to trust "the key that was just
 // offered", but it can never mint trust for an arbitrary attacker key.
 
+#[allow(clippy::type_complexity)]
 fn pending_trust() -> &'static Mutex<HashMap<(String, u16), (String, std::time::Instant)>> {
     static PENDING: std::sync::OnceLock<Mutex<HashMap<(String, u16), (String, std::time::Instant)>>> =
         std::sync::OnceLock::new();
@@ -4188,16 +4189,16 @@ mod tests {
         assert_eq!(fetched, Some(rec.clone()));
 
         // Verification while unlocked
-        assert_eq!(vault.verify_password(pw).expect("verify unlocked correct"), true);
-        assert_eq!(vault.verify_password("wrong-pw-1234").expect("verify unlocked wrong"), false);
+        assert!(vault.verify_password(pw).expect("verify unlocked correct"));
+        assert!(!vault.verify_password("wrong-pw-1234").expect("verify unlocked wrong"));
 
         // Lock the vault
         vault.lock();
-        assert_eq!(vault.is_unlocked(), false);
+        assert!(!vault.is_unlocked());
 
         // Verification while LOCKED (uses raw hex key PRAGMA)
-        assert_eq!(vault.verify_password(pw).expect("verify locked correct"), true);
-        assert_eq!(vault.verify_password("wrong-pw-1234").expect("verify locked wrong"), false);
+        assert!(vault.verify_password(pw).expect("verify locked correct"));
+        assert!(!vault.verify_password("wrong-pw-1234").expect("verify locked wrong"));
 
         // Cleanup
         let _ = std::fs::remove_file(&db_path);

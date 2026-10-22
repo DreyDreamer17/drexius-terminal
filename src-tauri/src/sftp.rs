@@ -11,6 +11,7 @@ use ssh2::{Session, Sftp};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tauri::{ipc::Channel as IpcChannel, Manager, State};
@@ -44,12 +45,48 @@ struct SftpConn {
 pub struct SftpManager {
     conns: Mutex<HashMap<String, Arc<Mutex<SftpConn>>>>,
     session_hosts: Mutex<HashMap<String, String>>,
+    transfers: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+struct TransferGuard<'a>(&'a SftpManager, Vec<String>);
+impl<'a> Drop for TransferGuard<'a> {
+    fn drop(&mut self) {
+        for sid in &self.1 {
+            self.0.unregister_transfer(sid);
+        }
+    }
 }
 
 impl SftpManager {
     pub fn close(&self, session_id: &str) {
+        self.cancel(session_id);
         self.conns.lock().remove(session_id);
         self.session_hosts.lock().remove(session_id);
+    }
+
+    pub fn register_transfer(&self, session_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.transfers.lock().insert(session_id.to_string(), flag.clone());
+        flag
+    }
+
+    pub fn register_shared_transfer(&self, session_ids: &[&str]) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut t = self.transfers.lock();
+        for &sid in session_ids {
+            t.insert(sid.to_string(), flag.clone());
+        }
+        flag
+    }
+
+    pub fn unregister_transfer(&self, session_id: &str) {
+        self.transfers.lock().remove(session_id);
+    }
+
+    pub fn cancel(&self, session_id: &str) {
+        if let Some(flag) = self.transfers.lock().get(session_id) {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 
     fn resolve_host_id(&self, session_id: &str, ssh: &SshManager) -> AppResult<String> {
@@ -118,6 +155,12 @@ pub fn sftp_connect(
     // Eagerly authenticate/connect so errors surface immediately to caller
     mgr.get(&session_id, &ssh, &vault)?;
     Ok(session_id)
+}
+
+#[tauri::command]
+pub fn sftp_cancel(session_id: String, mgr: State<'_, SftpManager>) -> AppResult<()> {
+    mgr.cancel(&session_id);
+    Ok(())
 }
 
 /// 2 MiB transfer chunk: allows `libssh2` to keep ~64 SFTP read/write packets
@@ -473,6 +516,7 @@ pub fn sftp_list(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn download_single_file(
     sftp: &Sftp,
     remote_file: &Path,
@@ -482,6 +526,7 @@ fn download_single_file(
     total: u64,
     last_emit: &mut Instant,
     on_progress: &IpcChannel<TransferProgress>,
+    cancel: &Arc<AtomicBool>,
 ) -> AppResult<()> {
     crate::fs_guard::ensure_local_path_not_sensitive(local_file)?;
     let mut src = sftp.open(remote_file)?;
@@ -490,6 +535,9 @@ fn download_single_file(
     let mut dst = BufWriter::with_capacity(CHUNK, raw_dst);
     let loop_result: AppResult<()> = (|| {
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(AppError::Other("Transfer cancelled by user".to_string()));
+            }
             let n = src.read(buf)?;
             if n == 0 {
                 break;
@@ -532,6 +580,8 @@ pub async fn sftp_download(
         // (e.g. ~/.ssh/authorized_keys).
         crate::fs_guard::ensure_local_path_not_sensitive(&local)?;
         let mgr = app.state::<SftpManager>();
+        let cancel = mgr.register_transfer(&session_id);
+        let _guard = TransferGuard(&mgr, vec![session_id.clone()]);
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
         let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
@@ -549,6 +599,9 @@ pub async fn sftp_download(
 
             let base_local = Path::new(&local);
             for d in &rel_dirs {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let target_dir = if d.is_empty() {
                     base_local.to_path_buf()
                 } else {
@@ -559,6 +612,9 @@ pub async fn sftp_download(
             }
 
             for (remote_child, rel_child, _sz) in &rel_files {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let target_local = base_local.join(rel_child).to_string_lossy().to_string();
                 download_single_file(
                     &c.sftp,
@@ -569,6 +625,7 @@ pub async fn sftp_download(
                     total,
                     &mut last_emit,
                     &on_progress,
+                    &cancel,
                 )?;
             }
 
@@ -586,6 +643,7 @@ pub async fn sftp_download(
             total,
             &mut last_emit,
             &on_progress,
+            &cancel,
         )?;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -594,6 +652,7 @@ pub async fn sftp_download(
     .map_err(|e| AppError::Other(e.to_string()))?
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upload_single_file(
     sftp: &Sftp,
     local_file: &Path,
@@ -603,6 +662,7 @@ fn upload_single_file(
     total: u64,
     last_emit: &mut Instant,
     on_progress: &IpcChannel<TransferProgress>,
+    cancel: &Arc<AtomicBool>,
 ) -> AppResult<()> {
     crate::fs_guard::ensure_local_path_not_sensitive(&local_file.to_string_lossy())?;
     let raw_src = std::fs::File::open(local_file)?;
@@ -611,6 +671,9 @@ fn upload_single_file(
     let mut dst = sftp.create(Path::new(&temp_remote))?;
     let loop_result: AppResult<()> = (|| {
         loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(AppError::Other("Transfer cancelled by user".to_string()));
+            }
             let n = read_full_chunk(&mut src, buf)?;
             if n == 0 {
                 break;
@@ -652,6 +715,8 @@ pub async fn sftp_upload(
         // ~/.ssh/id_rsa (etc.) to the remote host.
         crate::fs_guard::ensure_local_path_not_sensitive(&local)?;
         let mgr = app.state::<SftpManager>();
+        let cancel = mgr.register_transfer(&session_id);
+        let _guard = TransferGuard(&mgr, vec![session_id.clone()]);
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
         let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
@@ -670,6 +735,9 @@ pub async fn sftp_upload(
 
             let base_remote = remote.trim_end_matches('/');
             for d in &rel_dirs {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let target_dir = if d.is_empty() {
                     base_remote.to_string()
                 } else {
@@ -679,6 +747,9 @@ pub async fn sftp_upload(
             }
 
             for (local_child, rel_child, _sz) in &rel_files {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let target_remote = format!("{base_remote}/{rel_child}");
                 upload_single_file(
                     &c.sftp,
@@ -689,6 +760,7 @@ pub async fn sftp_upload(
                     total,
                     &mut last_emit,
                     &on_progress,
+                    &cancel,
                 )?;
             }
 
@@ -706,6 +778,7 @@ pub async fn sftp_upload(
             total,
             &mut last_emit,
             &on_progress,
+            &cancel,
         )?;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -727,6 +800,7 @@ fn transfer_single_remote_file(
     total: u64,
     last_emit: &mut Instant,
     on_progress: &IpcChannel<TransferProgress>,
+    cancel: &Arc<AtomicBool>,
 ) -> AppResult<()> {
     let temp_remote = format!("{}.drexius-{}.part", dst_file, uuid::Uuid::new_v4());
 
@@ -737,6 +811,9 @@ fn transfer_single_remote_file(
         let mut buf = vec![0u8; CHUNK];
         (|| {
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let n = read_full_chunk(&mut src, &mut buf)?;
                 if n == 0 {
                     break;
@@ -761,6 +838,7 @@ fn transfer_single_remote_file(
         let src_conn_reader = src_conn.clone();
         let src_path_reader = src_file.to_string();
         let (tx, rx) = std::sync::mpsc::sync_channel::<AppResult<Vec<u8>>>(PIPELINE_DEPTH);
+        let cancel_reader = cancel.clone();
 
         std::thread::scope(|s| {
             s.spawn(move || {
@@ -773,6 +851,9 @@ fn transfer_single_remote_file(
                     }
                 };
                 loop {
+                    if cancel_reader.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let mut chunk = vec![0u8; CHUNK];
                     match read_full_chunk(&mut src, &mut chunk) {
                         Ok(0) => break,
@@ -793,6 +874,9 @@ fn transfer_single_remote_file(
             let c_dst = dst_conn.lock();
             let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
             while let Ok(chunk_res) = rx.recv() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let chunk = chunk_res?;
                 dst.write_all(&chunk)?;
                 *done += chunk.len() as u64;
@@ -824,6 +908,9 @@ fn transfer_single_remote_file(
         let mut buf = vec![0u8; CHUNK];
         (|| {
             loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let n = read_full_chunk(&mut src, &mut buf)?;
                 if n == 0 {
                     break;
@@ -864,6 +951,8 @@ pub async fn sftp_transfer_remote(
 ) -> AppResult<()> {
     tauri::async_runtime::spawn_blocking(move || {
         let mgr = app.state::<SftpManager>();
+        let cancel = mgr.register_shared_transfer(&[&src_session_id, &dst_session_id]);
+        let _guard = TransferGuard(&mgr, vec![src_session_id.clone(), dst_session_id.clone()]);
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
 
@@ -958,6 +1047,9 @@ pub async fn sftp_transfer_remote(
             {
                 let c_dst = dst_conn.lock();
                 for d in &rel_dirs {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                    }
                     let target_dir = if d.is_empty() {
                         base_dst.to_string()
                     } else {
@@ -968,6 +1060,9 @@ pub async fn sftp_transfer_remote(
             }
 
             for (src_child, rel_child, _sz) in &rel_files {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(AppError::Other("Transfer cancelled by user".to_string()));
+                }
                 let target_dst = format!("{base_dst}/{rel_child}");
                 transfer_single_remote_file(
                     &src_conn,
@@ -981,6 +1076,7 @@ pub async fn sftp_transfer_remote(
                     total,
                     &mut last_emit,
                     &on_progress,
+                    &cancel,
                 )?;
             }
 
@@ -1001,6 +1097,7 @@ pub async fn sftp_transfer_remote(
             total,
             &mut last_emit,
             &on_progress,
+            &cancel,
         )?;
 
         let _ = on_progress.send(TransferProgress { transferred: done, total });

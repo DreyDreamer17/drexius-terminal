@@ -556,15 +556,14 @@ fn apply_remote_record_in_tx(tx: &rusqlite::Connection, rec: &SyncRecord) -> App
             "tunnels" => {
                 tx.execute("DELETE FROM tunnels WHERE id=?1", [&rec.id])?;
             }
-            "vaults" => {
-                if rec.id != "personal" {
+            "vaults"
+                if rec.id != "personal" => {
                     tx.execute("UPDATE hosts SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
                     tx.execute("UPDATE snippets SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
                     tx.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
                     tx.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&rec.id])?;
                     tx.execute("DELETE FROM vaults WHERE id=?1", [&rec.id])?;
                 }
-            }
             _ => {}
         }
         tx.execute(
@@ -856,6 +855,7 @@ fn open_remote_blob(
     Ok(BlobOutcome::Applied)
 }
 
+#[allow(clippy::type_complexity)]
 fn accept_remote_blob(
     fetched: Result<(String, u64, AppResult<Option<Vec<u8>>>), tokio::task::JoinError>,
     keys: &SyncKeys,
