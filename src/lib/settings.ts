@@ -139,6 +139,13 @@ export interface UiPreferences {
   showLocalTerminal: boolean;
   showThemeButton: boolean;
   showStatusBarToggle: boolean;
+  showKeychain: boolean;
+  showHistory: boolean;
+  showKnownHosts: boolean;
+  showPairing: boolean;
+  showSync: boolean;
+  showAutoLock: boolean;
+  showLockVault: boolean;
 
   // Terminal & Appearance Defaults
   cursorStyle: 'block' | 'underline' | 'bar';
@@ -165,6 +172,13 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showLocalTerminal: true,
   showThemeButton: true,
   showStatusBarToggle: true,
+  showKeychain: true,
+  showHistory: true,
+  showKnownHosts: true,
+  showPairing: true,
+  showSync: true,
+  showAutoLock: true,
+  showLockVault: true,
   cursorStyle: 'bar',
   cursorBlink: true,
   scrollback: 10000,

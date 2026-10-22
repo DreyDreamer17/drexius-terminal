@@ -1874,7 +1874,9 @@ export default function App() {
 
   const rail = [
     { id: 'hosts', icon: Server, label: 'Hosts', on: panel === 'hosts', act: () => setPanel((p) => (p === 'hosts' ? null : 'hosts')) },
-    { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
+    ...(uiPrefs.showKeychain !== false ? [
+      { id: 'keychain', icon: KeyRound, label: 'Keychain (Identities)', on: panel === 'keychain', act: () => setPanel((p) => (p === 'keychain' ? null : 'keychain')) },
+    ] : []),
     ...(uiPrefs.showDocker ? [{
       id: 'docker',
       icon: showDockerModal ? Loader2 : Boxes,
@@ -1893,8 +1895,12 @@ export default function App() {
     ...(uiPrefs.showSnippets ? [
       { id: 'snippets', icon: Code2, label: 'Snippets', on: panel === 'snippets', act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')) },
     ] : []),
-    { id: 'logs', icon: History, label: 'Session History & Audit', on: panel === 'logs', act: () => setPanel((p) => (p === 'logs' ? null : 'logs')) },
-    { id: 'known_hosts', icon: ShieldCheck, label: 'Known Hosts', on: panel === 'known_hosts', act: () => setPanel((p) => (p === 'known_hosts' ? null : 'known_hosts')) },
+    ...(uiPrefs.showHistory !== false ? [
+      { id: 'logs', icon: History, label: 'Session History & Audit', on: panel === 'logs', act: () => setPanel((p) => (p === 'logs' ? null : 'logs')) },
+    ] : []),
+    ...(uiPrefs.showKnownHosts !== false ? [
+      { id: 'known_hosts', icon: ShieldCheck, label: 'Known Hosts', on: panel === 'known_hosts', act: () => setPanel((p) => (p === 'known_hosts' ? null : 'known_hosts')) },
+    ] : []),
     ...(uiPrefs.showSftp ? [
       { id: 'sftp', icon: HardDrive, label: 'SFTP (⌘⇧F)', on: activeTab?.kind === 'sftp', act: () => openSftpTab() },
     ] : []),
@@ -2809,139 +2815,145 @@ export default function App() {
               </button>
             ))}
             <div className="mt-auto flex flex-col items-center gap-1.5 pb-1">
-              <button
-                title="Direct device pairing (QR & PIN LAN sync)"
-                onClick={() => setShowPairing({ initialTab: 'share' })}
-                className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
-              >
-                <QrCode className="h-4 w-4" />
-              </button>
-              <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
-              {/* Auto-lock Settings Button */}
-              <div className="relative">
+              {uiPrefs.showPairing !== false && (
                 <button
-                  type="button"
-                  title={autoLockMinutes > 0 ? `Auto-lock: ${autoLockMinutes} min` : 'Auto-lock: Off'}
-                  onClick={() => setShowAutoLockMenu((v) => !v)}
-                  className={cn(
-                    'group relative grid h-8 w-8 place-items-center rounded-xl transition shadow-sm',
-                    showAutoLockMenu
-                      ? 'border shadow-[0_0_12px_rgba(34,211,238,0.25)]'
-                      : autoLockMinutes > 0
-                        ? 'bg-white/[0.04] text-slate-300 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15'
-                        : 'bg-white/[0.04] text-slate-500 border border-white/5 hover:bg-white/[0.08] hover:text-slate-300 hover:border-white/15'
-                  )}
-                  style={
-                    showAutoLockMenu
-                      ? {
-                          backgroundColor: `${theme.accent}20`,
-                          borderColor: `${theme.accent}50`,
-                          color: theme.accent,
-                          boxShadow: `0 0 12px ${theme.accent}30`,
-                        }
-                      : undefined
-                  }
+                  title="Direct device pairing (QR & PIN LAN sync)"
+                  onClick={() => setShowPairing({ initialTab: 'share' })}
+                  className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-amber-400/10 hover:border-amber-400/30 hover:text-amber-200 transition"
                 >
-                  {showAutoLockMenu && (
-                    <span
-                      className="absolute -left-1.5 h-4 w-1 rounded-r-full"
-                      style={{ background: `linear-gradient(to bottom, ${theme.accent}, #a855f7)` }}
-                    />
-                  )}
-                  <Timer className="h-4 w-4 transition-colors" style={showAutoLockMenu ? { color: theme.accent } : undefined} />
-                  {autoLockMinutes > 0 && !showAutoLockMenu && (
-                    <span
-                      className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full"
-                      style={{ backgroundColor: theme.accent, boxShadow: `0 0 6px ${theme.accent}` }}
-                    />
-                  )}
+                  <QrCode className="h-4 w-4" />
                 </button>
-
-                {showAutoLockMenu && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={() => setShowAutoLockMenu(false)} />
-                    <div
-                      className="absolute left-10 bottom-0 z-40 w-64 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
-                      style={{
-                        background: theme.xterm.background || '#0e131d',
-                        boxShadow: `0 0 30px ${theme.accent}18, 0 20px 45px rgba(0, 0, 0, 0.75)`,
-                      }}
-                    >
-                      {/* Ambient radial glow */}
-                      <div
-                        className="pointer-events-none absolute inset-x-0 top-0 h-28 opacity-25"
-                        style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
+              )}
+              {uiPrefs.showSync !== false && (
+                <button title="Zero-knowledge sync" onClick={() => setShowSync(true)} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-white/[0.08] hover:text-white"><Cloud className="h-4 w-4" /></button>
+              )}
+              {/* Auto-lock Settings Button */}
+              {uiPrefs.showAutoLock !== false && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    title={autoLockMinutes > 0 ? `Auto-lock: ${autoLockMinutes} min` : 'Auto-lock: Off'}
+                    onClick={() => setShowAutoLockMenu((v) => !v)}
+                    className={cn(
+                      'group relative grid h-8 w-8 place-items-center rounded-xl transition shadow-sm',
+                      showAutoLockMenu
+                        ? 'border shadow-[0_0_12px_rgba(34,211,238,0.25)]'
+                        : autoLockMinutes > 0
+                          ? 'bg-white/[0.04] text-slate-300 border border-white/5 hover:bg-white/[0.08] hover:text-white hover:border-white/15'
+                          : 'bg-white/[0.04] text-slate-500 border border-white/5 hover:bg-white/[0.08] hover:text-slate-300 hover:border-white/15'
+                    )}
+                    style={
+                      showAutoLockMenu
+                        ? {
+                            backgroundColor: `${theme.accent}20`,
+                            borderColor: `${theme.accent}50`,
+                            color: theme.accent,
+                            boxShadow: `0 0 12px ${theme.accent}30`,
+                          }
+                        : undefined
+                    }
+                  >
+                    {showAutoLockMenu && (
+                      <span
+                        className="absolute -left-1.5 h-4 w-1 rounded-r-full"
+                        style={{ background: `linear-gradient(to bottom, ${theme.accent}, #a855f7)` }}
                       />
-                      <div
-                        className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-75"
-                        style={{ background: `linear-gradient(90deg, transparent, ${theme.accent}, transparent)` }}
+                    )}
+                    <Timer className="h-4 w-4 transition-colors" style={showAutoLockMenu ? { color: theme.accent } : undefined} />
+                    {autoLockMinutes > 0 && !showAutoLockMenu && (
+                      <span
+                        className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full"
+                        style={{ backgroundColor: theme.accent, boxShadow: `0 0 6px ${theme.accent}` }}
                       />
+                    )}
+                  </button>
 
-                      <div className="relative px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-white/5 flex items-center justify-between">
-                        <span className="flex items-center gap-1.5 text-slate-300">
-                          <Timer className="h-3.5 w-3.5" style={{ color: theme.accent }} />
-                          <span>Auto-Lock Timeout</span>
-                        </span>
-                        <span
-                          className="text-[9px] px-2 py-0.5 rounded-full border font-mono tracking-normal shadow-sm font-semibold"
-                          style={{
-                            color: autoLockMinutes > 0 ? theme.accent : '#94a3b8',
-                            backgroundColor: autoLockMinutes > 0 ? `${theme.accent}15` : 'rgba(255,255,255,0.05)',
-                            borderColor: autoLockMinutes > 0 ? `${theme.accent}30` : 'rgba(255,255,255,0.1)',
-                          }}
-                        >
-                          {autoLockMinutes > 0 ? `${autoLockMinutes} min` : 'Off'}
-                        </span>
-                      </div>
+                  {showAutoLockMenu && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setShowAutoLockMenu(false)} />
+                      <div
+                        className="absolute left-10 bottom-0 z-40 w-64 rounded-2xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+                        style={{
+                          background: theme.xterm.background || '#0e131d',
+                          boxShadow: `0 0 30px ${theme.accent}18, 0 20px 45px rgba(0, 0, 0, 0.75)`,
+                        }}
+                      >
+                        {/* Ambient radial glow */}
+                        <div
+                          className="pointer-events-none absolute inset-x-0 top-0 h-28 opacity-25"
+                          style={{ background: `radial-gradient(ellipse at top, ${theme.accent} 0%, transparent 70%)` }}
+                        />
+                        <div
+                          className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-75"
+                          style={{ background: `linear-gradient(90deg, transparent, ${theme.accent}, transparent)` }}
+                        />
 
-                      <div className="relative px-3 pt-2 pb-1 text-[11px] text-slate-400 leading-snug">
-                        Locks vault after inactivity. Terminals and SSH sessions remain active in the background.
-                      </div>
+                        <div className="relative px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-white/5 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5 text-slate-300">
+                            <Timer className="h-3.5 w-3.5" style={{ color: theme.accent }} />
+                            <span>Auto-Lock Timeout</span>
+                          </span>
+                          <span
+                            className="text-[9px] px-2 py-0.5 rounded-full border font-mono tracking-normal shadow-sm font-semibold"
+                            style={{
+                              color: autoLockMinutes > 0 ? theme.accent : '#94a3b8',
+                              backgroundColor: autoLockMinutes > 0 ? `${theme.accent}15` : 'rgba(255,255,255,0.05)',
+                              borderColor: autoLockMinutes > 0 ? `${theme.accent}30` : 'rgba(255,255,255,0.1)',
+                            }}
+                          >
+                            {autoLockMinutes > 0 ? `${autoLockMinutes} min` : 'Off'}
+                          </span>
+                        </div>
 
-                      <div className="relative py-1 space-y-0.5">
-                        {AUTO_LOCK_OPTIONS.map((m) => {
-                          const selected = autoLockMinutes === m;
-                          return (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => {
-                                setAutoLockMinutes(m);
-                                try { localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(m)); } catch { /* storage unavailable */ }
-                                setShowAutoLockMenu(false);
-                              }}
-                              className={cn(
-                                'flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-xs text-left transition-all',
-                                selected
-                                  ? 'text-white font-medium border'
-                                  : 'text-slate-300 hover:bg-white/[0.06] hover:text-white border border-transparent'
-                              )}
-                              style={
-                                selected
-                                  ? {
-                                      backgroundColor: `${theme.accent}18`,
-                                      borderColor: `${theme.accent}35`,
-                                      boxShadow: `0 0 14px ${theme.accent}18`,
-                                    }
-                                  : undefined
-                              }
-                            >
-                              <span className="flex items-center gap-2">
-                                <span
-                                  className={cn('h-1.5 w-1.5 rounded-full', selected ? '' : 'bg-slate-600')}
-                                  style={selected ? { backgroundColor: theme.accent } : undefined}
-                                />
-                                <span>{m === 0 ? 'Disabled (Never lock)' : `${m} minutes`}</span>
-                              </span>
-                              {selected && <Check className="h-3.5 w-3.5" style={{ color: theme.accent }} />}
-                            </button>
-                          );
-                        })}
+                        <div className="relative px-3 pt-2 pb-1 text-[11px] text-slate-400 leading-snug">
+                          Locks vault after inactivity. Terminals and SSH sessions remain active in the background.
+                        </div>
+
+                        <div className="relative py-1 space-y-0.5">
+                          {AUTO_LOCK_OPTIONS.map((m) => {
+                            const selected = autoLockMinutes === m;
+                            return (
+                              <button
+                                key={m}
+                                type="button"
+                                onClick={() => {
+                                  setAutoLockMinutes(m);
+                                  try { localStorage.setItem(AUTO_LOCK_STORAGE_KEY, String(m)); } catch { /* storage unavailable */ }
+                                  setShowAutoLockMenu(false);
+                                }}
+                                className={cn(
+                                  'flex w-full items-center justify-between rounded-xl px-2.5 py-1.5 text-xs text-left transition-all',
+                                  selected
+                                    ? 'text-white font-medium border'
+                                    : 'text-slate-300 hover:bg-white/[0.06] hover:text-white border border-transparent'
+                                )}
+                                style={
+                                  selected
+                                    ? {
+                                        backgroundColor: `${theme.accent}18`,
+                                        borderColor: `${theme.accent}35`,
+                                        boxShadow: `0 0 14px ${theme.accent}18`,
+                                      }
+                                    : undefined
+                                }
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span
+                                    className={cn('h-1.5 w-1.5 rounded-full', selected ? '' : 'bg-slate-600')}
+                                    style={selected ? { backgroundColor: theme.accent } : undefined}
+                                  />
+                                  <span>{m === 0 ? 'Disabled (Never lock)' : `${m} minutes`}</span>
+                                </span>
+                                {selected && <Check className="h-3.5 w-3.5" style={{ color: theme.accent }} />}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                </div>
+              )}
               <button
                 type="button"
                 title="General Settings (⌘,)"
@@ -2965,7 +2977,9 @@ export default function App() {
               >
                 <Settings className="h-4 w-4" />
               </button>
-              <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
+              {uiPrefs.showLockVault !== false && (
+                <button title="Lock vault" onClick={lock} className="grid h-8 w-8 place-items-center rounded-xl bg-white/[0.04] border border-white/5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-400/30"><Lock className="h-4 w-4" /></button>
+              )}
             </div>
           </nav>
         )}

@@ -39,6 +39,8 @@ import {
   Download,
   Activity,
   ShieldCheck,
+  History,
+  Timer,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { TERMINAL_FONT_MIN } from '../lib/mobileTerminal';
@@ -840,6 +842,237 @@ export function SettingsModal({
                     <ToggleSwitch
                       checked={uiPrefs.showStatusBarToggle}
                       onChange={(val) => updatePref('showStatusBarToggle', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Keychain Toggle */}
+                  <div
+                    onClick={() => updatePref('showKeychain', !uiPrefs.showKeychain)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showKeychain
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showKeychain ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <KeyRound className="h-4 w-4 text-amber-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Keychain (Identities)</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          SSH private keys, identities, and cert manager in sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showKeychain}
+                      onChange={(val) => updatePref('showKeychain', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Session History & Audit Toggle */}
+                  <div
+                    onClick={() => updatePref('showHistory', !uiPrefs.showHistory)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showHistory
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showHistory ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <History className="h-4 w-4 text-sky-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Session History & Audit</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Terminal audit logs, command history, and session records in sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showHistory}
+                      onChange={(val) => updatePref('showHistory', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Known Hosts Toggle */}
+                  <div
+                    onClick={() => updatePref('showKnownHosts', !uiPrefs.showKnownHosts)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showKnownHosts
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showKnownHosts ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Known Hosts</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Host key verification fingerprints and trust database in sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showKnownHosts}
+                      onChange={(val) => updatePref('showKnownHosts', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Direct Device Pairing Toggle */}
+                  <div
+                    onClick={() => updatePref('showPairing', !uiPrefs.showPairing)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showPairing
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showPairing ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <QrCode className="h-4 w-4 text-amber-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Direct Device Pairing</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Encrypted QR code and LAN peer-to-peer sync button at bottom of sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showPairing}
+                      onChange={(val) => updatePref('showPairing', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Zero-Knowledge Sync Toggle */}
+                  <div
+                    onClick={() => updatePref('showSync', !uiPrefs.showSync)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showSync
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showSync ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Cloud className="h-4 w-4 text-cyan-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Zero-Knowledge Cloud Sync (Relay)</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Encrypted relay sync and cloud backup status button at bottom of sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showSync}
+                      onChange={(val) => updatePref('showSync', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Auto-Lock Timeout Toggle */}
+                  <div
+                    onClick={() => updatePref('showAutoLock', !uiPrefs.showAutoLock)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showAutoLock
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showAutoLock ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Timer className="h-4 w-4 text-violet-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Auto-Lock Timeout</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          Inactivity auto-lock timer popover menu button at bottom of sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showAutoLock}
+                      onChange={(val) => updatePref('showAutoLock', val)}
+                      accentColor={accentColor}
+                    />
+                  </div>
+
+                  {/* Lock Vault Toggle */}
+                  <div
+                    onClick={() => updatePref('showLockVault', !uiPrefs.showLockVault)}
+                    className={cn(
+                      'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                      uiPrefs.showLockVault
+                        ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                        : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+                    )}
+                  >
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                        style={{
+                          backgroundColor: uiPrefs.showLockVault ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                        }}
+                      >
+                        <Lock className="h-4 w-4 text-rose-400" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-white">Lock Vault</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                          One-click immediate vault security lock button at bottom of sidebar rail
+                        </p>
+                      </div>
+                    </div>
+                    <ToggleSwitch
+                      checked={uiPrefs.showLockVault}
+                      onChange={(val) => updatePref('showLockVault', val)}
                       accentColor={accentColor}
                     />
                   </div>
