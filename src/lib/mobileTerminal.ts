@@ -121,7 +121,7 @@ export const keyPaletteGroups = [
 ];
 
 /** Terminal font-size bounds shared by the desktop stepper and the phone pinch gesture. */
-export const TERMINAL_FONT_MIN = 10;
+export const TERMINAL_FONT_MIN = 4;
 export const TERMINAL_FONT_MAX = 22;
 
 // ─────────────────────────────────────────────────────────────────────────────

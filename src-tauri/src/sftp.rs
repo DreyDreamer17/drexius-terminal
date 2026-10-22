@@ -126,6 +126,18 @@ const CHUNK: usize = 2 * 1024 * 1024;
 /// Number of 2 MiB chunks buffered between reader and writer threads in
 /// host-to-host transfers (up to 8 MiB in flight).
 const PIPELINE_DEPTH: usize = 4;
+/// Maximum directory nesting depth for recursive SFTP/local operations.
+const MAX_RECURSION_DEPTH: usize = 64;
+
+/// Returns true if `child` is the same path as `parent` or a subpath inside `parent`.
+fn is_subpath_str(parent: &str, child: &str) -> bool {
+    let p = parent.trim_end_matches('/');
+    let c = child.trim_end_matches('/');
+    if p.is_empty() {
+        return true;
+    }
+    c == p || c.starts_with(&format!("{p}/"))
+}
 
 /// Coalesces multiple ~30 KB SFTP packets from `libssh2_sftp_read` (or any
 /// `Read` source) until `buf` is completely filled or EOF is reached.
@@ -165,42 +177,236 @@ fn safe_posix_path_quote(p: &str) -> String {
     }
 }
 
-/// Attempts an instant server-side atomic file copy (`cp -f` + `mv -f`) over an
-/// SSH exec channel on the remote machine, avoiding a full download + upload
+/// Attempts an instant server-side atomic file or directory copy (`cp -f`/`cp -Rf` + `mv -f`)
+/// over an SSH exec channel on the remote machine, avoiding a full download + upload
 /// round-trip when both SFTP panes are connected to the same host.
 fn try_server_side_copy(
     session: &Session,
     src_path: &str,
     temp_remote: &str,
     dst_path: &str,
+    is_dir: bool,
 ) -> AppResult<()> {
-    let mut ch = session.channel_session()?;
-    let cmd = format!(
-        "cp -f {} {} && mv -f {} {}",
-        safe_posix_path_quote(src_path),
-        safe_posix_path_quote(temp_remote),
-        safe_posix_path_quote(temp_remote),
-        safe_posix_path_quote(dst_path),
-    );
-    ch.exec(&cmd)?;
-    let mut output = Vec::new();
-    let _ = ch.read_to_end(&mut output);
-    let _ = ch.stderr().read_to_end(&mut output);
-    ch.wait_close()?;
-    if ch.exit_status()? == 0 {
-        Ok(())
-    } else {
-        if let Ok(mut cleanup) = session.channel_session() {
-            let _ = cleanup.exec(&format!("rm -f {}", safe_posix_path_quote(temp_remote)));
-            let _ = cleanup.wait_close();
+    let prev_timeout = session.timeout();
+    // Allow up to 10 minutes (600,000 ms) for large server-side copies to complete
+    // without premature socket timeout aborts.
+    session.set_timeout(600_000);
+    let cp_flag = if is_dir { "-Rf" } else { "-f" };
+    let rm_flag = if is_dir { "-rf" } else { "-f" };
+    let run = || -> AppResult<()> {
+        let mut ch = session.channel_session()?;
+        let cmd = format!(
+            "cp {} {} {} && mv -f {} {}",
+            cp_flag,
+            safe_posix_path_quote(src_path),
+            safe_posix_path_quote(temp_remote),
+            safe_posix_path_quote(temp_remote),
+            safe_posix_path_quote(dst_path),
+        );
+        ch.exec(&cmd)?;
+        let mut output = Vec::new();
+        let _ = ch.read_to_end(&mut output);
+        let _ = ch.stderr().read_to_end(&mut output);
+        ch.wait_close()?;
+        if ch.exit_status()? == 0 {
+            Ok(())
+        } else {
+            if let Ok(mut cleanup) = session.channel_session() {
+                let _ = cleanup.exec(&format!("rm {} {}", rm_flag, safe_posix_path_quote(temp_remote)));
+                let _ = cleanup.wait_close();
+            }
+            Err(AppError::Other("Server-side copy command failed".into()))
         }
-        Err(AppError::Other("Server-side copy command failed".into()))
+    };
+    let res = run();
+    session.set_timeout(prev_timeout);
+    res
+}
+
+/// Recursively creates `path` and all missing parent directories on the remote SFTP server.
+fn ensure_sftp_dir_all(sftp: &Sftp, path: &Path) -> AppResult<()> {
+    let s = path.to_string_lossy();
+    if s.is_empty() || s == "/" || s == "." {
+        return Ok(());
     }
+    if let Ok(st) = sftp.stat(path) {
+        if st.is_dir() {
+            return Ok(());
+        }
+        return Err(AppError::Other(format!(
+            "Cannot create directory '{}': a file already exists at that path",
+            path.display()
+        )));
+    }
+    if let Some(parent) = path.parent() {
+        let ps = parent.to_string_lossy();
+        if !ps.is_empty() && ps != "/" && ps != "." {
+            ensure_sftp_dir_all(sftp, parent)?;
+        }
+    }
+    match sftp.mkdir(path, 0o755) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if let Ok(st) = sftp.stat(path) {
+                if st.is_dir() {
+                    return Ok(());
+                }
+            }
+            Err(AppError::from(e))
+        }
+    }
+}
+
+/// Recursively removes a directory and all its contents over SFTP without following symlinks.
+fn remove_sftp_dir_all(sftp: &Sftp, path: &Path, depth: usize) -> AppResult<()> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(AppError::Other("Directory recursion depth limit exceeded".into()));
+    }
+    for (child_path, st) in sftp.readdir(path)? {
+        if let Some(name) = child_path.file_name().and_then(|n| n.to_str()) {
+            if name == "." || name == ".." {
+                continue;
+            }
+        }
+        if st.file_type().is_symlink() || !st.is_dir() {
+            sftp.unlink(&child_path)?;
+        } else {
+            remove_sftp_dir_all(sftp, &child_path, depth + 1)?;
+        }
+    }
+    sftp.rmdir(path)?;
+    Ok(())
+}
+
+/// Walks a remote SFTP directory tree, collecting relative directory paths and
+/// `(full_remote_file_path, relative_file_path, file_size)` tuples.
+fn collect_remote_tree(
+    sftp: &Sftp,
+    base_remote: &str,
+    rel_prefix: &str,
+    rel_dirs: &mut Vec<String>,
+    rel_files: &mut Vec<(String, String, u64)>,
+    depth: usize,
+) -> AppResult<u64> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(AppError::Other("Directory recursion depth limit exceeded".into()));
+    }
+    let mut total = 0u64;
+    for (child_path, st) in sftp.readdir(Path::new(base_remote))? {
+        let Some(name_os) = child_path.file_name() else {
+            continue;
+        };
+        let name = name_os.to_string_lossy();
+        if name == "." || name == ".." || st.file_type().is_symlink() {
+            continue;
+        }
+        let child_rel = if rel_prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        let child_full = child_path.to_string_lossy().to_string();
+        if st.is_dir() {
+            rel_dirs.push(child_rel.clone());
+            total += collect_remote_tree(sftp, &child_full, &child_rel, rel_dirs, rel_files, depth + 1)?;
+        } else {
+            let sz = st.size.unwrap_or(0);
+            rel_files.push((child_full, child_rel, sz));
+            total += sz;
+        }
+    }
+    Ok(total)
+}
+
+/// Walks a local directory tree, validating security guards and collecting relative
+/// directory paths and `(local_file_path, relative_file_path, file_size)` tuples.
+fn collect_local_tree(
+    base_local: &Path,
+    rel_prefix: &str,
+    rel_dirs: &mut Vec<String>,
+    rel_files: &mut Vec<(std::path::PathBuf, String, u64)>,
+    depth: usize,
+) -> AppResult<u64> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(AppError::Other("Directory recursion depth limit exceeded".into()));
+    }
+    crate::fs_guard::ensure_local_path_not_sensitive(&base_local.to_string_lossy())?;
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(base_local)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let child_path = entry.path();
+        crate::fs_guard::ensure_local_path_not_sensitive(&child_path.to_string_lossy())?;
+        let child_rel = if rel_prefix.is_empty() {
+            name
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if ft.is_dir() {
+            rel_dirs.push(child_rel.clone());
+            total += collect_local_tree(&child_path, &child_rel, rel_dirs, rel_files, depth + 1)?;
+        } else if ft.is_file() {
+            let sz = entry.metadata()?.len();
+            rel_files.push((child_path, child_rel, sz));
+            total += sz;
+        }
+    }
+    Ok(total)
+}
+
+/// Atomically renames `temp_local_path` onto `local_path` with backup-and-rollback safety.
+fn atomic_local_rename(temp_local_path: &Path, local_path: &Path, local_str: &str) -> AppResult<()> {
+    if local_path.is_dir() {
+        let _ = std::fs::remove_file(temp_local_path);
+        return Err(AppError::Other(format!(
+            "Cannot overwrite existing directory '{local_str}' with file"
+        )));
+    }
+    let rename_res = if local_path.exists() {
+        let backup_local = format!("{}.drexius-bak.{}", local_str, uuid::Uuid::new_v4());
+        let backup_path = Path::new(&backup_local);
+        if std::fs::rename(local_path, backup_path).is_err() {
+            std::fs::rename(temp_local_path, local_path)
+        } else {
+            match std::fs::rename(temp_local_path, local_path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(backup_path);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = std::fs::rename(backup_path, local_path);
+                    Err(e)
+                }
+            }
+        }
+    } else {
+        std::fs::rename(temp_local_path, local_path)
+    };
+    if let Err(e) = rename_res {
+        let _ = std::fs::remove_file(temp_local_path);
+        return Err(AppError::Io(e));
+    }
+    Ok(())
 }
 
 /// Atomically renames `temp_remote_path` onto `target_path`, falling back to a
 /// rollback-safe backup swap when the server does not support `ATOMIC | OVERWRITE`.
 fn atomic_sftp_rename(sftp: &Sftp, temp_remote_path: &Path, target_path: &Path, target_str: &str) -> AppResult<()> {
+    if let Ok(st) = sftp.stat(target_path) {
+        if st.is_dir() {
+            let _ = sftp.unlink(temp_remote_path);
+            return Err(AppError::Other(format!(
+                "Cannot overwrite existing directory '{target_str}' with file"
+            )));
+        }
+    }
     let rename_res = sftp.rename(
         temp_remote_path,
         target_path,
@@ -267,6 +473,51 @@ pub fn sftp_list(
     Ok(out)
 }
 
+fn download_single_file(
+    sftp: &Sftp,
+    remote_file: &Path,
+    local_file: &str,
+    buf: &mut [u8],
+    done: &mut u64,
+    total: u64,
+    last_emit: &mut Instant,
+    on_progress: &IpcChannel<TransferProgress>,
+) -> AppResult<()> {
+    crate::fs_guard::ensure_local_path_not_sensitive(local_file)?;
+    let mut src = sftp.open(remote_file)?;
+    let temp_local = format!("{}.drexius-{}.part", local_file, uuid::Uuid::new_v4());
+    let raw_dst = std::fs::File::create(&temp_local)?;
+    let mut dst = BufWriter::with_capacity(CHUNK, raw_dst);
+    let loop_result: AppResult<()> = (|| {
+        loop {
+            let n = src.read(buf)?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&buf[..n])?;
+            *done += n as u64;
+            if last_emit.elapsed().as_millis() >= 50 || *done >= total {
+                let _ = on_progress.send(TransferProgress {
+                    transferred: *done,
+                    total,
+                });
+                *last_emit = Instant::now();
+            }
+        }
+        dst.flush()?;
+        dst.get_ref().sync_all()?;
+        Ok(())
+    })();
+
+    drop(dst);
+
+    if let Err(e) = loop_result {
+        let _ = std::fs::remove_file(&temp_local);
+        return Err(e);
+    }
+    atomic_local_rename(Path::new(&temp_local), Path::new(local_file), local_file)
+}
+
 #[tauri::command]
 pub async fn sftp_download(
     session_id: String,
@@ -285,69 +536,106 @@ pub async fn sftp_download(
         let vault = app.state::<Vault>();
         let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
         let c = conn.lock();
-        let mut src = c.sftp.open(Path::new(&remote))?;
-        let total = src.stat()?.size.unwrap_or(0);
-        let temp_local = format!("{}.drexius-{}.part", local, uuid::Uuid::new_v4());
-        let raw_dst = std::fs::File::create(&temp_local)?;
-        let mut dst = BufWriter::with_capacity(CHUNK, raw_dst);
+        let st = c.sftp.stat(Path::new(&remote))?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
-        let loop_result: AppResult<()> = (|| {
-            loop {
-                let n = src.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                dst.write_all(&buf[..n])?;
-                done += n as u64;
-                if last_emit.elapsed().as_millis() >= 50 || done == total {
-                    let _ = on_progress.send(TransferProgress { transferred: done, total });
-                    last_emit = Instant::now();
-                }
-            }
-            dst.flush()?;
-            dst.get_ref().sync_all()?;
-            Ok(())
-        })();
 
-        drop(dst);
+        if st.is_dir() {
+            let mut rel_dirs = vec![String::new()];
+            let mut rel_files = Vec::new();
+            let total = collect_remote_tree(&c.sftp, &remote, "", &mut rel_dirs, &mut rel_files, 0)?;
+            let _ = on_progress.send(TransferProgress { transferred: 0, total });
 
-        if let Err(e) = loop_result {
-            let _ = std::fs::remove_file(&temp_local);
-            return Err(e);
-        }
-        let temp_local_path = std::path::Path::new(&temp_local);
-        let local_path = std::path::Path::new(&local);
-        let rename_res = if local_path.exists() {
-            let backup_local = format!("{}.drexius-bak.{}", local, uuid::Uuid::new_v4());
-            let backup_path = std::path::Path::new(&backup_local);
-            if let Err(_) = std::fs::rename(local_path, backup_path) {
-                std::fs::rename(temp_local_path, local_path)
-            } else {
-                match std::fs::rename(temp_local_path, local_path) {
-                    Ok(()) => {
-                        let _ = std::fs::remove_file(backup_path);
-                        Ok(())
-                    }
-                    Err(e) => {
-                        let _ = std::fs::rename(backup_path, local_path);
-                        Err(e)
-                    }
-                }
+            let base_local = Path::new(&local);
+            for d in &rel_dirs {
+                let target_dir = if d.is_empty() {
+                    base_local.to_path_buf()
+                } else {
+                    base_local.join(d)
+                };
+                crate::fs_guard::ensure_local_path_not_sensitive(&target_dir.to_string_lossy())?;
+                std::fs::create_dir_all(&target_dir)?;
             }
-        } else {
-            std::fs::rename(temp_local_path, local_path)
-        };
-        if let Err(e) = rename_res {
-            let _ = std::fs::remove_file(&temp_local);
-            return Err(AppError::Io(e));
+
+            for (remote_child, rel_child, _sz) in &rel_files {
+                let target_local = base_local.join(rel_child).to_string_lossy().to_string();
+                download_single_file(
+                    &c.sftp,
+                    Path::new(remote_child),
+                    &target_local,
+                    &mut buf,
+                    &mut done,
+                    total,
+                    &mut last_emit,
+                    &on_progress,
+                )?;
+            }
+
+            let _ = on_progress.send(TransferProgress { transferred: done, total });
+            return Ok::<(), AppError>(());
         }
+
+        let total = st.size.unwrap_or(0);
+        download_single_file(
+            &c.sftp,
+            Path::new(&remote),
+            &local,
+            &mut buf,
+            &mut done,
+            total,
+            &mut last_emit,
+            &on_progress,
+        )?;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+fn upload_single_file(
+    sftp: &Sftp,
+    local_file: &Path,
+    remote_file: &str,
+    buf: &mut [u8],
+    done: &mut u64,
+    total: u64,
+    last_emit: &mut Instant,
+    on_progress: &IpcChannel<TransferProgress>,
+) -> AppResult<()> {
+    crate::fs_guard::ensure_local_path_not_sensitive(&local_file.to_string_lossy())?;
+    let raw_src = std::fs::File::open(local_file)?;
+    let mut src = BufReader::with_capacity(CHUNK, raw_src);
+    let temp_remote = format!("{}.drexius-{}.part", remote_file, uuid::Uuid::new_v4());
+    let mut dst = sftp.create(Path::new(&temp_remote))?;
+    let loop_result: AppResult<()> = (|| {
+        loop {
+            let n = read_full_chunk(&mut src, buf)?;
+            if n == 0 {
+                break;
+            }
+            dst.write_all(&buf[..n])?;
+            *done += n as u64;
+            if last_emit.elapsed().as_millis() >= 50 || *done >= total {
+                let _ = on_progress.send(TransferProgress {
+                    transferred: *done,
+                    total,
+                });
+                *last_emit = Instant::now();
+            }
+        }
+        dst.flush()?;
+        Ok(())
+    })();
+
+    if let Err(e) = loop_result {
+        let _ = sftp.unlink(Path::new(&temp_remote));
+        return Err(e);
+    }
+    drop(dst);
+
+    atomic_sftp_rename(sftp, Path::new(&temp_remote), Path::new(remote_file), remote_file)
 }
 
 #[tauri::command]
@@ -368,43 +656,201 @@ pub async fn sftp_upload(
         let vault = app.state::<Vault>();
         let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
         let c = conn.lock();
-        let raw_src = std::fs::File::open(&local)?;
-        let total = raw_src.metadata()?.len();
-        let mut src = BufReader::with_capacity(CHUNK, raw_src);
-        let temp_remote = format!("{}.drexius-{}.part", remote, uuid::Uuid::new_v4());
-        let mut dst = c.sftp.create(Path::new(&temp_remote))?;
+        let local_path = Path::new(&local);
+        let meta = std::fs::metadata(local_path)?;
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
-        let loop_result: AppResult<()> = (|| {
+
+        if meta.is_dir() {
+            let mut rel_dirs = vec![String::new()];
+            let mut rel_files = Vec::new();
+            let total = collect_local_tree(local_path, "", &mut rel_dirs, &mut rel_files, 0)?;
+            let _ = on_progress.send(TransferProgress { transferred: 0, total });
+
+            let base_remote = remote.trim_end_matches('/');
+            for d in &rel_dirs {
+                let target_dir = if d.is_empty() {
+                    base_remote.to_string()
+                } else {
+                    format!("{base_remote}/{d}")
+                };
+                ensure_sftp_dir_all(&c.sftp, Path::new(&target_dir))?;
+            }
+
+            for (local_child, rel_child, _sz) in &rel_files {
+                let target_remote = format!("{base_remote}/{rel_child}");
+                upload_single_file(
+                    &c.sftp,
+                    local_child,
+                    &target_remote,
+                    &mut buf,
+                    &mut done,
+                    total,
+                    &mut last_emit,
+                    &on_progress,
+                )?;
+            }
+
+            let _ = on_progress.send(TransferProgress { transferred: done, total });
+            return Ok::<(), AppError>(());
+        }
+
+        let total = meta.len();
+        upload_single_file(
+            &c.sftp,
+            local_path,
+            &remote,
+            &mut buf,
+            &mut done,
+            total,
+            &mut last_emit,
+            &on_progress,
+        )?;
+        let _ = on_progress.send(TransferProgress { transferred: done, total });
+        Ok::<(), AppError>(())
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_single_remote_file(
+    src_conn: &Arc<Mutex<SftpConn>>,
+    src_dedicated: bool,
+    src_file: &str,
+    dst_conn: &Arc<Mutex<SftpConn>>,
+    dst_dedicated: bool,
+    dst_file: &str,
+    same_conn: bool,
+    done: &mut u64,
+    total: u64,
+    last_emit: &mut Instant,
+    on_progress: &IpcChannel<TransferProgress>,
+) -> AppResult<()> {
+    let temp_remote = format!("{}.drexius-{}.part", dst_file, uuid::Uuid::new_v4());
+
+    let loop_result: AppResult<()> = if same_conn {
+        let c = src_conn.lock();
+        let mut src = c.sftp.open(Path::new(src_file))?;
+        let mut dst = c.sftp.create(Path::new(&temp_remote))?;
+        let mut buf = vec![0u8; CHUNK];
+        (|| {
             loop {
                 let n = read_full_chunk(&mut src, &mut buf)?;
                 if n == 0 {
                     break;
                 }
                 dst.write_all(&buf[..n])?;
-                done += n as u64;
-                if last_emit.elapsed().as_millis() >= 50 || done == total {
-                    let _ = on_progress.send(TransferProgress { transferred: done, total });
-                    last_emit = Instant::now();
+                *done += n as u64;
+                if last_emit.elapsed().as_millis() >= 50 || *done >= total {
+                    let _ = on_progress.send(TransferProgress {
+                        transferred: *done,
+                        total,
+                    });
+                    *last_emit = Instant::now();
                 }
             }
             dst.flush()?;
             Ok(())
-        })();
+        })()
+    } else if src_dedicated && dst_dedicated {
+        // Parallel 2-Thread Producer-Consumer Pipeline:
+        // Thread 1 (Producer) continuously reads coalesced 2 MiB chunks from Source Host
+        // while Thread 2 (Consumer) simultaneously writes 2 MiB chunks to Destination Host.
+        let src_conn_reader = src_conn.clone();
+        let src_path_reader = src_file.to_string();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<AppResult<Vec<u8>>>(PIPELINE_DEPTH);
 
-        if let Err(e) = loop_result {
-            let _ = c.sftp.unlink(Path::new(&temp_remote));
-            return Err(e);
-        }
-        drop(dst);
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                let c_src = src_conn_reader.lock();
+                let mut src = match c_src.sftp.open(Path::new(&src_path_reader)) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        let _ = tx.send(Err(AppError::from(e)));
+                        return;
+                    }
+                };
+                loop {
+                    let mut chunk = vec![0u8; CHUNK];
+                    match read_full_chunk(&mut src, &mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            chunk.truncate(n);
+                            if tx.send(Ok(chunk)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(AppError::Io(e)));
+                            break;
+                        }
+                    }
+                }
+            });
 
-        atomic_sftp_rename(&c.sftp, Path::new(&temp_remote), Path::new(&remote), &remote)?;
-        let _ = on_progress.send(TransferProgress { transferred: done, total });
-        Ok::<(), AppError>(())
-    })
-    .await
-    .map_err(|e| AppError::Other(e.to_string()))?
+            let c_dst = dst_conn.lock();
+            let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
+            while let Ok(chunk_res) = rx.recv() {
+                let chunk = chunk_res?;
+                dst.write_all(&chunk)?;
+                *done += chunk.len() as u64;
+                if last_emit.elapsed().as_millis() >= 50 || *done >= total {
+                    let _ = on_progress.send(TransferProgress {
+                        transferred: *done,
+                        total,
+                    });
+                    *last_emit = Instant::now();
+                }
+            }
+            dst.flush()?;
+            Ok(())
+        })
+    } else {
+        // Fallback when sharing connection mutexes: acquire locks in deterministic
+        // pointer address order to prevent ABBA deadlocks, and stream coalesced 2 MiB chunks.
+        let (c_src, c_dst) = if (Arc::as_ptr(src_conn) as usize) < (Arc::as_ptr(dst_conn) as usize) {
+            let s = src_conn.lock();
+            let d = dst_conn.lock();
+            (s, d)
+        } else {
+            let d = dst_conn.lock();
+            let s = src_conn.lock();
+            (s, d)
+        };
+        let mut src = c_src.sftp.open(Path::new(src_file))?;
+        let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
+        let mut buf = vec![0u8; CHUNK];
+        (|| {
+            loop {
+                let n = read_full_chunk(&mut src, &mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+                *done += n as u64;
+                if last_emit.elapsed().as_millis() >= 50 || *done >= total {
+                    let _ = on_progress.send(TransferProgress {
+                        transferred: *done,
+                        total,
+                    });
+                    *last_emit = Instant::now();
+                }
+            }
+            dst.flush()?;
+            Ok(())
+        })()
+    };
+
+    if let Err(e) = loop_result {
+        let c_dst = dst_conn.lock();
+        let _ = c_dst.sftp.unlink(Path::new(&temp_remote));
+        return Err(e);
+    }
+
+    let c_dst = dst_conn.lock();
+    atomic_sftp_rename(&c_dst.sftp, Path::new(&temp_remote), Path::new(dst_file), dst_file)
 }
 
 #[tauri::command]
@@ -424,7 +870,7 @@ pub async fn sftp_transfer_remote(
         let temp_remote = format!("{}.drexius-{}.part", dst_path, uuid::Uuid::new_v4());
 
         // Fast Path: Check if both panes point to the same remote host.
-        // If so, attempt an instant server-side atomic copy (`cp -f` + `mv -f`)
+        // If so, attempt an instant server-side atomic copy (`cp -f`/`cp -Rf` + `mv -f`)
         // over SSH exec so 0 bytes travel across the client's network.
         if let (Ok(src_hid), Ok(dst_hid)) = (
             mgr.resolve_host_id(&src_session_id, &ssh),
@@ -447,18 +893,33 @@ pub async fn sftp_transfer_remote(
                         let _ = on_progress.send(TransferProgress { transferred: total, total });
                         return Ok(());
                     }
-                    if let Ok(conn) = mgr.get(&src_session_id, &ssh, &vault) {
+                    if is_subpath_str(&src_path, &dst_path) {
+                        return Err(AppError::Other(
+                            "Cannot copy a directory into itself".into(),
+                        ));
+                    }
+                    if let Ok((conn, _dedicated)) = mgr.acquire_transfer_conn(&src_session_id, &ssh, &vault) {
                         let c = conn.lock();
-                        let total = c
-                            .sftp
-                            .stat(Path::new(&src_path))
-                            .ok()
-                            .and_then(|st| st.size)
-                            .unwrap_or(0);
-                        let _ = on_progress.send(TransferProgress { transferred: 0, total });
-                        if try_server_side_copy(&c.session, &src_path, &temp_remote, &dst_path).is_ok() {
-                            let _ = on_progress.send(TransferProgress { transferred: total, total });
-                            return Ok(());
+                        let src_stat = c.sftp.stat(Path::new(&src_path))?;
+                        let src_is_dir = src_stat.is_dir();
+                        let dst_stat = c.sftp.stat(Path::new(&dst_path)).ok();
+                        if !src_is_dir {
+                            if let Some(ref st) = dst_stat {
+                                if st.is_dir() {
+                                    return Err(AppError::Other(format!(
+                                        "Cannot overwrite existing directory '{dst_path}' with file"
+                                    )));
+                                }
+                            }
+                        }
+                        // Use atomic server-side copy when transferring a file or when target directory doesn't exist yet
+                        if !src_is_dir || dst_stat.is_none() {
+                            let total = src_stat.size.unwrap_or(0);
+                            let _ = on_progress.send(TransferProgress { transferred: 0, total });
+                            if try_server_side_copy(&c.session, &src_path, &temp_remote, &dst_path, src_is_dir).is_ok() {
+                                let _ = on_progress.send(TransferProgress { transferred: total, total });
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -471,130 +932,76 @@ pub async fn sftp_transfer_remote(
         let (dst_conn, dst_dedicated) = mgr.acquire_transfer_conn(&dst_session_id, &ssh, &vault)?;
         let same_conn = Arc::ptr_eq(&src_conn, &dst_conn);
 
+        let src_stat = {
+            let c_src = src_conn.lock();
+            c_src.sftp.stat(Path::new(&src_path))?
+        };
+
         let mut done = 0u64;
         let mut last_emit = Instant::now();
 
-        let (total, loop_result) = if same_conn {
-            let c = src_conn.lock();
-            let mut src = c.sftp.open(Path::new(&src_path))?;
-            let total = src.stat()?.size.unwrap_or(0);
-            let mut dst = c.sftp.create(Path::new(&temp_remote))?;
-            let mut buf = vec![0u8; CHUNK];
-            let res: AppResult<()> = (|| {
-                loop {
-                    let n = read_full_chunk(&mut src, &mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    dst.write_all(&buf[..n])?;
-                    done += n as u64;
-                    if last_emit.elapsed().as_millis() >= 50 || done == total {
-                        let _ = on_progress.send(TransferProgress { transferred: done, total });
-                        last_emit = Instant::now();
-                    }
-                }
-                dst.flush()?;
-                Ok(())
-            })();
-            (total, res)
-        } else if src_dedicated && dst_dedicated {
-            // Parallel 2-Thread Producer-Consumer Pipeline:
-            // Thread 1 (Producer) continuously reads coalesced 2 MiB chunks from Source Host
-            // while Thread 2 (Consumer) simultaneously writes 2 MiB chunks to Destination Host.
+        if src_stat.is_dir() {
+            if same_conn && is_subpath_str(&src_path, &dst_path) {
+                return Err(AppError::Other(
+                    "Cannot copy a directory into itself".into(),
+                ));
+            }
+            let mut rel_dirs = vec![String::new()];
+            let mut rel_files = Vec::new();
             let total = {
                 let c_src = src_conn.lock();
-                c_src.sftp.stat(Path::new(&src_path))?.size.unwrap_or(0)
+                collect_remote_tree(&c_src.sftp, &src_path, "", &mut rel_dirs, &mut rel_files, 0)?
             };
-            let src_conn_reader = src_conn.clone();
-            let src_path_reader = src_path.clone();
-            let (tx, rx) = std::sync::mpsc::sync_channel::<AppResult<Vec<u8>>>(PIPELINE_DEPTH);
+            let _ = on_progress.send(TransferProgress { transferred: 0, total });
 
-            let res: AppResult<()> = std::thread::scope(|s| {
-                s.spawn(move || {
-                    let c_src = src_conn_reader.lock();
-                    let mut src = match c_src.sftp.open(Path::new(&src_path_reader)) {
-                        Ok(f) => f,
-                        Err(e) => {
-                            let _ = tx.send(Err(AppError::from(e)));
-                            return;
-                        }
-                    };
-                    loop {
-                        let mut chunk = vec![0u8; CHUNK];
-                        match read_full_chunk(&mut src, &mut chunk) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                chunk.truncate(n);
-                                if tx.send(Ok(chunk)).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Err(AppError::Io(e)));
-                                break;
-                            }
-                        }
-                    }
-                });
-
+            let base_dst = dst_path.trim_end_matches('/');
+            {
                 let c_dst = dst_conn.lock();
-                let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
-                while let Ok(chunk_res) = rx.recv() {
-                    let chunk = chunk_res?;
-                    dst.write_all(&chunk)?;
-                    done += chunk.len() as u64;
-                    if last_emit.elapsed().as_millis() >= 50 || done == total {
-                        let _ = on_progress.send(TransferProgress { transferred: done, total });
-                        last_emit = Instant::now();
-                    }
+                for d in &rel_dirs {
+                    let target_dir = if d.is_empty() {
+                        base_dst.to_string()
+                    } else {
+                        format!("{base_dst}/{d}")
+                    };
+                    ensure_sftp_dir_all(&c_dst.sftp, Path::new(&target_dir))?;
                 }
-                dst.flush()?;
-                Ok(())
-            });
-            (total, res)
-        } else {
-            // Fallback when sharing connection mutexes: acquire locks in deterministic
-            // pointer address order to prevent ABBA deadlocks, and stream coalesced 2 MiB chunks.
-            let (c_src, c_dst) = if (Arc::as_ptr(&src_conn) as usize) < (Arc::as_ptr(&dst_conn) as usize) {
-                let s = src_conn.lock();
-                let d = dst_conn.lock();
-                (s, d)
-            } else {
-                let d = dst_conn.lock();
-                let s = src_conn.lock();
-                (s, d)
-            };
-            let mut src = c_src.sftp.open(Path::new(&src_path))?;
-            let total = src.stat()?.size.unwrap_or(0);
-            let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
-            let mut buf = vec![0u8; CHUNK];
-            let res: AppResult<()> = (|| {
-                loop {
-                    let n = read_full_chunk(&mut src, &mut buf)?;
-                    if n == 0 {
-                        break;
-                    }
-                    dst.write_all(&buf[..n])?;
-                    done += n as u64;
-                    if last_emit.elapsed().as_millis() >= 50 || done == total {
-                        let _ = on_progress.send(TransferProgress { transferred: done, total });
-                        last_emit = Instant::now();
-                    }
-                }
-                dst.flush()?;
-                Ok(())
-            })();
-            (total, res)
-        };
+            }
 
-        if let Err(e) = loop_result {
-            let c_dst = dst_conn.lock();
-            let _ = c_dst.sftp.unlink(Path::new(&temp_remote));
-            return Err(e);
+            for (src_child, rel_child, _sz) in &rel_files {
+                let target_dst = format!("{base_dst}/{rel_child}");
+                transfer_single_remote_file(
+                    &src_conn,
+                    src_dedicated,
+                    src_child,
+                    &dst_conn,
+                    dst_dedicated,
+                    &target_dst,
+                    same_conn,
+                    &mut done,
+                    total,
+                    &mut last_emit,
+                    &on_progress,
+                )?;
+            }
+
+            let _ = on_progress.send(TransferProgress { transferred: done, total });
+            return Ok::<(), AppError>(());
         }
 
-        let c_dst = dst_conn.lock();
-        atomic_sftp_rename(&c_dst.sftp, Path::new(&temp_remote), Path::new(&dst_path), &dst_path)?;
+        let total = src_stat.size.unwrap_or(0);
+        transfer_single_remote_file(
+            &src_conn,
+            src_dedicated,
+            &src_path,
+            &dst_conn,
+            dst_dedicated,
+            &dst_path,
+            same_conn,
+            &mut done,
+            total,
+            &mut last_emit,
+            &on_progress,
+        )?;
 
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -614,7 +1021,11 @@ pub fn sftp_mkdir(session_id: String, path: String, mgr: State<'_, SftpManager>,
 pub fn sftp_remove(session_id: String, path: String, is_dir: bool, mgr: State<'_, SftpManager>, ssh: State<'_, SshManager>, vault: State<'_, Vault>) -> AppResult<()> {
     let conn = mgr.get(&session_id, &ssh, &vault)?;
     let c = conn.lock();
-    if is_dir { c.sftp.rmdir(Path::new(&path))? } else { c.sftp.unlink(Path::new(&path))? }
+    if is_dir {
+        remove_sftp_dir_all(&c.sftp, Path::new(&path), 0)?;
+    } else {
+        c.sftp.unlink(Path::new(&path))?;
+    }
     Ok(())
 }
 
@@ -720,13 +1131,13 @@ pub fn local_fs_home() -> AppResult<String> {
     #[cfg(target_os = "android")]
     {
         let candidates = [
+            "/storage/emulated/0",
             "/storage/emulated/0/Download",
             "/storage/emulated/0/Documents",
-            "/storage/emulated/0",
             "/sdcard",
         ];
         for candidate in &candidates {
-            if std::path::Path::new(candidate).is_dir() {
+            if std::fs::read_dir(candidate).is_ok() {
                 return Ok(candidate.to_string());
             }
         }
@@ -746,17 +1157,32 @@ pub fn local_fs_home() -> AppResult<String> {
 
 #[tauri::command]
 pub fn local_fs_list(path: Option<String>) -> AppResult<LocalDirResponse> {
-    let target = match path.as_deref() {
-        Some(p) if !p.trim().is_empty() => {
-            // Policy: approved roots only, credential stores never.
-            crate::fs_guard::ensure_local_path_allowed(p)?
+    let normalized_input = path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let target = match normalized_input {
+        Some(p) => {
+            let trimmed = p.trim_end_matches('/');
+            // On Android, `/`, `/storage`, and `/storage/emulated` are root-owned kernel
+            // mount stubs (`0711` / FUSE namespace) that non-root apps cannot list.
+            // Redirect them cleanly to `/storage/emulated/0`.
+            if (cfg!(target_os = "android") || std::path::Path::new("/storage/emulated/0").is_dir())
+                && matches!(trimmed, "" | "/storage" | "/storage/emulated" | "/sdcard")
+            {
+                std::path::PathBuf::from("/storage/emulated/0")
+            } else {
+                // Policy: approved roots only, credential stores never.
+                crate::fs_guard::ensure_local_path_allowed(p)?
+            }
         }
-        _ => std::path::PathBuf::from(local_fs_home()?),
+        None => std::path::PathBuf::from(local_fs_home()?),
     };
 
     let canonical = target.canonicalize().unwrap_or(target);
     let current_path = canonical.to_string_lossy().to_string();
-    let parent_path = canonical.parent().map(|p| p.to_string_lossy().to_string());
+    let parent_path = if current_path == "/storage/emulated/0" {
+        None
+    } else {
+        canonical.parent().map(|p| p.to_string_lossy().to_string())
+    };
 
     let read_dir = match std::fs::read_dir(&canonical) {
         Ok(rd) => rd,
@@ -855,11 +1281,52 @@ pub fn local_fs_write_text(path: String, content: String) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+fn copy_local_dir_all(src: &Path, dst: &Path, depth: usize) -> AppResult<()> {
+    if depth > MAX_RECURSION_DEPTH {
+        return Err(AppError::Other("Directory recursion depth limit exceeded".into()));
+    }
+    crate::fs_guard::ensure_local_path_not_sensitive(&src.to_string_lossy())?;
+    crate::fs_guard::ensure_local_path_not_sensitive(&dst.to_string_lossy())?;
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        let src_child = entry.path();
+        let dst_child = dst.join(entry.file_name());
+        crate::fs_guard::ensure_local_path_not_sensitive(&src_child.to_string_lossy())?;
+        if ft.is_dir() {
+            copy_local_dir_all(&src_child, &dst_child, depth + 1)?;
+        } else if ft.is_file() {
+            std::fs::copy(&src_child, &dst_child)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
 pub fn local_fs_copy(from: String, to: String) -> AppResult<()> {
     let src = crate::fs_guard::ensure_local_path_allowed(&from)?;
     let dst = crate::fs_guard::ensure_local_path_allowed(&to)?;
-    std::fs::copy(src, dst)?;
+    if src == dst {
+        return Ok(());
+    }
+    if src.is_dir() {
+        let src_canon = src.canonicalize().unwrap_or_else(|_| src.clone());
+        let dst_parent_canon = dst
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .map(|p| p.join(dst.file_name().unwrap_or_default()))
+            .unwrap_or_else(|| dst.clone());
+        if dst_parent_canon.starts_with(&src_canon) {
+            return Err(AppError::Other("Cannot copy a directory into itself".into()));
+        }
+        copy_local_dir_all(&src, &dst, 0)?;
+    } else {
+        std::fs::copy(src, dst)?;
+    }
     Ok(())
 }
 
@@ -957,6 +1424,39 @@ mod tests {
     fn test_safe_posix_path_quote_escapes_leading_dash() {
         assert_eq!(safe_posix_path_quote("/var/www/index.html"), "'/var/www/index.html'");
         assert_eq!(safe_posix_path_quote("-rf"), "'./-rf'");
+    }
+
+    #[test]
+    fn test_is_subpath_str_detects_nested_directories() {
+        assert!(is_subpath_str("/var/www", "/var/www"));
+        assert!(is_subpath_str("/var/www/", "/var/www/html/index.html"));
+        assert!(!is_subpath_str("/var/www", "/var/www-backup"));
+        assert!(!is_subpath_str("/var/www/html", "/var/www"));
+    }
+
+    #[test]
+    fn test_recursive_local_tree_collection_and_copy() {
+        let base = std::env::temp_dir().join(format!("drexius-test-dir-{}", uuid::Uuid::new_v4()));
+        let src_dir = base.join("src_folder");
+        let nested_dir = src_dir.join("sub/deep");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(src_dir.join("root.txt"), b"hello root").unwrap();
+        std::fs::write(nested_dir.join("leaf.txt"), b"hello leaf").unwrap();
+
+        let mut rel_dirs = vec![String::new()];
+        let mut rel_files = Vec::new();
+        let total = collect_local_tree(&src_dir, "", &mut rel_dirs, &mut rel_files, 0).unwrap();
+        assert_eq!(total, 20);
+        assert!(rel_dirs.contains(&"sub".to_string()));
+        assert!(rel_dirs.contains(&"sub/deep".to_string()));
+        assert_eq!(rel_files.len(), 2);
+
+        let dst_dir = base.join("dst_folder");
+        copy_local_dir_all(&src_dir, &dst_dir, 0).unwrap();
+        assert_eq!(std::fs::read_to_string(dst_dir.join("root.txt")).unwrap(), "hello root");
+        assert_eq!(std::fs::read_to_string(dst_dir.join("sub/deep/leaf.txt")).unwrap(), "hello leaf");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

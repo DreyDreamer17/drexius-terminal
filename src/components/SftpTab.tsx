@@ -30,6 +30,9 @@ import {
   Laptop,
   HardDrive,
   ShieldCheck,
+  Copy,
+  CheckSquare,
+  FolderOpen,
 } from 'lucide-react';
 import { bridge, isBridgeError } from '../lib/bridge';
 import type { FileEntry, Host, Tab } from '../lib/types';
@@ -122,7 +125,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   const [leftFilter, setLeftFilter] = useState<string>('');
   const [showLeftSearch, setShowLeftSearch] = useState<boolean>(false);
   const [showLeftHidden, setShowLeftHidden] = useState<boolean>(false);
-  const [leftSelected, setLeftSelected] = useState<string | null>(null);
+  const [leftSelected, setLeftSelected] = useState<Set<string>>(() => new Set());
+  const [leftLastClicked, setLeftLastClicked] = useState<string | null>(null);
   const [leftHistory, setLeftHistory] = useState<string[]>([]);
   const [leftHistoryIdx, setLeftHistoryIdx] = useState<number>(-1);
   const [showLeftActions, setShowLeftActions] = useState<boolean>(false);
@@ -140,10 +144,28 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
   const [rightFilter, setRightFilter] = useState<string>('');
   const [showRightSearch, setShowRightSearch] = useState<boolean>(false);
   const [showRightHidden, setShowRightHidden] = useState<boolean>(false);
-  const [rightSelected, setRightSelected] = useState<string | null>(null);
+  const [rightSelected, setRightSelected] = useState<Set<string>>(() => new Set());
+  const [rightLastClicked, setRightLastClicked] = useState<string | null>(null);
   const [rightHistory, setRightHistory] = useState<string[]>([]);
   const [rightHistoryIdx, setRightHistoryIdx] = useState<number>(-1);
   const [showRightActions, setShowRightActions] = useState<boolean>(false);
+
+  // Active pane focus for keyboard shortcuts (Ctrl+A, Delete, F2)
+  const [focusedSide, setFocusedSide] = useState<'left' | 'right'>('left');
+
+  // Mobile long-press touch tracker
+  const touchTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const didLongPressRef = useRef(false);
+
+  // Desktop floating right-click context menu
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    side: 'left' | 'right';
+    targetEntry: FileEntry | null;
+    selectedEntries: FileEntry[];
+  } | null>(null);
 
   // Keep references in sync for async callbacks
   const leftHostIdRef = useRef(leftHostId);
@@ -204,9 +226,9 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     targetPath?: string;
   } | null>(null);
 
-  // Delete confirmation dialog
+  // Delete confirmation dialog (supports single or batch deletion)
   const [deleteConfirm, setDeleteConfirm] = useState<{
-    entry: FileEntry;
+    entries: FileEntry[];
     side: 'left' | 'right';
     deleting?: boolean;
   } | null>(null);
@@ -240,6 +262,10 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           // Local Filesystem
           const res = await bridge.localFsList(targetPath);
           if (isLeft) {
+            if (res.currentPath !== leftPath) {
+              setLeftSelected(new Set());
+              setLeftLastClicked(null);
+            }
             setLeftPath(res.currentPath);
             setLeftEntries(res.entries);
             if (recordHistory) {
@@ -247,6 +273,10 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               setLeftHistoryIdx((prev) => prev + 1);
             }
           } else {
+            if (res.currentPath !== rightPath) {
+              setRightSelected(new Set());
+              setRightLastClicked(null);
+            }
             setRightPath(res.currentPath);
             setRightEntries(res.entries);
             if (recordHistory) {
@@ -261,6 +291,10 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           const p = targetPath ?? currentP;
           const list = await bridge.sftpList(effectiveSid, p);
           if (isLeft) {
+            if (p !== leftPath) {
+              setLeftSelected(new Set());
+              setLeftLastClicked(null);
+            }
             setLeftPath(p);
             setLeftEntries(list);
             if (recordHistory) {
@@ -268,6 +302,10 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               setLeftHistoryIdx((prev) => prev + 1);
             }
           } else {
+            if (p !== rightPath) {
+              setRightSelected(new Set());
+              setRightLastClicked(null);
+            }
             setRightPath(p);
             setRightEntries(list);
             if (recordHistory) {
@@ -335,6 +373,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           setLeftPath(initialP);
           setLeftHistory([initialP]);
           setLeftHistoryIdx(0);
+          setLeftSelected(new Set());
+          setLeftLastClicked(null);
           onUpdateTab({
             sftpLeftHostId: hostId,
             sftpLeftSessionId: sid,
@@ -349,6 +389,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
           setRightPath(initialP);
           setRightHistory([initialP]);
           setRightHistoryIdx(0);
+          setRightSelected(new Set());
+          setRightLastClicked(null);
           onUpdateTab({
             sftpRightHostId: hostId,
             sftpRightSessionId: sid,
@@ -389,6 +431,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         }
         setLeftSessionId(null);
         setLeftHostId(null);
+        setLeftSelected(new Set());
+        setLeftLastClicked(null);
         onUpdateTab({
           sftpLeftHostId: null,
           sftpLeftSessionId: null,
@@ -404,6 +448,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         }
         setRightSessionId(null);
         setRightHostId(null);
+        setRightSelected(new Set());
+        setRightLastClicked(null);
         onUpdateTab({
           sftpRightHostId: null,
           sftpRightSessionId: null,
@@ -433,6 +479,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         setLeftPath('');
         setLeftHistory([]);
         setLeftHistoryIdx(-1);
+        setLeftSelected(new Set());
+        setLeftLastClicked(null);
         onUpdateTab({ sftpLeftHostId: null, sftpLeftSessionId: null });
       } else {
         connectGenerationRef.current.right++;
@@ -445,6 +493,8 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         setRightPath('');
         setRightHistory([]);
         setRightHistoryIdx(-1);
+        setRightSelected(new Set());
+        setRightLastClicked(null);
         onUpdateTab({ sftpRightHostId: null, sftpRightSessionId: null, sftpHostId: null, sftpSessionId: null });
       }
       toast(`${isLeft ? 'Left' : 'Right'} pane disconnected`);
@@ -486,10 +536,13 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     setLeftHistoryIdx(oldRightIdx);
     setRightHistoryIdx(oldLeftIdx);
 
-    setLeftSelected(null);
-    setRightSelected(null);
+    setLeftSelected(new Set());
+    setRightSelected(new Set());
+    setLeftLastClicked(null);
+    setRightLastClicked(null);
     setLeftFilter('');
     setRightFilter('');
+    setContextMenu(null);
 
     onUpdateTab({
       sftpLeftHostId: oldRightHost,
@@ -616,27 +669,44 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     }
   };
 
-  // Breadcrumbs parsing
+  // Breadcrumbs parsing (treats `/storage/emulated/0` as root on Android Local)
   const leftCrumbs = useMemo(() => {
     if (!leftPath) return [];
+    if (!leftHostId && leftPath.startsWith('/storage/emulated/0')) {
+      const rel = leftPath.slice('/storage/emulated/0'.length);
+      const parts = rel.split('/').filter(Boolean);
+      return parts.map((part, index) => ({
+        name: part,
+        fullPath: '/storage/emulated/0/' + parts.slice(0, index + 1).join('/'),
+      }));
+    }
     const parts = leftPath.split('/').filter(Boolean);
     return parts.map((part, index) => ({
       name: part,
       fullPath: '/' + parts.slice(0, index + 1).join('/'),
     }));
-  }, [leftPath]);
+  }, [leftPath, leftHostId]);
 
   const rightCrumbs = useMemo(() => {
     if (!rightPath) return [];
+    if (!rightHostId && rightPath.startsWith('/storage/emulated/0')) {
+      const rel = rightPath.slice('/storage/emulated/0'.length);
+      const parts = rel.split('/').filter(Boolean);
+      return parts.map((part, index) => ({
+        name: part,
+        fullPath: '/storage/emulated/0/' + parts.slice(0, index + 1).join('/'),
+      }));
+    }
     const parts = rightPath.split('/').filter(Boolean);
     return parts.map((part, index) => ({
       name: part,
       fullPath: '/' + parts.slice(0, index + 1).join('/'),
     }));
-  }, [rightPath]);
+  }, [rightPath, rightHostId]);
 
-  // ── Unified File Transfer (Local ↔ Remote, Remote ↔ Remote, Local ↔ Local) ──
-  const handleTransfer = async (entry: FileEntry, fromSide: 'left' | 'right') => {
+  // ── Unified File & Folder Transfer (Single or Batch: Local ↔ Remote, Remote ↔ Remote, Local ↔ Local) ──
+  const handleTransferBatch = async (items: FileEntry[], fromSide: 'left' | 'right') => {
+    if (!items.length) return;
     const toSide = fromSide === 'left' ? 'right' : 'left';
     const fromIsRemote = fromSide === 'left' ? !!leftHostId : !!rightHostId;
     const toIsRemote = toSide === 'left' ? !!leftHostId : !!rightHostId;
@@ -657,44 +727,53 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       return;
     }
 
-    const targetDestPath = `${toPath.replace(/\/$/, '')}/${entry.name}`;
-    setTransferStatus({
-      type: fromIsRemote && !toIsRemote ? 'download' : 'upload',
-      filename: entry.name,
-      progress: 0,
-    });
-
     try {
-      if (!fromIsRemote && !toIsRemote) {
-        // Local -> Local
-        await bridge.localFsCopy(entry.path, targetDestPath);
-      } else if (!fromIsRemote && toIsRemote) {
-        // Local -> Remote (Upload)
-        await bridge.sftpUploadDirect(
-          toSid!,
-          entry.path,
-          targetDestPath,
-          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
-        );
-      } else if (fromIsRemote && !toIsRemote) {
-        // Remote -> Local (Download)
-        await bridge.sftpDownloadDirect(
-          fromSid!,
-          entry.path,
-          targetDestPath,
-          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
-        );
-      } else {
-        // Remote -> Remote (Direct Server Transfer)
-        await bridge.sftpTransferRemoteDirect(
-          fromSid!,
-          entry.path,
-          toSid!,
-          targetDestPath,
-          (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
-        );
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i];
+        const targetDestPath = `${toPath.replace(/\/$/, '')}/${entry.name}`;
+        const labelName = items.length > 1 ? `${entry.name} (${i + 1}/${items.length})` : entry.name;
+        setTransferStatus({
+          type: fromIsRemote && !toIsRemote ? 'download' : 'upload',
+          filename: labelName,
+          progress: 0,
+        });
+
+        if (!fromIsRemote && !toIsRemote) {
+          // Local -> Local (file or folder)
+          await bridge.localFsCopy(entry.path, targetDestPath);
+          setTransferStatus((s) => s && { ...s, progress: 1 });
+        } else if (!fromIsRemote && toIsRemote) {
+          // Local -> Remote (Upload file or folder)
+          await bridge.sftpUploadDirect(
+            toSid!,
+            entry.path,
+            targetDestPath,
+            (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+          );
+        } else if (fromIsRemote && !toIsRemote) {
+          // Remote -> Local (Download file or folder)
+          await bridge.sftpDownloadDirect(
+            fromSid!,
+            entry.path,
+            targetDestPath,
+            (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+          );
+        } else {
+          // Remote -> Remote (Direct Server Transfer of file or folder)
+          await bridge.sftpTransferRemoteDirect(
+            fromSid!,
+            entry.path,
+            toSid!,
+            targetDestPath,
+            (pct) => setTransferStatus((s) => s && { ...s, progress: pct })
+          );
+        }
       }
-      toast(`Transferred ${entry.name} to ${toLabel}`);
+      if (items.length === 1) {
+        toast(`Transferred ${items[0].name} to ${toLabel}`);
+      } else {
+        toast(`Transferred ${items.length} items to ${toLabel}`);
+      }
       await loadPane(toSide, toPath, false);
     } catch (err) {
       toast(isBridgeError(err) ? err.message : `Transfer failed: ${err}`);
@@ -703,9 +782,26 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     }
   };
 
-  // ── Drag and Drop Between Panes ──
-  const handleDragStart = (e: React.DragEvent, entry: FileEntry, side: 'left' | 'right') => {
-    e.dataTransfer.setData('text/plain', JSON.stringify({ side, entry }));
+  const handleTransfer = async (entry: FileEntry, fromSide: 'left' | 'right') => {
+    await handleTransferBatch([entry], fromSide);
+  };
+
+  // ── Drag and Drop Between Panes (Single or Multi-Select) ──
+  const handleDragStart = (
+    e: React.DragEvent,
+    entry: FileEntry,
+    side: 'left' | 'right',
+    visibleEntries: FileEntry[]
+  ) => {
+    setContextMenu(null);
+    const sel = side === 'left' ? leftSelected : rightSelected;
+    const draggedEntries = sel.has(entry.path)
+      ? visibleEntries.filter((it) => sel.has(it.path))
+      : [entry];
+    e.dataTransfer.setData(
+      'text/plain',
+      JSON.stringify({ side, entry: draggedEntries[0], entries: draggedEntries })
+    );
     e.dataTransfer.effectAllowed = 'copy';
   };
 
@@ -720,47 +816,350 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     if (!raw) return;
     try {
       const data = JSON.parse(raw);
-      if (data.side && data.side !== targetSide && data.entry) {
-        await handleTransfer(data.entry, data.side);
+      if (data.side && data.side !== targetSide) {
+        const list: FileEntry[] = Array.isArray(data.entries) && data.entries.length > 0
+          ? data.entries
+          : data.entry
+          ? [data.entry]
+          : [];
+        if (list.length > 0) {
+          await handleTransferBatch(list, data.side);
+        }
       }
     } catch (_) {}
   };
 
   // ── File Actions (Delete, Rename, New Folder, View/Edit) ──
+  const requestDeleteBatch = (entriesToDelete: FileEntry[], side: 'left' | 'right') => {
+    if (!entriesToDelete.length) return;
+    setDeleteConfirm({ entries: entriesToDelete, side });
+  };
+
   const requestDelete = (entry: FileEntry, side: 'left' | 'right') => {
-    setDeleteConfirm({ entry, side });
+    requestDeleteBatch([entry], side);
   };
 
   const handleExecuteDelete = async () => {
-    if (!deleteConfirm) return;
-    const { entry, side } = deleteConfirm;
+    if (!deleteConfirm || !deleteConfirm.entries.length) return;
+    const { entries: targetEntries, side } = deleteConfirm;
     const isRemote = side === 'left' ? !!leftHostId : !!rightHostId;
     const sid = side === 'left' ? leftSessionId : rightSessionId;
     const currentP = side === 'left' ? leftPath : rightPath;
 
     setDeleteConfirm((prev) => prev && { ...prev, deleting: true });
     try {
-      if (!isRemote) {
-        await bridge.localFsRemove(entry.path, entry.isDir);
-        toast(`Deleted ${entry.name}`);
-        setDeleteConfirm(null);
-        loadPane(side, currentP, false);
-      } else if (sid) {
-        await bridge.sftpRemove(sid, entry.path, entry.isDir);
-        toast(`Deleted ${entry.name}`);
-        setDeleteConfirm(null);
-        loadPane(side, currentP, false);
+      for (const entry of targetEntries) {
+        if (!isRemote) {
+          await bridge.localFsRemove(entry.path, entry.isDir);
+        } else if (sid) {
+          await bridge.sftpRemove(sid, entry.path, entry.isDir);
+        }
       }
+      if (side === 'left') {
+        setLeftSelected(new Set());
+        setLeftLastClicked(null);
+      } else {
+        setRightSelected(new Set());
+        setRightLastClicked(null);
+      }
+      toast(
+        targetEntries.length === 1
+          ? `Deleted ${targetEntries[0].name}`
+          : `Deleted ${targetEntries.length} items`
+      );
+      setDeleteConfirm(null);
+      loadPane(side, currentP, false);
     } catch (err) {
       toast(isBridgeError(err) ? err.message : String(err));
       setDeleteConfirm((prev) => prev && { ...prev, deleting: false });
     }
   };
 
-  // Keyboard shortcut: Delete key for selected item
+  const copyPathsToClipboard = async (items: FileEntry[]) => {
+    if (!items.length) return;
+    const text = items.map((it) => it.path).join('\n');
+    try {
+      await bridge.writeClipboard(text);
+      toast(items.length === 1 ? `Copied path: ${items[0].path}` : `Copied ${items.length} paths to clipboard`);
+    } catch {
+      toast('Could not copy path to clipboard');
+    }
+  };
+
+  // Filtered file lists
+  const filteredLeft = useMemo(() => {
+    return leftEntries.filter((e) => {
+      if (!showLeftHidden && e.name.startsWith('.')) return false;
+      if (leftFilter && !e.name.toLowerCase().includes(leftFilter.toLowerCase())) return false;
+      return true;
+    });
+  }, [leftEntries, showLeftHidden, leftFilter]);
+
+  const filteredRight = useMemo(() => {
+    return rightEntries.filter((e) => {
+      if (!showRightHidden && e.name.startsWith('.')) return false;
+      if (rightFilter && !e.name.toLowerCase().includes(rightFilter.toLowerCase())) return false;
+      return true;
+    });
+  }, [rightEntries, showRightHidden, rightFilter]);
+
+  const filteredHosts = useMemo(() => {
+    if (!hostPickerSearch.trim()) return hosts;
+    const q = hostPickerSearch.toLowerCase().trim();
+    return hosts.filter(
+      (h) =>
+        h.label.toLowerCase().includes(q) ||
+        h.hostname.toLowerCase().includes(q) ||
+        h.username.toLowerCase().includes(q)
+    );
+  }, [hosts, hostPickerSearch]);
+
+  // ── Multi-Selection & Context Menu Handlers ──
+  const selectAllInPane = useCallback(
+    (side: 'left' | 'right') => {
+      const list = side === 'left' ? filteredLeft : filteredRight;
+      const next = new Set(list.map((it) => it.path));
+      if (side === 'left') {
+        setLeftSelected(next);
+      } else {
+        setRightSelected(next);
+      }
+    },
+    [filteredLeft, filteredRight]
+  );
+
+  const clearSelectionInPane = useCallback((side: 'left' | 'right') => {
+    if (side === 'left') {
+      setLeftSelected(new Set());
+      setLeftLastClicked(null);
+    } else {
+      setRightSelected(new Set());
+      setRightLastClicked(null);
+    }
+  }, []);
+
+  // ── Mobile Long-Press Touch Handlers ──
+  const handleRowTouchStart = (
+    e: React.TouchEvent,
+    entry: FileEntry,
+    side: 'left' | 'right'
+  ) => {
+    if (!mobile) return;
+    didLongPressRef.current = false;
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+    const touch = e.touches[0];
+    touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+
+    touchTimerRef.current = setTimeout(() => {
+      touchTimerRef.current = null;
+      didLongPressRef.current = true;
+      if (window.navigator?.vibrate) {
+        try {
+          window.navigator.vibrate(40);
+        } catch (_) {}
+      }
+      setFocusedSide(side);
+      const setSelected = side === 'left' ? setLeftSelected : setRightSelected;
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.add(entry.path);
+        return next;
+      });
+    }, 420);
+  };
+
+  const handleRowTouchMove = (e: React.TouchEvent) => {
+    if (!mobile || !touchStartPosRef.current) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - touchStartPosRef.current.x;
+    const dy = touch.clientY - touchStartPosRef.current.y;
+    // If finger moves more than 10px (user is scrolling), cancel long press
+    if (Math.hypot(dx, dy) > 10) {
+      if (touchTimerRef.current) {
+        clearTimeout(touchTimerRef.current);
+        touchTimerRef.current = null;
+      }
+    }
+  };
+
+  const handleRowTouchEnd = (e: React.TouchEvent) => {
+    if (!mobile) return;
+    if (touchTimerRef.current) {
+      clearTimeout(touchTimerRef.current);
+      touchTimerRef.current = null;
+    }
+    touchStartPosRef.current = null;
+    if (didLongPressRef.current) {
+      if (e.cancelable) e.preventDefault();
+      setTimeout(() => {
+        didLongPressRef.current = false;
+      }, 350);
+    }
+  };
+
+  const handleRowClick = (
+    e: React.MouseEvent,
+    entry: FileEntry,
+    side: 'left' | 'right',
+    visibleEntries: FileEntry[]
+  ) => {
+    if (didLongPressRef.current) {
+      didLongPressRef.current = false;
+      return;
+    }
+
+    setFocusedSide(side);
+    setContextMenu(null);
+    const isLeft = side === 'left';
+    const setSelected = isLeft ? setLeftSelected : setRightSelected;
+    const lastClicked = isLeft ? leftLastClicked : rightLastClicked;
+    const setLastClicked = isLeft ? setLeftLastClicked : setRightLastClicked;
+
+    if (mobile) {
+      const currentSelected = isLeft ? leftSelected : rightSelected;
+      // In mobile selection mode (any item selected), tapping any row toggles selection
+      if (currentSelected.size > 0) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          if (next.has(entry.path)) next.delete(entry.path);
+          else next.add(entry.path);
+          return next;
+        });
+        setLastClicked(entry.path);
+        return;
+      }
+
+      // Normal mobile browsing mode: do not modify `selected` so selection mode never flashes
+      if (entry.isDir) loadPane(side, entry.path);
+      else setFileActions({ entry, side });
+      return;
+    }
+
+    if (e.shiftKey && lastClicked) {
+      const startIdx = visibleEntries.findIndex((it) => it.path === lastClicked);
+      const endIdx = visibleEntries.findIndex((it) => it.path === entry.path);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const rangePaths = visibleEntries.slice(lo, hi + 1).map((it) => it.path);
+        setSelected((prev) => {
+          const next = e.ctrlKey || e.metaKey ? new Set(prev) : new Set<string>();
+          for (const p of rangePaths) next.add(p);
+          return next;
+        });
+        return;
+      }
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(entry.path)) next.delete(entry.path);
+        else next.add(entry.path);
+        return next;
+      });
+      setLastClicked(entry.path);
+      return;
+    }
+
+    setSelected(new Set([entry.path]));
+    setLastClicked(entry.path);
+  };
+
+  const handleRowContextMenu = (
+    e: React.MouseEvent,
+    entry: FileEntry,
+    side: 'left' | 'right',
+    visibleEntries: FileEntry[]
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFocusedSide(side);
+
+    if (mobile) {
+      // Native mobile contextmenu fires during a long press (~500ms).
+      // Only add the entry if our touch timer hasn't already handled this press.
+      if (!didLongPressRef.current) {
+        didLongPressRef.current = true;
+        if (window.navigator?.vibrate) {
+          try {
+            window.navigator.vibrate(40);
+          } catch (_) {}
+        }
+        const isLeft = side === 'left';
+        const setSelected = isLeft ? setLeftSelected : setRightSelected;
+        setSelected((prev) => {
+          const next = new Set(prev);
+          next.add(entry.path);
+          return next;
+        });
+      }
+      return;
+    }
+
+    const isLeft = side === 'left';
+    const selected = isLeft ? leftSelected : rightSelected;
+    const setSelected = isLeft ? setLeftSelected : setRightSelected;
+    const setLastClicked = isLeft ? setLeftLastClicked : setRightLastClicked;
+
+    let selectedEntries: FileEntry[];
+    if (selected.has(entry.path)) {
+      selectedEntries = visibleEntries.filter((it) => selected.has(it.path));
+      if (selectedEntries.length === 0) selectedEntries = [entry];
+    } else {
+      const next = new Set([entry.path]);
+      setSelected(next);
+      setLastClicked(entry.path);
+      selectedEntries = [entry];
+    }
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      side,
+      targetEntry: entry,
+      selectedEntries,
+    });
+  };
+
+  const handlePaneContextMenu = (
+    e: React.MouseEvent,
+    side: 'left' | 'right',
+    visibleEntries: FileEntry[]
+  ) => {
+    e.preventDefault();
+    setFocusedSide(side);
+    if (mobile) return;
+
+    const selected = side === 'left' ? leftSelected : rightSelected;
+    const selectedEntries = visibleEntries.filter((it) => selected.has(it.path));
+
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      side,
+      targetEntry: null,
+      selectedEntries,
+    });
+  };
+
+  // Keyboard shortcuts: Ctrl/Cmd+A (Select All), Delete (Batch Delete), F2 (Rename), Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!active) return;
+
+      if (e.key === 'Escape') {
+        if (contextMenu) {
+          e.preventDefault();
+          setContextMenu(null);
+          return;
+        }
+        if (permissions && !mobile) {
+          e.preventDefault();
+          setPermissions(null);
+          return;
+        }
+      }
+
       if (
         document.activeElement?.tagName === 'INPUT' ||
         document.activeElement?.tagName === 'TEXTAREA' ||
@@ -772,18 +1171,52 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         return;
       }
 
-      if (e.key === 'Delete') {
-        if (rightSelected) {
-          const entry = rightEntries.find((r) => r.path === rightSelected);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        selectAllInPane(focusedSide);
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        clearSelectionInPane(focusedSide);
+        return;
+      }
+
+      if (e.key === 'F2') {
+        const activeSel = focusedSide === 'left' ? leftSelected : rightSelected;
+        const activeList = focusedSide === 'left' ? filteredLeft : filteredRight;
+        if (activeSel.size === 1) {
+          const onlyPath = Array.from(activeSel)[0];
+          const entry = activeList.find((it) => it.path === onlyPath);
           if (entry) {
             e.preventDefault();
-            requestDelete(entry, 'right');
+            setPromptDialog({
+              type: 'rename',
+              side: focusedSide,
+              title: `Rename ${entry.name}`,
+              currentVal: entry.name,
+              targetPath: entry.path,
+            });
           }
-        } else if (leftSelected) {
-          const entry = leftEntries.find((l) => l.path === leftSelected);
-          if (entry) {
+        }
+        return;
+      }
+
+      if (e.key === 'Delete') {
+        const primarySide = focusedSide;
+        const secondarySide = focusedSide === 'left' ? 'right' : 'left';
+        const primarySel = primarySide === 'left' ? leftSelected : rightSelected;
+        const secondarySel = secondarySide === 'left' ? leftSelected : rightSelected;
+
+        const targetSide = primarySel.size > 0 ? primarySide : secondarySel.size > 0 ? secondarySide : null;
+        if (targetSide) {
+          const sel = targetSide === 'left' ? leftSelected : rightSelected;
+          const entries = (targetSide === 'left' ? leftEntries : rightEntries).filter((it) =>
+            sel.has(it.path)
+          );
+          if (entries.length > 0) {
             e.preventDefault();
-            requestDelete(entry, 'left');
+            requestDeleteBatch(entries, targetSide);
           }
         }
       }
@@ -791,7 +1224,25 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [active, rightSelected, leftSelected, rightEntries, leftEntries, editingFile, promptDialog, hostPickerSide, deleteConfirm]);
+  }, [
+    active,
+    contextMenu,
+    permissions,
+    mobile,
+    focusedSide,
+    rightSelected,
+    leftSelected,
+    rightEntries,
+    leftEntries,
+    filteredLeft,
+    filteredRight,
+    editingFile,
+    promptDialog,
+    hostPickerSide,
+    deleteConfirm,
+    selectAllInPane,
+    clearSelectionInPane,
+  ]);
 
   const handleOpenFile = async (entry: FileEntry, side: 'left' | 'right') => {
     if (entry.isDir) return;
@@ -908,34 +1359,6 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     }
   };
 
-  // Filtered file lists
-  const filteredLeft = useMemo(() => {
-    return leftEntries.filter((e) => {
-      if (!showLeftHidden && e.name.startsWith('.')) return false;
-      if (leftFilter && !e.name.toLowerCase().includes(leftFilter.toLowerCase())) return false;
-      return true;
-    });
-  }, [leftEntries, showLeftHidden, leftFilter]);
-
-  const filteredRight = useMemo(() => {
-    return rightEntries.filter((e) => {
-      if (!showRightHidden && e.name.startsWith('.')) return false;
-      if (rightFilter && !e.name.toLowerCase().includes(rightFilter.toLowerCase())) return false;
-      return true;
-    });
-  }, [rightEntries, showRightHidden, rightFilter]);
-
-  const filteredHosts = useMemo(() => {
-    if (!hostPickerSearch.trim()) return hosts;
-    const q = hostPickerSearch.toLowerCase().trim();
-    return hosts.filter(
-      (h) =>
-        h.label.toLowerCase().includes(q) ||
-        h.hostname.toLowerCase().includes(q) ||
-        h.username.toLowerCase().includes(q)
-    );
-  }, [hosts, hostPickerSearch]);
-
   // ── Render Single Pane ──
   const renderPane = (side: 'left' | 'right') => {
     const isLeft = side === 'left';
@@ -954,13 +1377,16 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
     const showHidden = isLeft ? showLeftHidden : showRightHidden;
     const setShowHidden = isLeft ? setShowLeftHidden : setShowRightHidden;
     const selected = isLeft ? leftSelected : rightSelected;
-    const setSelected = isLeft ? setLeftSelected : setRightSelected;
     const histIdx = isLeft ? leftHistoryIdx : rightHistoryIdx;
     const hist = isLeft ? leftHistory : rightHistory;
     const showActions = isLeft ? showLeftActions : showRightActions;
     const setShowActions = isLeft ? setShowLeftActions : setShowRightActions;
 
     const isDisconnectedRemote = hostId !== null && !sessionId && !connecting;
+    const selectedEntriesInPane = entries.filter((it) => selected.has(it.path));
+    const isAndroidStorage = !hostId && path.startsWith('/storage/emulated/0');
+    const rootPath = isAndroidStorage ? '/storage/emulated/0' : '/';
+    const rootLabel = isAndroidStorage ? 'Internal Storage' : '/';
 
     return (
       <div
@@ -971,6 +1397,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
         )}
         role="region"
         aria-label={`${isLeft ? 'Left' : 'Right'} pane files`}
+        onMouseDown={() => setFocusedSide(side)}
         onDragOver={handleDragOver}
         onDrop={(e) => handleDrop(e, side)}
       >
@@ -1168,6 +1595,25 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                         <button
                           onClick={() => {
                             setShowActions(false);
+                            if (selected.size > 0) {
+                              clearSelectionInPane(side);
+                            } else {
+                              selectAllInPane(side);
+                            }
+                          }}
+                          className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
+                        >
+                          <div className="flex items-center gap-2">
+                            <CheckSquare className="h-3.5 w-3.5 text-cyan-400" />
+                            <span>{selected.size > 0 ? 'Clear Selection' : 'Select All / Multi-Select'}</span>
+                          </div>
+                          {selected.size > 0 && (
+                            <span className="font-mono text-[10px] text-cyan-300">{selected.size}</span>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowActions(false);
                             setHostPickerSide(side);
                           }}
                           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white"
@@ -1208,51 +1654,142 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               </div>
             </div>
 
-            {/* Breadcrumbs Bar */}
-            <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-white/[0.06] bg-black/10 px-3 text-xs">
-              <div className="flex items-center gap-0.5">
-                <button
-                  disabled={histIdx <= 0}
-                  onClick={() => navigateBack(side)}
-                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronLeft className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  disabled={histIdx >= hist.length - 1}
-                  onClick={() => navigateForward(side)}
-                  className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
-                >
-                  <ChevronRight className="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
-                <button
-                  onClick={() => loadPane(side, '/')}
-                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-slate-400 hover:bg-white/[0.06] hover:text-white"
-                >
-                  <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
-                  <span className="font-mono text-[11px]">/</span>
-                </button>
-                {crumbs.map((crumb, idx) => (
-                  <div key={crumb.fullPath} className="flex items-center gap-1 shrink-0">
-                    <ChevronRight className="h-3 w-3 text-slate-600 shrink-0" />
+            {/* Breadcrumbs Bar & In-Flow Selection Bar (Never covers files) */}
+            <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] bg-black/10 px-3 text-xs">
+              {mobile && selectedEntriesInPane.length > 0 ? (
+                /* Mobile In-Flow Selection Bar (replaces breadcrumbs while selecting, covers 0 files) */
+                <div className="flex w-full items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <button
-                      onClick={() => loadPane(side, crumb.fullPath)}
-                      className={cn(
-                        'flex items-center gap-1.5 rounded px-1.5 py-0.5 transition font-medium',
-                        idx === crumbs.length - 1
-                          ? 'text-slate-100 bg-white/[0.05]'
-                          : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
-                      )}
+                      onClick={() => clearSelectionInPane(side)}
+                      className="grid h-7 w-7 place-items-center rounded-lg bg-white/[0.08] text-slate-300 hover:text-white transition shrink-0"
+                      title="Exit selection mode"
                     >
-                      <Folder className="h-3.5 w-3.5 text-sky-400" />
-                      <span>{crumb.name}</span>
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                    <span className="font-semibold text-xs text-cyan-300 truncate">
+                      {selectedEntriesInPane.length} selected
+                    </span>
+                    <button
+                      onClick={() => {
+                        if (selected.size === entries.length) {
+                          clearSelectionInPane(side);
+                        } else {
+                          selectAllInPane(side);
+                        }
+                      }}
+                      className="rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[11px] font-medium text-slate-200 hover:bg-white/10 transition shrink-0"
+                    >
+                      {selected.size === entries.length ? 'None' : 'All'}
                     </button>
                   </div>
-                ))}
-              </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      disabled={!!transferStatus}
+                      onClick={() => handleTransferBatch(selectedEntriesInPane, side)}
+                      className="flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/20 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-40 transition"
+                    >
+                      {isLeft ? <ArrowRight className="h-3.5 w-3.5" /> : <ArrowLeft className="h-3.5 w-3.5" />}
+                      <span>Transfer</span>
+                    </button>
+                    <button
+                      onClick={() => requestDeleteBatch(selectedEntriesInPane, side)}
+                      className="flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/20 px-2 py-1 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/30 transition"
+                      title="Delete selected"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        disabled={histIdx <= 0}
+                        onClick={() => navigateBack(side)}
+                        className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        disabled={histIdx >= hist.length - 1}
+                        onClick={() => navigateForward(side)}
+                        className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-white/[0.06] hover:text-white disabled:opacity-30 disabled:hover:bg-transparent"
+                      >
+                        <ChevronRight className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pl-1 text-slate-300">
+                      <button
+                        onClick={() => loadPane(side, rootPath)}
+                        className={cn(
+                          'flex items-center gap-1 rounded px-1.5 py-0.5 transition shrink-0',
+                          crumbs.length === 0
+                            ? 'text-slate-100 bg-white/[0.05] font-medium'
+                            : 'text-slate-400 hover:bg-white/[0.06] hover:text-white'
+                        )}
+                      >
+                        <Folder className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                        <span className={cn(isAndroidStorage ? 'text-xs' : 'font-mono text-[11px]')}>
+                          {rootLabel}
+                        </span>
+                      </button>
+                      {crumbs.map((crumb, idx) => (
+                        <div key={crumb.fullPath} className="flex items-center gap-1 shrink-0">
+                          <ChevronRight className="h-3 w-3 text-slate-600 shrink-0" />
+                          <button
+                            onClick={() => loadPane(side, crumb.fullPath)}
+                            className={cn(
+                              'flex items-center gap-1.5 rounded px-1.5 py-0.5 transition font-medium',
+                              idx === crumbs.length - 1
+                                ? 'text-slate-100 bg-white/[0.05]'
+                                : 'text-slate-400 hover:bg-white/[0.06] hover:text-slate-200'
+                            )}
+                          >
+                            <Folder className="h-3.5 w-3.5 text-sky-400" />
+                            <span>{crumb.name}</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {selectedEntriesInPane.length > 0 && (
+                    <div className="flex items-center gap-1 shrink-0 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[11px] text-cyan-200">
+                      <span className="font-medium pr-1">
+                        {selectedEntriesInPane.length} selected
+                      </span>
+                      <button
+                        title={isLeft ? 'Transfer selected to Right Pane' : 'Transfer selected to Left Pane'}
+                        disabled={!!transferStatus}
+                        onClick={() => handleTransferBatch(selectedEntriesInPane, side)}
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-40 transition cursor-pointer"
+                      >
+                        {isLeft ? <ArrowRight className="h-3.5 w-3.5" /> : <ArrowLeft className="h-3.5 w-3.5" />}
+                        <span className="hidden sm:inline">Transfer</span>
+                      </button>
+                      <button
+                        title="Delete selected"
+                        onClick={() => requestDeleteBatch(selectedEntriesInPane, side)}
+                        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20 transition cursor-pointer"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        <span className="hidden sm:inline">Delete</span>
+                      </button>
+                      <button
+                        title="Clear selection (Esc)"
+                        onClick={() => clearSelectionInPane(side)}
+                        className="rounded p-0.5 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             {/* Table Header */}
@@ -1264,7 +1801,16 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
             </div>
 
             {/* File List */}
-            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.03]">
+            <div
+              className="flex-1 min-h-0 overflow-y-auto divide-y divide-white/[0.03]"
+              onContextMenu={(e) => handlePaneContextMenu(e, side, entries)}
+              onClick={(e) => {
+                if (e.target === e.currentTarget) {
+                  clearSelectionInPane(side);
+                  setContextMenu(null);
+                }
+              }}
+            >
               {loading && (
                 <div className="flex items-center justify-center py-12 text-slate-400">
                   <Loader2 className="h-5 w-5 animate-spin mr-2 text-cyan-400" />
@@ -1272,14 +1818,14 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                 </div>
               )}
 
-              {!loading && path !== '/' && (
+              {!loading && path !== rootPath && path !== '/' && (
                 <div
                   onClick={() => {
-                    const parentP = path.replace(/\/[^/]+\/?$/, '') || '/';
+                    const parentP = path.replace(/\/[^/]+\/?$/, '') || rootPath;
                     if (mobile) loadPane(side, parentP);
                   }}
                   onDoubleClick={() => {
-                    const parentP = path.replace(/\/[^/]+\/?$/, '') || '/';
+                    const parentP = path.replace(/\/[^/]+\/?$/, '') || rootPath;
                     loadPane(side, parentP);
                   }}
                   className="flex h-11 items-center px-4 hover:bg-white/[0.04] cursor-pointer text-slate-300 transition group"
@@ -1296,26 +1842,20 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
 
               {!loading &&
                 entries.map((entry) => {
-                  const isSelected = selected === entry.path;
+                  const isSelected = selected.has(entry.path);
                   const Icon = fileIcon(entry);
+                  const inSelectionMode = mobile && selected.size > 0;
                   return (
                     <div
                       key={entry.path}
-                      draggable
-                      onDragStart={(e) => handleDragStart(e, entry, side)}
-                      onClick={() => {
-                        setSelected(entry.path);
-                        if (mobile) {
-                          if (entry.isDir) loadPane(side, entry.path);
-                          else setFileActions({ entry, side });
-                        }
-                      }}
-                      onContextMenu={(e) => {
-                        if (mobile) {
-                          e.preventDefault();
-                          setFileActions({ entry, side });
-                        }
-                      }}
+                      draggable={!mobile}
+                      onDragStart={(e) => handleDragStart(e, entry, side, entries)}
+                      onTouchStart={(e) => handleRowTouchStart(e, entry, side)}
+                      onTouchMove={handleRowTouchMove}
+                      onTouchEnd={handleRowTouchEnd}
+                      onTouchCancel={handleRowTouchEnd}
+                      onClick={(e) => handleRowClick(e, entry, side, entries)}
+                      onContextMenu={(e) => handleRowContextMenu(e, entry, side, entries)}
                       onDoubleClick={() => {
                         if (mobile) return;
                         if (entry.isDir) {
@@ -1331,6 +1871,20 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                           : 'hover:bg-white/[0.04] border-l-2 border-transparent'
                       )}
                     >
+                      {/* Mobile Selection Checkbox Indicator */}
+                      {inSelectionMode && (
+                        <div
+                          className={cn(
+                            'mr-3 grid h-5 w-5 place-items-center rounded-full border transition shrink-0',
+                            isSelected
+                              ? 'bg-cyan-400 border-cyan-300 text-slate-950 shadow-sm shadow-cyan-400/40'
+                              : 'border-white/25 bg-white/5'
+                          )}
+                        >
+                          {isSelected && <Check className="h-3 w-3 stroke-[3]" />}
+                        </div>
+                      )}
+
                       {/* Name + Permissions */}
                       <div className="flex items-center gap-3 flex-1 min-w-0 pr-3">
                         <Icon
@@ -1361,32 +1915,32 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                         {fmtKind(entry)}
                       </div>
 
-                      {/* Quick Row Actions on Hover/Select */}
-                      <button
-                        className="nx-touch-button md:hidden"
-                        aria-label={`Actions for ${entry.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setFileActions({ entry, side });
-                        }}
-                      >
-                        •••
-                      </button>
+                      {/* Quick Row Actions on Hover/Select (hidden on mobile when in multi-selection mode) */}
+                      {!inSelectionMode && (
+                        <button
+                          className="nx-touch-button md:hidden"
+                          aria-label={`Actions for ${entry.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFileActions({ entry, side });
+                          }}
+                        >
+                          •••
+                        </button>
+                      )}
 
                       <div className="hidden md:flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                        {/* Transfer to the other pane button */}
-                        {!entry.isDir && (
-                          <button
-                            title={isLeft ? 'Transfer to Right Pane' : 'Transfer to Left Pane'}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleTransfer(entry, side);
-                            }}
-                            className="rounded p-1 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300"
-                          >
-                            {isLeft ? <ArrowRight className="h-3.5 w-3.5" /> : <ArrowLeft className="h-3.5 w-3.5" />}
-                          </button>
-                        )}
+                        {/* Transfer file or folder to the other pane */}
+                        <button
+                          title={isLeft ? 'Transfer to Right Pane' : 'Transfer to Left Pane'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTransfer(entry, side);
+                          }}
+                          className="rounded p-1 text-slate-400 hover:bg-emerald-500/20 hover:text-emerald-300"
+                        >
+                          {isLeft ? <ArrowRight className="h-3.5 w-3.5" /> : <ArrowLeft className="h-3.5 w-3.5" />}
+                        </button>
                         {!entry.isDir && (
                           <button
                             title="Edit File"
@@ -1396,7 +1950,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                             }}
                             className="rounded p-1 text-slate-400 hover:bg-cyan-500/20 hover:text-cyan-300"
                           >
-                            <Edit2 className="h-3.5 w-3.5" />
+                            <FileCode className="h-3.5 w-3.5" />
                           </button>
                         )}
                         <button
@@ -1528,28 +2082,26 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
                 <Folder size={18} /> Open folder
               </button>
             ) : (
-              <>
-                <button
-                  className="nx-settings-row"
-                  onClick={() => {
-                    handleOpenFile(fileActions.entry, fileActions.side);
-                    setFileActions(null);
-                  }}
-                >
-                  <FileCode size={18} /> Edit
-                </button>
-                <button
-                  className="nx-settings-row"
-                  disabled={!!transferStatus}
-                  onClick={() => {
-                    handleTransfer(fileActions.entry, fileActions.side);
-                    setFileActions(null);
-                  }}
-                >
-                  <ArrowRight size={18} /> Transfer to other pane
-                </button>
-              </>
+              <button
+                className="nx-settings-row"
+                onClick={() => {
+                  handleOpenFile(fileActions.entry, fileActions.side);
+                  setFileActions(null);
+                }}
+              >
+                <FileCode size={18} /> Edit
+              </button>
             )}
+            <button
+              className="nx-settings-row"
+              disabled={!!transferStatus}
+              onClick={() => {
+                handleTransfer(fileActions.entry, fileActions.side);
+                setFileActions(null);
+              }}
+            >
+              <ArrowRight size={18} /> Transfer to other pane
+            </button>
             <button
               className="nx-settings-row"
               onClick={() => {
@@ -1564,6 +2116,22 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
               }}
             >
               <Edit2 size={18} /> Rename
+            </button>
+            <button
+              className="nx-settings-row"
+              onClick={() => {
+                const isLeft = fileActions.side === 'left';
+                const setSelected = isLeft ? setLeftSelected : setRightSelected;
+                setSelected((prev) => {
+                  const next = new Set(prev);
+                  next.add(fileActions.entry.path);
+                  return next;
+                });
+                setFocusedSide(fileActions.side);
+                setFileActions(null);
+              }}
+            >
+              <CheckSquare size={18} /> Select items…
             </button>
             <button
               className="nx-settings-row"
@@ -1950,105 +2518,482 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       )}
 
       {/* ==================================================================== */}
-      {/* DELETE CONFIRMATION WARNING MODAL */}
+      {/* DESKTOP FLOATING RIGHT-CLICK CONTEXT MENU */}
       {/* ==================================================================== */}
-      {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+      {!mobile && contextMenu && (() => {
+        const menuWidth = 232;
+        const menuHeight = contextMenu.selectedEntries.length > 0 ? 340 : 200;
+        const clampedX = typeof window !== 'undefined'
+          ? Math.max(8, Math.min(contextMenu.x, window.innerWidth - menuWidth - 8))
+          : contextMenu.x;
+        const clampedY = typeof window !== 'undefined'
+          ? Math.max(8, Math.min(contextMenu.y, window.innerHeight - menuHeight - 8))
+          : contextMenu.y;
+
+        const isLeft = contextMenu.side === 'left';
+        const sideHost = isLeft ? leftHost : rightHost;
+        const otherHost = isLeft ? rightHost : leftHost;
+        const sidePath = isLeft ? leftPath : rightPath;
+        const otherLabel = otherHost?.label || 'Local';
+        const selList = contextMenu.selectedEntries;
+        const singleEntry = selList.length === 1 ? selList[0] : null;
+
+        return (
+          <div className="fixed inset-0 z-50" onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}>
+            <div
+              onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{
+                left: clampedX,
+                top: clampedY,
+                width: menuWidth,
+                backgroundColor: '#0e131d',
+                boxShadow: `0 0 30px ${accentColor}15, 0 16px 36px rgba(0, 0, 0, 0.75)`,
+              }}
+              className="fixed rounded-xl border border-white/15 p-1.5 text-xs text-slate-200 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100"
+            >
+              {/* Context Menu Header */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 mb-1 border-b border-white/[0.08]">
+                <span className="font-semibold text-[11px] text-slate-100 truncate">
+                  {singleEntry
+                    ? singleEntry.name
+                    : selList.length > 1
+                    ? `${selList.length} items selected`
+                    : `${sideHost?.label || 'Local'} Directory`}
+                </span>
+                <span className="text-[9px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 bg-white/[0.06] text-slate-400 shrink-0">
+                  {singleEntry
+                    ? (singleEntry.isDir ? 'Folder' : 'File')
+                    : selList.length > 1
+                    ? 'Batch'
+                    : (isLeft ? 'Left' : 'Right')}
+                </span>
+              </div>
+
+              {/* Item-Specific Actions */}
+              {selList.length > 0 && (
+                <>
+                  {singleEntry && singleEntry.isDir && (
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        loadPane(contextMenu.side, singleEntry.path);
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+                    >
+                      <FolderOpen className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                      <span>Open Folder</span>
+                    </button>
+                  )}
+
+                  {singleEntry && !singleEntry.isDir && (
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        handleOpenFile(singleEntry, contextMenu.side);
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+                    >
+                      <FileCode className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                      <span>Edit / View File</span>
+                    </button>
+                  )}
+
+                  <button
+                    disabled={!!transferStatus}
+                    onClick={() => {
+                      const items = [...selList];
+                      const side = contextMenu.side;
+                      setContextMenu(null);
+                      handleTransferBatch(items, side);
+                    }}
+                    className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-200 disabled:opacity-40 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {isLeft ? (
+                        <ArrowRight className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <ArrowLeft className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      )}
+                      <span className="truncate">
+                        Transfer{selList.length > 1 ? ` (${selList.length})` : ''} to {otherLabel}
+                      </span>
+                    </div>
+                  </button>
+
+                  {singleEntry && (
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        setPromptDialog({
+                          type: 'rename',
+                          side: contextMenu.side,
+                          title: `Rename ${singleEntry.name}`,
+                          currentVal: singleEntry.name,
+                          targetPath: singleEntry.path,
+                        });
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Edit2 className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                        <span>Rename</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-500">F2</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      const items = [...selList];
+                      setContextMenu(null);
+                      copyPathsToClipboard(items);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                    <span>{selList.length > 1 ? `Copy ${selList.length} Paths` : 'Copy Path'}</span>
+                  </button>
+
+                  {singleEntry && (
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        setPermissions(singleEntry);
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                      <span>Permissions & Info</span>
+                    </button>
+                  )}
+
+                  <div className="my-1 h-[1px] bg-white/[0.08]" />
+
+                  <button
+                    onClick={() => {
+                      const items = [...selList];
+                      const side = contextMenu.side;
+                      setContextMenu(null);
+                      requestDeleteBatch(items, side);
+                    }}
+                    className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/15 hover:text-rose-200 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Trash2 className="h-3.5 w-3.5 text-rose-400 shrink-0" />
+                      <span>{selList.length > 1 ? `Delete ${selList.length} Items…` : 'Delete…'}</span>
+                    </div>
+                    <span className="text-[10px] font-mono text-rose-400/70">Del</span>
+                  </button>
+
+                  <div className="my-1 h-[1px] bg-white/[0.08]" />
+                </>
+              )}
+
+              {/* Directory / Pane Actions */}
+              <button
+                onClick={() => {
+                  const side = contextMenu.side;
+                  setContextMenu(null);
+                  setPromptDialog({
+                    type: 'newFile',
+                    side,
+                    title: `New File (${sideHost?.label || 'Local'})`,
+                    currentVal: 'new-file.txt',
+                  });
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+              >
+                <FilePlus className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                <span>New File</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const side = contextMenu.side;
+                  setContextMenu(null);
+                  setPromptDialog({
+                    type: 'newFolder',
+                    side,
+                    title: `New Folder (${sideHost?.label || 'Local'})`,
+                    currentVal: 'new-folder',
+                  });
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+              >
+                <FolderPlus className="h-3.5 w-3.5 text-sky-400 shrink-0" />
+                <span>New Folder</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const side = contextMenu.side;
+                  setContextMenu(null);
+                  selectAllInPane(side);
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5">
+                  <CheckSquare className="h-3.5 w-3.5 text-cyan-400 shrink-0" />
+                  <span>Select All</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-500">Ctrl+A</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const side = contextMenu.side;
+                  setContextMenu(null);
+                  loadPane(side, sidePath, false);
+                }}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 hover:bg-white/[0.08] hover:text-white transition cursor-pointer"
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ==================================================================== */}
+      {/* DESKTOP PERMISSIONS & INFO MODAL */}
+      {/* ==================================================================== */}
+      {!mobile && permissions && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="fixed inset-0" onClick={() => setPermissions(null)} />
           <div
-            className="fixed inset-0"
-            onClick={() => {
-              if (!deleteConfirm.deleting) setDeleteConfirm(null);
-            }}
-          />
-          <div
-            className="relative w-full max-w-md rounded-2xl border border-rose-500/30 p-6 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            className="relative w-full max-w-sm rounded-2xl border border-white/10 p-5 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
             style={{
               backgroundColor: bgColor,
-              boxShadow: '0 0 35px rgba(244, 63, 94, 0.18), 0 20px 45px rgba(0, 0, 0, 0.85)',
+              boxShadow: `0 0 35px ${accentColor}18, 0 20px 45px rgba(0, 0, 0, 0.75)`,
             }}
           >
-            {/* Top ambient radial glow in crimson/rose */}
-            <div
-              className="pointer-events-none absolute inset-x-0 top-0 h-32 opacity-25"
-              style={{ background: 'radial-gradient(ellipse at top, #f43f5e 0%, transparent 70%)' }}
-            />
-            {/* Top glowing line in rose */}
-            <div
-              className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-80"
-              style={{ background: 'linear-gradient(90deg, transparent, #f43f5e, transparent)' }}
-            />
-
-            <div className="relative flex items-start gap-3.5 mb-4">
-              <div
-                className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/40 bg-rose-500/15 text-rose-400 transition shadow-md shrink-0"
-                style={{
-                  boxShadow: '0 0 16px rgba(244, 63, 94, 0.25)',
-                }}
-              >
-                <AlertTriangle className="h-5 w-5 text-rose-400" />
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div
+                  className="flex h-9 w-9 items-center justify-center rounded-xl border shrink-0"
+                  style={{
+                    backgroundColor: `${accentColor}18`,
+                    borderColor: `${accentColor}35`,
+                    color: accentColor,
+                  }}
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-sm text-slate-100 truncate">
+                    {permissions.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {permissions.isDir ? 'Directory' : 'File'} Permissions & Details
+                  </p>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-semibold text-sm text-slate-100 flex items-center gap-2">
-                  <span>Delete {deleteConfirm.entry.isDir ? 'Folder' : 'File'}?</span>
-                  <span className="text-[10px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 border border-rose-500/30 bg-rose-500/10 text-rose-400">
-                    {deleteConfirm.side === 'left'
-                      ? (leftHost?.label || 'Local')
-                      : (rightHost?.label || 'Local')}
-                  </span>
-                </h3>
-                <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
-                  Are you sure you want to permanently delete{' '}
-                  <span className="font-mono text-white font-semibold break-all bg-white/[0.06] px-1.5 py-0.5 rounded border border-white/10">
-                    {deleteConfirm.entry.name}
-                  </span>
-                  ?
-                </p>
-                {deleteConfirm.entry.isDir ? (
-                  <p className="text-[11px] text-amber-400/90 mt-2 flex items-center gap-1.5">
-                    <span>⚠️</span>
-                    <span>This will permanently delete this directory and all contents inside.</span>
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-slate-400 mt-2">
-                    This file will be permanently removed. This action cannot be undone.
-                  </p>
-                )}
-                <div className="mt-3 rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-400 font-mono truncate">
-                  {deleteConfirm.entry.path}
+              <button
+                onClick={() => setPermissions(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-white/10 hover:text-white transition cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="rounded-xl border border-white/[0.08] bg-black/30 p-3 font-mono text-center text-base" style={{ color: accentColor }}>
+                {permissions.permissions == null
+                  ? 'Not reported'
+                  : `${fmtPerm(permissions.permissions, permissions.isDir)} · ${(permissions.permissions & 0o7777).toString(8).padStart(3, '0')}`}
+              </div>
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 space-y-1.5">
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Size:</span>
+                  <span className="font-mono text-slate-200">{permissions.isDir ? 'Directory' : fmtSize(permissions.size)}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-400">Modified:</span>
+                  <span className="text-slate-200">{fmtDate(permissions.modified)}</span>
+                </div>
+                <div className="pt-1 border-t border-white/[0.06]">
+                  <span className="text-slate-400 block mb-1">Full Path:</span>
+                  <div className="font-mono text-[11px] text-slate-300 break-all bg-black/30 rounded-lg px-2.5 py-1.5 border border-white/5">
+                    {permissions.path}
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="relative mt-5 flex items-center justify-end gap-2.5 pt-3 border-t border-white/10">
+            <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                disabled={deleteConfirm.deleting}
-                onClick={() => setDeleteConfirm(null)}
-                className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:bg-white/10 hover:text-white transition disabled:opacity-50 cursor-pointer"
+                onClick={() => copyPathsToClipboard([permissions])}
+                className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs text-slate-300 hover:bg-white/10 hover:text-white border border-white/10 transition cursor-pointer"
               >
-                Cancel
+                <Copy className="h-3.5 w-3.5" />
+                <span>Copy Path</span>
               </button>
               <button
                 type="button"
-                autoFocus
-                disabled={deleteConfirm.deleting}
-                onClick={handleExecuteDelete}
-                className="flex items-center gap-1.5 rounded-xl border border-rose-500/50 bg-rose-500/25 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/35 transition disabled:opacity-50 cursor-pointer shadow-sm"
+                onClick={() => setPermissions(null)}
+                className="rounded-xl border px-4 py-1.5 text-xs font-semibold transition cursor-pointer"
                 style={{
-                  boxShadow: '0 0 16px rgba(244, 63, 94, 0.3)',
+                  backgroundColor: `${accentColor}25`,
+                  borderColor: `${accentColor}50`,
+                  color: accentColor,
                 }}
               >
-                {deleteConfirm.deleting ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5" />
-                )}
-                <span>{deleteConfirm.deleting ? 'Deleting...' : 'Delete Permanently'}</span>
+                Close
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* ==================================================================== */}
+      {/* DELETE CONFIRMATION WARNING MODAL (SINGLE OR BATCH) */}
+      {/* ==================================================================== */}
+      {deleteConfirm && deleteConfirm.entries.length > 0 && (() => {
+        const items = deleteConfirm.entries;
+        const isSingle = items.length === 1;
+        const single = items[0];
+        const hasDirs = items.some((it) => it.isDir);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+            <div
+              className="fixed inset-0"
+              onClick={() => {
+                if (!deleteConfirm.deleting) setDeleteConfirm(null);
+              }}
+            />
+            <div
+              className="relative w-full max-w-md rounded-2xl border border-rose-500/30 p-6 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+              style={{
+                backgroundColor: bgColor,
+                boxShadow: '0 0 35px rgba(244, 63, 94, 0.18), 0 20px 45px rgba(0, 0, 0, 0.85)',
+              }}
+            >
+              {/* Top ambient radial glow in crimson/rose */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-32 opacity-25"
+                style={{ background: 'radial-gradient(ellipse at top, #f43f5e 0%, transparent 70%)' }}
+              />
+              {/* Top glowing line in rose */}
+              <div
+                className="pointer-events-none absolute inset-x-0 top-0 h-[1.5px] opacity-80"
+                style={{ background: 'linear-gradient(90deg, transparent, #f43f5e, transparent)' }}
+              />
+
+              <div className="relative flex items-start gap-3.5 mb-4">
+                <div
+                  className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/40 bg-rose-500/15 text-rose-400 transition shadow-md shrink-0"
+                  style={{
+                    boxShadow: '0 0 16px rgba(244, 63, 94, 0.25)',
+                  }}
+                >
+                  <AlertTriangle className="h-5 w-5 text-rose-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-sm text-slate-100 flex items-center gap-2">
+                    <span>
+                      {isSingle
+                        ? `Delete ${single.isDir ? 'Folder' : 'File'}?`
+                        : `Delete ${items.length} Items?`}
+                    </span>
+                    <span className="text-[10px] font-mono uppercase tracking-wider rounded px-1.5 py-0.5 border border-rose-500/30 bg-rose-500/10 text-rose-400">
+                      {deleteConfirm.side === 'left'
+                        ? (leftHost?.label || 'Local')
+                        : (rightHost?.label || 'Local')}
+                    </span>
+                  </h3>
+
+                  {isSingle ? (
+                    <>
+                      <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                        Are you sure you want to permanently delete{' '}
+                        <span className="font-mono text-white font-semibold break-all bg-white/[0.06] px-1.5 py-0.5 rounded border border-white/10">
+                          {single.name}
+                        </span>
+                        ?
+                      </p>
+                      <div className="mt-3 rounded-lg bg-black/40 border border-white/10 px-2.5 py-1.5 text-[11px] text-slate-400 font-mono truncate">
+                        {single.path}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-slate-300 mt-1.5 leading-relaxed">
+                        Are you sure you want to permanently delete these{' '}
+                        <span className="font-semibold text-white">{items.length} selected items</span>?
+                      </p>
+                      <div className="mt-2.5 max-h-32 overflow-y-auto rounded-lg bg-black/40 border border-white/10 p-2 space-y-1">
+                        {items.map((it) => (
+                          <div key={it.path} className="flex items-center gap-2 text-[11px] font-mono text-slate-300 truncate">
+                            {it.isDir ? (
+                              <Folder className="h-3 w-3 text-sky-400 shrink-0" />
+                            ) : (
+                              <FileText className="h-3 w-3 text-slate-400 shrink-0" />
+                            )}
+                            <span className="truncate">{it.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {hasDirs ? (
+                    <p className="text-[11px] text-amber-400/90 mt-2.5 flex items-center gap-1.5">
+                      <span>⚠️</span>
+                      <span>
+                        {isSingle
+                          ? 'This will permanently delete this directory and all contents inside.'
+                          : 'Selected folders and all of their nested contents will be permanently deleted.'}
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      This action is permanent and cannot be undone.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="relative mt-5 flex items-center justify-end gap-2.5 pt-3 border-t border-white/10">
+                <button
+                  type="button"
+                  disabled={deleteConfirm.deleting}
+                  onClick={() => setDeleteConfirm(null)}
+                  className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:bg-white/10 hover:text-white transition disabled:opacity-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  autoFocus
+                  disabled={deleteConfirm.deleting}
+                  onClick={handleExecuteDelete}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/50 bg-rose-500/25 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/35 transition disabled:opacity-50 cursor-pointer shadow-sm"
+                  style={{
+                    boxShadow: '0 0 16px rgba(244, 63, 94, 0.3)',
+                  }}
+                >
+                  {deleteConfirm.deleting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                  <span>
+                    {deleteConfirm.deleting
+                      ? 'Deleting...'
+                      : isSingle
+                      ? 'Delete Permanently'
+                      : `Delete ${items.length} Items`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ==================================================================== */}
       {/* TEXT FILE VIEWER / EDITOR (FULL SCREEN OVERLAY) */}

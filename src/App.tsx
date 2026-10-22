@@ -1845,6 +1845,26 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked, autoLockMinutes]);
 
+  // Suppress default webview "Inspect Element / Reload" context menu across the app
+  // while still permitting native cut/copy/paste inside text inputs.
+  useEffect(() => {
+    const handleGlobalContextMenu = (e: MouseEvent) => {
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener('contextmenu', handleGlobalContextMenu);
+    return () => window.removeEventListener('contextmenu', handleGlobalContextMenu);
+  }, []);
+
   // The app stays mounted while locked, so terminals, SSH sessions and open tabs survive a lock.
   // The lock screen covers it and the app is made inert, so nothing underneath can be focused or typed into.
 

@@ -41,6 +41,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
+import { TERMINAL_FONT_MIN } from '../lib/mobileTerminal';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import {
   type UiPreferences,
@@ -1289,8 +1290,8 @@ export function SettingsModal({
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        disabled={fontSize <= 10}
-                        onClick={() => onFontSizeChange(Math.max(10, fontSize - 1))}
+                        disabled={fontSize <= TERMINAL_FONT_MIN}
+                        onClick={() => onFontSizeChange(Math.max(TERMINAL_FONT_MIN, fontSize - 1))}
                         className="p-1.5 rounded-lg border border-white/10 bg-white/5 text-slate-300 hover:text-white disabled:opacity-40"
                       >
                         <Minus className="h-4 w-4" />

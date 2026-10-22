@@ -2418,7 +2418,16 @@ export const TerminalPane = memo(function TerminalPane({
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
       onContextMenu={async (e) => {
         if (mobile) { e.preventDefault(); return; }
-        if (termRef.current?.hasSelection()) return;
+        if (termRef.current?.hasSelection()) {
+          e.preventDefault();
+          const sel = termRef.current.getSelection();
+          if (sel) {
+            await bridge.writeClipboard(sel).catch(() => {});
+            bridge.addClipboardHistory(sel, 'Terminal Selection').catch(() => {});
+            termRef.current.clearSelection();
+          }
+          return;
+        }
         e.preventDefault();
         try {
           const text = await bridge.readClipboard();
