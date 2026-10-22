@@ -300,15 +300,35 @@ pub fn configure_tcp_stream(tcp: &TcpStream) -> std::io::Result<()> {
 }
 
 /// TCP connect → handshake → host-key verification (TOFU) → authentication.
-/// Returns a *blocking* authenticated session.
+/// Returns a *blocking* authenticated session with transport compression enabled.
 pub fn open_authenticated(
     host: &HostProfile,
     secret: &HostSecret,
     vault: &Vault,
 ) -> AppResult<(Session, String)> {
+    open_authenticated_with_options(host, secret, vault, true)
+}
+
+/// Like [`open_authenticated`], but with transport-level `zlib` compression
+/// disabled so bulk SFTP file transfers are not bottlenecked by single-core
+/// CPU compression on already-compressed or high-bandwidth streams.
+pub fn open_authenticated_uncompressed(
+    host: &HostProfile,
+    secret: &HostSecret,
+    vault: &Vault,
+) -> AppResult<(Session, String)> {
+    open_authenticated_with_options(host, secret, vault, false)
+}
+
+pub fn open_authenticated_with_options(
+    host: &HostProfile,
+    secret: &HostSecret,
+    vault: &Vault,
+    compress: bool,
+) -> AppResult<(Session, String)> {
     let mut visited = std::collections::HashSet::new();
     visited.insert(host.id.clone());
-    open_authenticated_inner(host, secret, vault, &mut visited, 0)
+    open_authenticated_inner(host, secret, vault, &mut visited, 0, compress)
 }
 
 pub fn expand_proxy_command(template: &str, host: &str, port: u16, user: &str) -> String {
@@ -430,6 +450,7 @@ fn open_authenticated_inner(
     vault: &Vault,
     visited: &mut std::collections::HashSet<String>,
     depth: usize,
+    compress: bool,
 ) -> AppResult<(Session, String)> {
     if depth >= MAX_JUMP_DEPTH {
         return Err(AppError::Other(format!(
@@ -448,7 +469,7 @@ fn open_authenticated_inner(
         // Retrieve Jump Host profile and secret
         let (jump_host, jump_secret) = vault.host_with_secret(trimmed_jump)?;
         // Authenticate jump session (handles nested jumps with cycle prevention)
-        let (jump_sess, _) = open_authenticated_inner(&jump_host, &jump_secret, vault, visited, depth + 1)?;
+        let (jump_sess, _) = open_authenticated_inner(&jump_host, &jump_secret, vault, visited, depth + 1, compress)?;
 
         // Bind ephemeral loopback listener
         let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -520,7 +541,7 @@ fn open_authenticated_inner(
     let mut sess = Session::new()?;
     sess.set_tcp_stream(tcp);
     sess.set_timeout(20_000);
-    sess.set_compress(true);
+    sess.set_compress(compress);
     let _ = sess.method_pref(MethodType::Kex, "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,diffie-hellman-group14-sha256,diffie-hellman-group-exchange-sha256");
     let _ = sess.method_pref(MethodType::CryptCs, "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr");
     let _ = sess.method_pref(MethodType::CryptSc, "chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr");
@@ -589,9 +610,10 @@ pub(crate) fn ssh2_would_block(e: &ssh2::Error) -> bool {
 /// dead connections from pinning the thread forever.
 fn relay_jump_stream(mut client: std::net::TcpStream, mut channel: ssh2::Channel) {
     const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+    const RELAY_BUF_SIZE: usize = 128 * 1024;
     let _ = client.set_nonblocking(true);
-    let mut up = [0u8; 16 * 1024];
-    let mut down = [0u8; 16 * 1024];
+    let mut up = vec![0u8; RELAY_BUF_SIZE];
+    let mut down = vec![0u8; RELAY_BUF_SIZE];
     let mut last_activity = std::time::Instant::now();
 
     loop {
@@ -608,7 +630,7 @@ fn relay_jump_stream(mut client: std::net::TcpStream, mut channel: ssh2::Channel
                         Ok(0) => return,
                         Ok(k) => w += k,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(2));
+                            std::thread::sleep(Duration::from_micros(200));
                         }
                         Err(_) => return,
                     }
@@ -635,7 +657,7 @@ fn relay_jump_stream(mut client: std::net::TcpStream, mut channel: ssh2::Channel
                         Ok(0) => return,
                         Ok(k) => w += k,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(2));
+                            std::thread::sleep(Duration::from_micros(200));
                         }
                         Err(_) => return,
                     }
@@ -650,10 +672,17 @@ fn relay_jump_stream(mut client: std::net::TcpStream, mut channel: ssh2::Channel
         if busy {
             last_activity = std::time::Instant::now();
         } else {
-            if last_activity.elapsed() > IDLE_TIMEOUT {
+            let idle_for = last_activity.elapsed();
+            if idle_for > IDLE_TIMEOUT {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(15));
+            // Adaptive poll: sub-millisecond sleep while recently active so bulk
+            // SFTP streams don't stall on 15ms gaps, backing off when idle.
+            if idle_for < Duration::from_millis(50) {
+                std::thread::sleep(Duration::from_micros(500));
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 

@@ -3,13 +3,13 @@
 //! never stall the interactive PTY thread.
 
 use crate::error::{AppError, AppResult};
-use crate::ssh::{open_authenticated, SshManager};
-use crate::vault::Vault;
+use crate::ssh::{open_authenticated_uncompressed, SshManager};
+use crate::vault::{HostProfile, Vault};
 use parking_lot::Mutex;
 use serde::Serialize;
 use ssh2::{Session, Sftp};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,7 +35,7 @@ pub struct TransferProgress {
 }
 
 struct SftpConn {
-    _session: Session,
+    session: Session,
     sftp: Sftp,
     _bg_guard: crate::ssh::BackgroundSessionGuard,
 }
@@ -52,28 +52,57 @@ impl SftpManager {
         self.session_hosts.lock().remove(session_id);
     }
 
+    fn resolve_host_id(&self, session_id: &str, ssh: &SshManager) -> AppResult<String> {
+        match self.session_hosts.lock().get(session_id).cloned() {
+            Some(h) => Ok(h),
+            None => ssh.host_of(session_id),
+        }
+    }
+
     fn get(&self, session_id: &str, ssh: &SshManager, vault: &Vault) -> AppResult<Arc<Mutex<SftpConn>>> {
         if let Some(c) = self.conns.lock().get(session_id) {
             return Ok(c.clone());
         }
-        let host_id = match self.session_hosts.lock().get(session_id).cloned() {
-            Some(h) => h,
-            None => ssh.host_of(session_id)?,
-        };
+        let host_id = self.resolve_host_id(session_id, ssh)?;
         let (host, secret) = vault.host_with_secret(&host_id)?;
-        let (session, _) = open_authenticated(&host, &secret, vault)?;
+        let (session, _) = open_authenticated_uncompressed(&host, &secret, vault)?;
         let sftp = session.sftp()?;
         let mut conns = self.conns.lock();
         if let Some(existing) = conns.get(session_id) {
             return Ok(existing.clone());
         }
         let conn = Arc::new(Mutex::new(SftpConn {
-            _session: session,
+            session,
             sftp,
             _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
         }));
         conns.insert(session_id.to_string(), conn.clone());
         Ok(conn)
+    }
+
+    /// Opens an isolated, uncompressed SFTP connection for bulk file transfers so
+    /// directory browsing (`sftp_list`) on the UI session never blocks. Falls back
+    /// to the shared session only if the server rejects additional connections.
+    fn acquire_transfer_conn(
+        &self,
+        session_id: &str,
+        ssh: &SshManager,
+        vault: &Vault,
+    ) -> AppResult<(Arc<Mutex<SftpConn>>, bool)> {
+        let host_id = self.resolve_host_id(session_id, ssh)?;
+        let (host, secret) = vault.host_with_secret(&host_id)?;
+        if let Ok((session, _)) = open_authenticated_uncompressed(&host, &secret, vault) {
+            if let Ok(sftp) = session.sftp() {
+                let conn = Arc::new(Mutex::new(SftpConn {
+                    session,
+                    sftp,
+                    _bg_guard: crate::ssh::BackgroundSessionGuard::acquire(),
+                }));
+                return Ok((conn, true));
+            }
+        }
+        let shared = self.get(session_id, ssh, vault)?;
+        Ok((shared, false))
     }
 }
 
@@ -91,7 +120,120 @@ pub fn sftp_connect(
     Ok(session_id)
 }
 
-const CHUNK: usize = 256 * 1024;
+/// 2 MiB transfer chunk: allows `libssh2` to keep ~64 SFTP read/write packets
+/// in flight across high-bandwidth-delay-product (WAN) links.
+const CHUNK: usize = 2 * 1024 * 1024;
+/// Number of 2 MiB chunks buffered between reader and writer threads in
+/// host-to-host transfers (up to 8 MiB in flight).
+const PIPELINE_DEPTH: usize = 4;
+
+/// Coalesces multiple ~30 KB SFTP packets from `libssh2_sftp_read` (or any
+/// `Read` source) until `buf` is completely filled or EOF is reached.
+/// Handing a full `CHUNK` slice to `dst.write_all` is essential because
+/// `libssh2_sftp_write` only pipelines outbound `SSH_FXP_WRITE` packets within
+/// a single write call and drains ACKs before returning.
+fn read_full_chunk<R: Read + ?Sized>(reader: &mut R, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// Returns true if two host profiles resolve to the same remote user and endpoint.
+fn is_same_remote_endpoint(a: &HostProfile, b: &HostProfile) -> bool {
+    a.id == b.id
+        || (a.hostname.eq_ignore_ascii_case(&b.hostname)
+            && a.port == b.port
+            && a.username == b.username
+            && a.jump_host_id == b.jump_host_id
+            && a.proxy_command == b.proxy_command)
+}
+
+/// Quotes a POSIX path for remote shell commands, prefixing `./` if the path
+/// begins with `-` so `cp`/`mv`/`rm` never misinterpret it as an option flag.
+fn safe_posix_path_quote(p: &str) -> String {
+    if p.starts_with('-') {
+        crate::ssh::shell_quote(&format!("./{p}"))
+    } else {
+        crate::ssh::shell_quote(p)
+    }
+}
+
+/// Attempts an instant server-side atomic file copy (`cp -f` + `mv -f`) over an
+/// SSH exec channel on the remote machine, avoiding a full download + upload
+/// round-trip when both SFTP panes are connected to the same host.
+fn try_server_side_copy(
+    session: &Session,
+    src_path: &str,
+    temp_remote: &str,
+    dst_path: &str,
+) -> AppResult<()> {
+    let mut ch = session.channel_session()?;
+    let cmd = format!(
+        "cp -f {} {} && mv -f {} {}",
+        safe_posix_path_quote(src_path),
+        safe_posix_path_quote(temp_remote),
+        safe_posix_path_quote(temp_remote),
+        safe_posix_path_quote(dst_path),
+    );
+    ch.exec(&cmd)?;
+    let mut output = Vec::new();
+    let _ = ch.read_to_end(&mut output);
+    let _ = ch.stderr().read_to_end(&mut output);
+    ch.wait_close()?;
+    if ch.exit_status()? == 0 {
+        Ok(())
+    } else {
+        if let Ok(mut cleanup) = session.channel_session() {
+            let _ = cleanup.exec(&format!("rm -f {}", safe_posix_path_quote(temp_remote)));
+            let _ = cleanup.wait_close();
+        }
+        Err(AppError::Other("Server-side copy command failed".into()))
+    }
+}
+
+/// Atomically renames `temp_remote_path` onto `target_path`, falling back to a
+/// rollback-safe backup swap when the server does not support `ATOMIC | OVERWRITE`.
+fn atomic_sftp_rename(sftp: &Sftp, temp_remote_path: &Path, target_path: &Path, target_str: &str) -> AppResult<()> {
+    let rename_res = sftp.rename(
+        temp_remote_path,
+        target_path,
+        Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
+    );
+    let rename_res = match rename_res {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let backup_remote = format!("{}.drexius-bak.{}", target_str, uuid::Uuid::new_v4());
+            let backup_path = Path::new(&backup_remote);
+            let had_target = sftp.rename(target_path, backup_path, None).is_ok();
+            match sftp.rename(temp_remote_path, target_path, None) {
+                Ok(()) => {
+                    if had_target {
+                        let _ = sftp.unlink(backup_path);
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    if had_target {
+                        let _ = sftp.rename(backup_path, target_path, None);
+                    }
+                    Err(e)
+                }
+            }
+        }
+    };
+    if let Err(e) = rename_res {
+        let _ = sftp.unlink(temp_remote_path);
+        return Err(AppError::from(e));
+    }
+    Ok(())
+}
 
 #[tauri::command(async)]
 pub fn sftp_list(
@@ -141,12 +283,13 @@ pub async fn sftp_download(
         let mgr = app.state::<SftpManager>();
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
-        let conn = mgr.get(&session_id, &ssh, &vault)?;
+        let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
         let c = conn.lock();
         let mut src = c.sftp.open(Path::new(&remote))?;
         let total = src.stat()?.size.unwrap_or(0);
         let temp_local = format!("{}.drexius-{}.part", local, uuid::Uuid::new_v4());
-        let mut dst = std::fs::File::create(&temp_local)?;
+        let raw_dst = std::fs::File::create(&temp_local)?;
+        let mut dst = BufWriter::with_capacity(CHUNK, raw_dst);
         let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
@@ -163,7 +306,8 @@ pub async fn sftp_download(
                     last_emit = Instant::now();
                 }
             }
-            dst.sync_all()?;
+            dst.flush()?;
+            dst.get_ref().sync_all()?;
             Ok(())
         })();
 
@@ -222,10 +366,11 @@ pub async fn sftp_upload(
         let mgr = app.state::<SftpManager>();
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
-        let conn = mgr.get(&session_id, &ssh, &vault)?;
+        let (conn, _dedicated) = mgr.acquire_transfer_conn(&session_id, &ssh, &vault)?;
         let c = conn.lock();
-        let mut src = std::fs::File::open(&local)?;
-        let total = src.metadata()?.len();
+        let raw_src = std::fs::File::open(&local)?;
+        let total = raw_src.metadata()?.len();
+        let mut src = BufReader::with_capacity(CHUNK, raw_src);
         let temp_remote = format!("{}.drexius-{}.part", remote, uuid::Uuid::new_v4());
         let mut dst = c.sftp.create(Path::new(&temp_remote))?;
         let mut buf = vec![0u8; CHUNK];
@@ -233,7 +378,7 @@ pub async fn sftp_upload(
         let mut last_emit = Instant::now();
         let loop_result: AppResult<()> = (|| {
             loop {
-                let n = src.read(&mut buf)?;
+                let n = read_full_chunk(&mut src, &mut buf)?;
                 if n == 0 {
                     break;
                 }
@@ -254,40 +399,7 @@ pub async fn sftp_upload(
         }
         drop(dst);
 
-        let remote_path = Path::new(&remote);
-        let temp_remote_path = Path::new(&temp_remote);
-        let rename_res = c.sftp.rename(
-            temp_remote_path,
-            remote_path,
-            Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
-        );
-        let rename_res = match rename_res {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
-                let backup_remote = format!("{}.drexius-bak.{}", remote, uuid::Uuid::new_v4());
-                let backup_path = Path::new(&backup_remote);
-                let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
-                match c.sftp.rename(temp_remote_path, remote_path, None) {
-                    Ok(()) => {
-                        if had_remote {
-                            let _ = c.sftp.unlink(backup_path);
-                        }
-                        Ok(())
-                    }
-                    Err(e) => {
-                        if had_remote {
-                            let _ = c.sftp.rename(backup_path, remote_path, None);
-                        }
-                        Err(e)
-                    }
-                }
-            }
-        };
-        if let Err(e) = rename_res {
-            let _ = c.sftp.unlink(temp_remote_path);
-            return Err(AppError::from(e));
-        }
+        atomic_sftp_rename(&c.sftp, Path::new(&temp_remote), Path::new(&remote), &remote)?;
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
     })
@@ -308,13 +420,57 @@ pub async fn sftp_transfer_remote(
         let mgr = app.state::<SftpManager>();
         let ssh = app.state::<SshManager>();
         let vault = app.state::<Vault>();
-        let src_conn = mgr.get(&src_session_id, &ssh, &vault)?;
-        let dst_conn = mgr.get(&dst_session_id, &ssh, &vault)?;
 
         let temp_remote = format!("{}.drexius-{}.part", dst_path, uuid::Uuid::new_v4());
+
+        // Fast Path: Check if both panes point to the same remote host.
+        // If so, attempt an instant server-side atomic copy (`cp -f` + `mv -f`)
+        // over SSH exec so 0 bytes travel across the client's network.
+        if let (Ok(src_hid), Ok(dst_hid)) = (
+            mgr.resolve_host_id(&src_session_id, &ssh),
+            mgr.resolve_host_id(&dst_session_id, &ssh),
+        ) {
+            if let (Ok((src_host, _)), Ok((dst_host, _))) = (
+                vault.host_with_secret(&src_hid),
+                vault.host_with_secret(&dst_hid),
+            ) {
+                if is_same_remote_endpoint(&src_host, &dst_host) {
+                    if src_path == dst_path {
+                        let conn = mgr.get(&src_session_id, &ssh, &vault)?;
+                        let total = conn
+                            .lock()
+                            .sftp
+                            .stat(Path::new(&src_path))
+                            .ok()
+                            .and_then(|st| st.size)
+                            .unwrap_or(0);
+                        let _ = on_progress.send(TransferProgress { transferred: total, total });
+                        return Ok(());
+                    }
+                    if let Ok(conn) = mgr.get(&src_session_id, &ssh, &vault) {
+                        let c = conn.lock();
+                        let total = c
+                            .sftp
+                            .stat(Path::new(&src_path))
+                            .ok()
+                            .and_then(|st| st.size)
+                            .unwrap_or(0);
+                        let _ = on_progress.send(TransferProgress { transferred: 0, total });
+                        if try_server_side_copy(&c.session, &src_path, &temp_remote, &dst_path).is_ok() {
+                            let _ = on_progress.send(TransferProgress { transferred: total, total });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Streaming Path: Open dedicated transfer connections so UI browsing stays unlocked
+        // and reader/writer can run concurrently on separate threads.
+        let (src_conn, src_dedicated) = mgr.acquire_transfer_conn(&src_session_id, &ssh, &vault)?;
+        let (dst_conn, dst_dedicated) = mgr.acquire_transfer_conn(&dst_session_id, &ssh, &vault)?;
         let same_conn = Arc::ptr_eq(&src_conn, &dst_conn);
 
-        let mut buf = vec![0u8; CHUNK];
         let mut done = 0u64;
         let mut last_emit = Instant::now();
 
@@ -323,9 +479,10 @@ pub async fn sftp_transfer_remote(
             let mut src = c.sftp.open(Path::new(&src_path))?;
             let total = src.stat()?.size.unwrap_or(0);
             let mut dst = c.sftp.create(Path::new(&temp_remote))?;
+            let mut buf = vec![0u8; CHUNK];
             let res: AppResult<()> = (|| {
                 loop {
-                    let n = src.read(&mut buf)?;
+                    let n = read_full_chunk(&mut src, &mut buf)?;
                     if n == 0 {
                         break;
                     }
@@ -340,9 +497,64 @@ pub async fn sftp_transfer_remote(
                 Ok(())
             })();
             (total, res)
+        } else if src_dedicated && dst_dedicated {
+            // Parallel 2-Thread Producer-Consumer Pipeline:
+            // Thread 1 (Producer) continuously reads coalesced 2 MiB chunks from Source Host
+            // while Thread 2 (Consumer) simultaneously writes 2 MiB chunks to Destination Host.
+            let total = {
+                let c_src = src_conn.lock();
+                c_src.sftp.stat(Path::new(&src_path))?.size.unwrap_or(0)
+            };
+            let src_conn_reader = src_conn.clone();
+            let src_path_reader = src_path.clone();
+            let (tx, rx) = std::sync::mpsc::sync_channel::<AppResult<Vec<u8>>>(PIPELINE_DEPTH);
+
+            let res: AppResult<()> = std::thread::scope(|s| {
+                s.spawn(move || {
+                    let c_src = src_conn_reader.lock();
+                    let mut src = match c_src.sftp.open(Path::new(&src_path_reader)) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            let _ = tx.send(Err(AppError::from(e)));
+                            return;
+                        }
+                    };
+                    loop {
+                        let mut chunk = vec![0u8; CHUNK];
+                        match read_full_chunk(&mut src, &mut chunk) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                chunk.truncate(n);
+                                if tx.send(Ok(chunk)).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(AppError::Io(e)));
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                let c_dst = dst_conn.lock();
+                let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
+                while let Ok(chunk_res) = rx.recv() {
+                    let chunk = chunk_res?;
+                    dst.write_all(&chunk)?;
+                    done += chunk.len() as u64;
+                    if last_emit.elapsed().as_millis() >= 50 || done == total {
+                        let _ = on_progress.send(TransferProgress { transferred: done, total });
+                        last_emit = Instant::now();
+                    }
+                }
+                dst.flush()?;
+                Ok(())
+            });
+            (total, res)
         } else {
-            // Deadlock prevention: acquire locks in deterministic pointer address order
-            // to avoid ABBA deadlocks when concurrent transfers run between the same endpoints in reverse.
+            // Fallback when sharing connection mutexes: acquire locks in deterministic
+            // pointer address order to prevent ABBA deadlocks, and stream coalesced 2 MiB chunks.
             let (c_src, c_dst) = if (Arc::as_ptr(&src_conn) as usize) < (Arc::as_ptr(&dst_conn) as usize) {
                 let s = src_conn.lock();
                 let d = dst_conn.lock();
@@ -355,9 +567,10 @@ pub async fn sftp_transfer_remote(
             let mut src = c_src.sftp.open(Path::new(&src_path))?;
             let total = src.stat()?.size.unwrap_or(0);
             let mut dst = c_dst.sftp.create(Path::new(&temp_remote))?;
+            let mut buf = vec![0u8; CHUNK];
             let res: AppResult<()> = (|| {
                 loop {
-                    let n = src.read(&mut buf)?;
+                    let n = read_full_chunk(&mut src, &mut buf)?;
                     if n == 0 {
                         break;
                     }
@@ -381,39 +594,7 @@ pub async fn sftp_transfer_remote(
         }
 
         let c_dst = dst_conn.lock();
-        let target_path = Path::new(&dst_path);
-        let temp_path = Path::new(&temp_remote);
-        let rename_res = c_dst.sftp.rename(
-            temp_path,
-            target_path,
-            Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
-        );
-        let rename_res = match rename_res {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                let backup_remote = format!("{}.drexius-bak.{}", dst_path, uuid::Uuid::new_v4());
-                let backup_path = Path::new(&backup_remote);
-                let had_target = c_dst.sftp.rename(target_path, backup_path, None).is_ok();
-                match c_dst.sftp.rename(temp_path, target_path, None) {
-                    Ok(()) => {
-                        if had_target {
-                            let _ = c_dst.sftp.unlink(backup_path);
-                        }
-                        Ok(())
-                    }
-                    Err(e) => {
-                        if had_target {
-                            let _ = c_dst.sftp.rename(backup_path, target_path, None);
-                        }
-                        Err(e)
-                    }
-                }
-            }
-        };
-        if let Err(e) = rename_res {
-            let _ = c_dst.sftp.unlink(temp_path);
-            return Err(AppError::from(e));
-        }
+        atomic_sftp_rename(&c_dst.sftp, Path::new(&temp_remote), Path::new(&dst_path), &dst_path)?;
 
         let _ = on_progress.send(TransferProgress { transferred: done, total });
         Ok::<(), AppError>(())
@@ -516,40 +697,7 @@ pub fn sftp_write_text(
             },
         );
     }
-    let remote_path = Path::new(&path);
-    let temp_remote_path = Path::new(&temp_remote);
-    let rename_res = c.sftp.rename(
-        temp_remote_path,
-        remote_path,
-        Some(ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::OVERWRITE),
-    );
-    let rename_res = match rename_res {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            // Server might not support ATOMIC|OVERWRITE flags; use rollback-safe backup rename
-            let backup_remote = format!("{}.drexius-bak.{}", path, uuid::Uuid::new_v4());
-            let backup_path = Path::new(&backup_remote);
-            let had_remote = c.sftp.rename(remote_path, backup_path, None).is_ok();
-            match c.sftp.rename(temp_remote_path, remote_path, None) {
-                Ok(()) => {
-                    if had_remote {
-                        let _ = c.sftp.unlink(backup_path);
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    if had_remote {
-                        let _ = c.sftp.rename(backup_path, remote_path, None);
-                    }
-                    Err(e)
-                }
-            }
-        }
-    };
-    if let Err(e) = rename_res {
-        let _ = c.sftp.unlink(temp_remote_path);
-        return Err(AppError::from(e));
-    }
+    atomic_sftp_rename(&c.sftp, Path::new(&temp_remote), Path::new(&path), &path)?;
     Ok(())
 }
 
@@ -718,6 +866,98 @@ pub fn local_fs_copy(from: String, to: String) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::AuthMethod;
+
+    struct FragmentedReader {
+        data: Vec<u8>,
+        pos: usize,
+        max_fragment: usize,
+    }
+
+    impl Read for FragmentedReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Ok(0);
+            }
+            let remaining = self.data.len() - self.pos;
+            let take = remaining.min(buf.len()).min(self.max_fragment);
+            buf[..take].copy_from_slice(&self.data[self.pos..self.pos + take]);
+            self.pos += take;
+            Ok(take)
+        }
+    }
+
+    #[test]
+    fn test_read_full_chunk_coalesces_30kb_sftp_packets() {
+        // Simulate a 5 MB file arriving in 30,000-byte libssh2 SFTP packets
+        let total_size = 5 * 1024 * 1024 + 12345;
+        let payload: Vec<u8> = (0..total_size).map(|i| (i % 251) as u8).collect();
+        let mut reader = FragmentedReader {
+            data: payload.clone(),
+            pos: 0,
+            max_fragment: 30_000,
+        };
+
+        let mut reconstructed = Vec::with_capacity(total_size);
+        let mut buf = vec![0u8; CHUNK];
+
+        // First two reads must fill the entire 2 MiB CHUNK despite 30 KB fragments
+        let n1 = read_full_chunk(&mut reader, &mut buf).unwrap();
+        assert_eq!(n1, CHUNK);
+        reconstructed.extend_from_slice(&buf[..n1]);
+
+        let n2 = read_full_chunk(&mut reader, &mut buf).unwrap();
+        assert_eq!(n2, CHUNK);
+        reconstructed.extend_from_slice(&buf[..n2]);
+
+        // Third read collects the remaining tail (1 MiB + 12345 bytes)
+        let n3 = read_full_chunk(&mut reader, &mut buf).unwrap();
+        assert_eq!(n3, total_size - 2 * CHUNK);
+        reconstructed.extend_from_slice(&buf[..n3]);
+
+        // Fourth read hits EOF
+        let n4 = read_full_chunk(&mut reader, &mut buf).unwrap();
+        assert_eq!(n4, 0);
+
+        assert_eq!(reconstructed, payload);
+    }
+
+    #[test]
+    fn test_is_same_remote_endpoint_detects_matching_hosts() {
+        let h1 = HostProfile {
+            id: "host-1".into(),
+            label: "Prod A".into(),
+            hostname: "Prod.Example.com".into(),
+            port: 22,
+            username: "ubuntu".into(),
+            auth_method: AuthMethod::Key,
+            keychain_id: None,
+            group: None,
+            tags: vec![],
+            color: None,
+            has_secret: true,
+            os: None,
+            jump_host_id: None,
+            proxy_command: None,
+            vault_id: None,
+            startup_command: None,
+        };
+        let mut h2 = h1.clone();
+        h2.id = "host-2".into();
+        h2.hostname = "prod.example.com".into();
+
+        assert!(is_same_remote_endpoint(&h1, &h2));
+
+        let mut h3 = h2.clone();
+        h3.username = "root".into();
+        assert!(!is_same_remote_endpoint(&h1, &h3));
+    }
+
+    #[test]
+    fn test_safe_posix_path_quote_escapes_leading_dash() {
+        assert_eq!(safe_posix_path_quote("/var/www/index.html"), "'/var/www/index.html'");
+        assert_eq!(safe_posix_path_quote("-rf"), "'./-rf'");
+    }
 
     #[test]
     fn test_lock_ordering_is_strictly_deterministic() {
