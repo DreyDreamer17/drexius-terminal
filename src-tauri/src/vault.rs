@@ -1407,9 +1407,31 @@ pub fn vault_regenerate_recovery_key(vault: State<'_, Vault>) -> AppResult<Strin
 
 #[tauri::command]
 pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> AppResult<String> {
-    let fname = filename.unwrap_or_else(|| {
-        format!("drexius-emergency-kit-{}.txt", chrono::Utc::now().timestamp())
-    });
+    let fname = match filename {
+        Some(f) => {
+            let trimmed = f.trim();
+            let p = std::path::Path::new(trimmed);
+            let base = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .filter(|s| {
+                    !s.is_empty()
+                        && *s == trimmed
+                        && !s.contains('/')
+                        && !s.contains('\\')
+                        && *s != "."
+                        && *s != ".."
+                })
+                .ok_or_else(|| {
+                    AppError::Other(
+                        "Invalid emergency kit filename: must be a plain filename without path components"
+                            .to_string(),
+                    )
+                })?;
+            base.to_string()
+        }
+        None => format!("drexius-emergency-kit-{}.txt", chrono::Utc::now().timestamp()),
+    };
 
     #[cfg(target_os = "android")]
     let download_dir = {
@@ -1439,12 +1461,15 @@ pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> Ap
 
     let _ = std::fs::create_dir_all(&download_dir);
     let target = download_dir.join(&fname);
+    crate::fs_guard::ensure_local_path_not_sensitive(&target.to_string_lossy())?;
+
     if let Err(err) = std::fs::write(&target, &content) {
         #[cfg(target_os = "android")]
         {
             let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.drexius.terminal/files/Download");
             let _ = std::fs::create_dir_all(&fallback);
             let fallback_target = fallback.join(&fname);
+            crate::fs_guard::ensure_local_path_not_sensitive(&fallback_target.to_string_lossy())?;
             if std::fs::write(&fallback_target, &content).is_ok() {
                 return Ok(fallback_target.to_string_lossy().to_string());
             }
@@ -4206,6 +4231,25 @@ mod tests {
         let _ = std::fs::remove_file(vault.recovery_path());
         let _ = std::fs::remove_file(db_path.with_extension("vault-wal"));
         let _ = std::fs::remove_file(db_path.with_extension("vault-shm"));
+    }
+
+    #[test]
+    fn test_vault_save_emergency_kit_rejects_traversal() {
+        let bad_names = [
+            "../escaped.txt",
+            "../../.bashrc",
+            "/etc/shadow",
+            "subdir/file.txt",
+            "..",
+            ".",
+            "foo\\bar.txt",
+        ];
+        for bad in bad_names {
+            assert!(
+                vault_save_emergency_kit("secret".to_string(), Some(bad.to_string())).is_err(),
+                "expected rejection for filename: {bad}"
+            );
+        }
     }
 }
 

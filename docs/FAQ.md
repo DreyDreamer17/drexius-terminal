@@ -78,7 +78,7 @@ key back. To change a key, remove it and add a new one.
 
 The same pattern applies to the **Tailscale API token** — with one difference: that token
 *is* returned to the WebView in the clear, because the panel needs it to prefill the field.
-See [ARCHITECTURE.md §7](../ARCHITECTURE.md#7-tailscale--docker).
+See [ARCHITECTURE.md §7](../ARCHITECTURE.md#7-tailscale-netbird-cloud-sync--docker).
 
 ### Where does the vault file live, and can other apps read it?
 
