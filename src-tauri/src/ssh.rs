@@ -334,12 +334,27 @@ pub fn open_authenticated_with_options(
 pub fn expand_proxy_command(template: &str, host: &str, port: u16, user: &str) -> String {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
+
+    // Safely quote host and user if they contain any characters outside [a-zA-Z0-9._-]
+    // to prevent shell command injection via hostile hostname/username values.
+    let safe_host = if host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        host.to_string()
+    } else {
+        shell_quote(host)
+    };
+
+    let safe_user = if user.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        user.to_string()
+    } else {
+        shell_quote(user)
+    };
+
     while let Some(c) = chars.next() {
         if c == '%' {
             match chars.next() {
-                Some('h') => out.push_str(host),
+                Some('h') => out.push_str(&safe_host),
                 Some('p') => out.push_str(&port.to_string()),
-                Some('r') => out.push_str(user),
+                Some('r') => out.push_str(&safe_user),
                 Some('%') => out.push('%'),
                 Some(other) => {
                     out.push('%');
@@ -1228,6 +1243,15 @@ mod tests {
         assert_eq!(
             expand_proxy_command("nc -X 5 -x 127.0.0.1:1080 %h %p (user=%r, escaped=%%)", "10.0.0.5", 2222, "admin"),
             "nc -X 5 -x 127.0.0.1:1080 10.0.0.5 2222 (user=admin, escaped=%)"
+        );
+        // Hostile shell injection payloads are safely quoted
+        assert_eq!(
+            expand_proxy_command("connect %h", "evil.com; rm -rf /", 22, "root"),
+            "connect 'evil.com; rm -rf /'"
+        );
+        assert_eq!(
+            expand_proxy_command("connect %r@%h", "host.internal", 22, "admin; $(reboot)"),
+            "connect 'admin; $(reboot)'@host.internal"
         );
     }
 }

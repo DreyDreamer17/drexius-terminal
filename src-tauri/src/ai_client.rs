@@ -879,6 +879,8 @@ pub fn ai_stream_cancel(stream_id: String) {
     }
 }
 
+const MAX_AI_FETCH_BYTES: usize = 10 * 1024 * 1024;
+
 #[tauri::command]
 pub async fn ai_fetch_proxy(
     request: AiProxyRequest,
@@ -888,13 +890,20 @@ pub async fn ai_fetch_proxy(
     let route = resolve_route(&request, &vault)?;
 
     let emit = |_ev: AiStreamEvent| {};
-    let Some((resp, _attempt)) = send_with_failover(&request, &route, Some(20), None, &emit).await?
+    let Some((mut resp, _attempt)) = send_with_failover(&request, &route, Some(20), None, &emit).await?
     else {
         return Err("Request cancelled".to_string());
     };
 
     let status = resp.status().as_u16();
-    let body = resp.text().await.unwrap_or_default();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > MAX_AI_FETCH_BYTES {
+            return Err("AI proxy response exceeded maximum allowed size (10 MB)".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&bytes).to_string();
 
     Ok(AiProxyResponse { status, body })
 }

@@ -127,8 +127,13 @@ and multiplexes:
 2. Frontend commands (`Write`, `Resize`, `Close`) ← `std::sync::mpsc`
 3. Keep-alives and dropped-link detection → `SshEvent::Disconnected`
 
-Jump hosts (ProxyJump) are supported. SFTP uses its own blocking connection so large transfers
-never stall the interactive PTY. Local tabs use `local_pty.rs` (`portable-pty`).
+Jump hosts (`ProxyJump`) and custom command proxies (`ProxyCommand`) are supported. When a host
+profile configures `ProxyCommand`, the core spawns the command via `/bin/sh -c` (`cmd.exe /c` on
+Windows) and tunnels transport bytes through a loopback socket bridge into `libssh2`. Tokens
+`%h` (host), `%p` (port), and `%r` (username) are expanded, with `%h` and `%r` automatically shell-quoted
+against command injection. To protect against untrusted execution, team vault bundle imports
+always drop `proxy_command` and `startup_command` on ingestion. SFTP uses its own blocking
+connection so large transfers never stall the interactive PTY. Local tabs use `local_pty.rs` (`portable-pty`).
 
 ## 3. Session snapshotting
 

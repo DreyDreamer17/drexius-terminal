@@ -236,6 +236,25 @@ resolve locally.
 side, where the client cannot constrain it. If you configure a proxy, the destination check
 applies to the *proxy*, not to the final host.
 
+### 5.5 ProxyCommand and startup command protections
+
+Host profiles can specify a `ProxyCommand` (spawning a local process over `/bin/sh -c` or `cmd.exe /c`
+bridged to the SSH transport) and a `startup_command` executed in the remote shell.
+
+- **Token sanitization:** `expand_proxy_command` safely quotes `%h` (host) and `%r` (user) tokens
+  if they contain characters outside standard alphanumerics/hyphens/dots/underscores, neutralizing
+  injection vectors from hostile hostnames or usernames.
+- **Team bundle isolation:** When importing a team vault bundle (`EncryptedTeamVaultBundle`),
+  both `proxy_command` and `startup_command` are unconditionally cleared (`None`) on ingestion.
+  Shared team bundles cannot plant local executable commands on the recipient machine.
+
+### 5.6 Emergency recovery kit file permissions
+
+When exporting an Emergency Recovery Kit file to the user's Downloads directory via
+`vault_save_emergency_kit`, the file is created with restrictive mode `0600` (`-rw-------`) on Unix
+systems using `OpenOptionsExt::mode(0o600)` at creation time, preventing world- or group-read access
+on multi-user or shared workstations.
+
 ---
 
 ## 6. What is deliberately *not* defended

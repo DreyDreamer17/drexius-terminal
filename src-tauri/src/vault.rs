@@ -1463,14 +1463,32 @@ pub fn vault_save_emergency_kit(content: String, filename: Option<String>) -> Ap
     let target = download_dir.join(&fname);
     crate::fs_guard::ensure_local_path_not_sensitive(&target.to_string_lossy())?;
 
-    if let Err(err) = std::fs::write(&target, &content) {
+    #[cfg(unix)]
+    let write_with_mode = |p: &std::path::Path, data: &str| -> std::io::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(p)?;
+        file.write_all(data.as_bytes())
+    };
+
+    #[cfg(not(unix))]
+    let write_with_mode = |p: &std::path::Path, data: &str| -> std::io::Result<()> {
+        std::fs::write(p, data)
+    };
+
+    if let Err(err) = write_with_mode(&target, &content) {
         #[cfg(target_os = "android")]
         {
             let fallback = std::path::PathBuf::from("/storage/emulated/0/Android/data/dev.drexius.terminal/files/Download");
             let _ = std::fs::create_dir_all(&fallback);
             let fallback_target = fallback.join(&fname);
             crate::fs_guard::ensure_local_path_not_sensitive(&fallback_target.to_string_lossy())?;
-            if std::fs::write(&fallback_target, &content).is_ok() {
+            if write_with_mode(&fallback_target, &content).is_ok() {
                 return Ok(fallback_target.to_string_lossy().to_string());
             }
         }
@@ -4249,6 +4267,19 @@ mod tests {
                 vault_save_emergency_kit("secret".to_string(), Some(bad.to_string())).is_err(),
                 "expected rejection for filename: {bad}"
             );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_vault_save_emergency_kit_permissions_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let fname = format!("test-kit-{}.txt", uuid::Uuid::new_v4());
+        if let Ok(saved_path) = vault_save_emergency_kit("secret recovery key".to_string(), Some(fname)) {
+            let meta = std::fs::metadata(&saved_path).expect("read metadata");
+            let mode = meta.permissions().mode() & 0o777;
+            let _ = std::fs::remove_file(&saved_path);
+            assert_eq!(mode, 0o600, "emergency kit file must be mode 0600, got: {mode:o}");
         }
     }
 }
