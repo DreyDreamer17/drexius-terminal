@@ -198,6 +198,8 @@ pub fn run() {
             sync::sync_status,
             sync::sync_configure,
             sync::sync_now,
+            sync::team_vault_configure_relay,
+            sync::team_vault_sync_now,
             // direct device pairing
             pairing::pairing_start_host,
             pairing::pairing_stop_host,
@@ -207,6 +209,7 @@ pub fn run() {
             pairing::pairing_revoke_device,
             pairing::pairing_allow_device,
             pairing::pairing_get_local_info,
+            pairing::pairing_discover_lan,
             // local filesystem operations for agent
             // opencode integration
             opencode::opencode_detect,

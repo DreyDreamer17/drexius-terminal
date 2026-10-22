@@ -13,8 +13,9 @@ const MAX_PAIRING_ATTEMPTS: u32 = 5;
 const PAIRING_TIMEOUT_SECS: u64 = 600;
 const MAX_PAIRING_CONNECTIONS: usize = 8;
 const PAIRING_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_PAIRING_BODY_SIZE: usize = 64 * 1024;
+const MAX_PAIRING_BODY_SIZE: usize = 50 * 1024 * 1024;
 const MAX_PAIRING_CIPHERTEXT_SIZE: usize = 50 * 1024 * 1024;
+const PAIRING_DISCOVERY_PORT: u16 = 48290;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
@@ -73,6 +74,16 @@ pub struct LocalDeviceInfo {
     pub ip: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredPairingHost {
+    pub ip: String,
+    pub port: u16,
+    pub device_name: String,
+    pub os: String,
+    pub server_public_key: String,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HandshakeRequest {
@@ -87,6 +98,12 @@ struct HandshakeRequest {
     /// revocation blocklist. Legacy clients omit it (empty).
     #[serde(default)]
     pub client_device_id: String,
+    /// Optional 24-byte nonce (hex) for two-way LAN sync (client -> host archive).
+    #[serde(default)]
+    pub client_nonce: String,
+    /// Optional base64-encoded encrypted `FullVaultArchive` from the client for two-way merge.
+    #[serde(default)]
+    pub client_encrypted_payload: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,6 +136,9 @@ struct FullVaultArchive {
     pub tunnels: Vec<TunnelConfig>,
     #[serde(default)]
     pub ai_configs: Vec<AiProviderConfig>,
+    /// HLC-timestamped records (and deletion tombstones) for smart two-way LAN merging.
+    #[serde(default)]
+    pub sync_records: Vec<crate::sync::SyncRecord>,
     /// v2 enrollment, present only if the sender has configured relay sync.
     /// The entire archive is sealed under the authenticated pairing key.
     #[serde(default)]
@@ -265,6 +285,8 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
                     color: r.get(3)?,
                     description: r.get(4)?,
                     created_at: r.get(5)?,
+                    role: None,
+                    relay_url: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -427,6 +449,8 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
                 .optional()?.and_then(|v| v.parse::<u64>().ok())
         } else { None };
 
+        let sync_records = crate::sync::collect_local_records_for_conn(c)?;
+
         Ok(FullVaultArchive {
             version: 2,
             sender_device: sender_name.to_string(),
@@ -436,6 +460,7 @@ fn dump_full_vault(vault: &Vault, sender_name: &str) -> AppResult<FullVaultArchi
             snippets,
             tunnels,
             ai_configs,
+            sync_records,
             sync_seed,
             sync_relay_url,
             sync_relay_token,
@@ -455,8 +480,8 @@ fn restore_full_vault(
         let tx = c.unchecked_transaction()?;
         let now = chrono::Utc::now().timestamp();
 
-        // Never merge a foreign sync group with existing data. Enroll only a
-        // fresh vault or a device already carrying exactly this group seed.
+        // Validate incoming relay sync seed if present. Only reject when BOTH devices
+        // have actively configured relay URLs belonging to different sync groups.
         if let Some(ref incoming) = archive.sync_seed {
             if hex::decode(incoming).map(|v| v.len() != 32).unwrap_or(true) {
                 return Err(AppError::Crypto("Invalid pairing sync seed".into()));
@@ -466,131 +491,125 @@ fn restore_full_vault(
             if !crate::sync::relay_url_is_allowed(url) {
                 return Err(AppError::Crypto("Pairing relay URL is not allowed".into()));
             }
-            let existing: Option<String> = tx.query_row(
-                "SELECT value FROM ai_settings WHERE key='sync_seed_v2'", [], |r| r.get(0),
-            ).optional()?;
-            if let Some(seed) = existing {
-                if seed.as_str() != incoming.as_str() {
-                    return Err(AppError::Crypto("This vault belongs to a different sync group. Join from a new, empty vault instead.".into()));
-                }
-            } else {
-                let existing_data: i64 = tx.query_row(
-                    "SELECT (SELECT count(*) FROM hosts) + (SELECT count(*) FROM keychain) +
-                            (SELECT count(*) FROM snippets) + (SELECT count(*) FROM tunnels)",
-                    [], |r| r.get(0),
-                )?;
-                if existing_data != 0 {
-                    return Err(AppError::Other("Sync enrollment requires an empty vault; existing data would conflict. This device was not changed.".into()));
+            if let Some(existing_active_seed) = crate::sync::sync_seed_if_configured(&tx)? {
+                if existing_active_seed.as_str() != incoming.as_str() {
+                    return Err(AppError::Crypto("This vault belongs to a different active relay sync group.".into()));
                 }
             }
+        }
+
+        if !archive.sync_records.is_empty()
+            || (archive.vaults.is_empty()
+                && archive.hosts.is_empty()
+                && archive.keychain.is_empty()
+                && archive.snippets.is_empty()
+                && archive.tunnels.is_empty())
+        {
+            // Smart HLC Last-Writer-Wins + Tombstone Deletion merge
+            crate::sync::merge_sync_records(&tx, &archive.sync_records)?;
         } else {
-            let enrolled: Option<String> = tx.query_row(
-                "SELECT value FROM ai_settings WHERE key='sync_seed_v2'", [], |r| r.get(0),
-            ).optional()?;
-            if enrolled.is_some() {
-                return Err(AppError::Other("Cannot merge a one-time snapshot into an enrolled sync vault. This device was not changed.".into()));
-            }
-        }
-
-        // 1. Vaults
-        for v in &archive.vaults {
-            tx.execute(
-                "INSERT INTO vaults(id, name, kind, color, description, created_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
-                params![v.id, v.name, v.kind, v.color, v.description, v.created_at],
-            )?;
-            crate::vault::log_sync_mutation(&tx, "vaults", &v.id)?;
-        }
-
-        // 2. Keychain (restored before hosts so foreign keys resolve)
-        for (k, sec) in &archive.keychain {
-            let (pwd, pkey, pass) = if let Some(s) = sec {
-                (s.password.as_deref(), s.private_key.as_deref(), s.passphrase.as_deref())
-            } else {
-                (None, None, None)
-            };
-            tx.execute(
-                "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at, vault_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
-                     password=COALESCE(?5, password), private_key=COALESCE(?6, private_key),
-                     passphrase=COALESCE(?7, passphrase), updated_at=?8, vault_id=?9",
-                params![
-                    k.id, k.label, k.username, k.auth_method.as_str(), pwd, pkey, pass,
-                    k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
-                ],
-            )?;
-            crate::vault::log_sync_mutation(&tx, "keychain", &k.id)?;
-        }
-
-        // 3. Hosts & Secrets
-        for (h, sec) in &archive.hosts {
-            tx.execute(
-                "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
-                     grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, proxy_command=?15, updated_at=?16",
-                params![
-                    h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
-                    h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
-                    h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id.as_deref().unwrap_or("personal"),
-                    h.startup_command,
-                    h.proxy_command,
-                    now
-                ],
-            )?;
-            if let Some(s) = sec {
+            // Legacy fallback for older peers that did not include `sync_records`
+            // 1. Vaults
+            for v in &archive.vaults {
                 tx.execute(
-                    "INSERT INTO secrets(host_id, password, private_key, passphrase)
-                     VALUES(?1, ?2, ?3, ?4)
-                     ON CONFLICT(host_id) DO UPDATE SET password=COALESCE(?2, password),
-                     private_key=COALESCE(?3, private_key), passphrase=COALESCE(?4, passphrase)",
-                    params![h.id, s.password, s.private_key, s.passphrase],
+                    "INSERT INTO vaults(id, name, kind, color, description, created_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
+                    params![v.id, v.name, v.kind, v.color, v.description, v.created_at],
                 )?;
+                crate::vault::log_sync_mutation(&tx, "vaults", &v.id)?;
             }
-            // Single-source invariant: only drop host secret if keychain identity actually exists
-            if let Some(ref kid) = h.keychain_id.as_deref().filter(|v| !v.is_empty()) {
-                let kc_exists: bool = tx
-                    .query_row("SELECT 1 FROM keychain WHERE id=?1", [kid], |_| Ok(true))
-                    .optional()?
-                    .unwrap_or(false);
-                if kc_exists {
-                    tx.execute("DELETE FROM secrets WHERE host_id = ?1", [&h.id])?;
+
+            // 2. Keychain (restored before hosts so foreign keys resolve)
+            for (k, sec) in &archive.keychain {
+                let (pwd, pkey, pass) = if let Some(s) = sec {
+                    (s.password.as_deref(), s.private_key.as_deref(), s.passphrase.as_deref())
                 } else {
-                    tx.execute("UPDATE hosts SET keychain_id = NULL WHERE id = ?1", [&h.id])?;
-                }
+                    (None, None, None)
+                };
+                tx.execute(
+                    "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, updated_at, vault_id)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+                         password=COALESCE(?5, password), private_key=COALESCE(?6, private_key),
+                         passphrase=COALESCE(?7, passphrase), updated_at=?8, vault_id=?9
+                     WHERE excluded.updated_at >= keychain.updated_at",
+                    params![
+                        k.id, k.label, k.username, k.auth_method.as_str(), pwd, pkey, pass,
+                        k.updated_at, k.vault_id.as_deref().unwrap_or("personal")
+                    ],
+                )?;
+                crate::vault::log_sync_mutation(&tx, "keychain", &k.id)?;
             }
-            crate::vault::log_sync_mutation(&tx, "hosts", &h.id)?;
-        }
 
-        // 4. Snippets
-        for sn in &archive.snippets {
-            tx.execute(
-                "INSERT INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(id) DO UPDATE SET name=?2, command=?3, folder=?4, tags=?5, vault_id=?6, updated_at=?7",
-                params![
-                    sn.id, sn.name, sn.command, sn.folder,
-                    serde_json::to_string(&sn.tags).unwrap_or_else(|_| "[]".into()),
-                    sn.vault_id.as_deref().unwrap_or("personal"), now
-                ],
-            )?;
-            crate::vault::log_sync_mutation(&tx, "snippets", &sn.id)?;
-        }
+            // 3. Hosts & Secrets
+            for (h, sec) in &archive.hosts {
+                tx.execute(
+                    "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, hostname=?3, port=?4, username=?5, auth_method=?6,
+                         grp=?7, tags=?8, color=?9, os=?10, keychain_id=?11, jump_host_id=?12, vault_id=?13, startup_command=?14, proxy_command=?15, updated_at=?16",
+                    params![
+                        h.id, h.label, h.hostname, h.port, h.username, h.auth_method.as_str(),
+                        h.group, serde_json::to_string(&h.tags).unwrap_or_else(|_| "[]".into()),
+                        h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id.as_deref().unwrap_or("personal"),
+                        h.startup_command,
+                        h.proxy_command,
+                        now
+                    ],
+                )?;
+                if let Some(s) = sec {
+                    tx.execute(
+                        "INSERT INTO secrets(host_id, password, private_key, passphrase)
+                         VALUES(?1, ?2, ?3, ?4)
+                         ON CONFLICT(host_id) DO UPDATE SET password=COALESCE(?2, password),
+                         private_key=COALESCE(?3, private_key), passphrase=COALESCE(?4, passphrase)",
+                        params![h.id, s.password, s.private_key, s.passphrase],
+                    )?;
+                }
+                if let Some(ref kid) = h.keychain_id.as_deref().filter(|v| !v.is_empty()) {
+                    let kc_exists: bool = tx
+                        .query_row("SELECT 1 FROM keychain WHERE id=?1", [kid], |_| Ok(true))
+                        .optional()?
+                        .unwrap_or(false);
+                    if kc_exists {
+                        tx.execute("DELETE FROM secrets WHERE host_id = ?1", [&h.id])?;
+                    } else {
+                        tx.execute("UPDATE hosts SET keychain_id = NULL WHERE id = ?1", [&h.id])?;
+                    }
+                }
+                crate::vault::log_sync_mutation(&tx, "hosts", &h.id)?;
+            }
 
-        // 5. Tunnels
-        for t in &archive.tunnels {
-            tx.execute(
-                "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6, remote_host=?7, remote_port=?8, updated_at=?9, vault_id=?10",
-                params![
-                    t.id, t.label, t.host_id, t.forward_type, t.local_host, t.local_port,
-                    t.remote_host, t.remote_port, t.updated_at, t.vault_id.as_deref().unwrap_or("personal")
-                ],
-            )?;
-            crate::vault::log_sync_mutation(&tx, "tunnels", &t.id)?;
+            // 4. Snippets
+            for sn in &archive.snippets {
+                tx.execute(
+                    "INSERT INTO snippets(id, name, command, folder, tags, vault_id, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(id) DO UPDATE SET name=?2, command=?3, folder=?4, tags=?5, vault_id=?6, updated_at=?7",
+                    params![
+                        sn.id, sn.name, sn.command, sn.folder,
+                        serde_json::to_string(&sn.tags).unwrap_or_else(|_| "[]".into()),
+                        sn.vault_id.as_deref().unwrap_or("personal"), now
+                    ],
+                )?;
+                crate::vault::log_sync_mutation(&tx, "snippets", &sn.id)?;
+            }
+
+            // 5. Tunnels
+            for t in &archive.tunnels {
+                tx.execute(
+                    "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, updated_at, vault_id)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, host_id=?3, forward_type=?4, local_host=?5, local_port=?6, remote_host=?7, remote_port=?8, updated_at=?9, vault_id=?10
+                     WHERE excluded.updated_at >= tunnels.updated_at",
+                    params![
+                        t.id, t.label, t.host_id, t.forward_type, t.local_host, t.local_port,
+                        t.remote_host, t.remote_port, t.updated_at, t.vault_id.as_deref().unwrap_or("personal")
+                    ],
+                )?;
+                crate::vault::log_sync_mutation(&tx, "tunnels", &t.id)?;
+            }
         }
 
         // 6. AI Configs - preserve existing api_keys and proxy_urls only if origin matches
@@ -643,25 +662,32 @@ fn restore_full_vault(
             )?;
         }
 
-        // 7. Record paired device (upsert by peer_name + peer_ip so re-pairing doesn't duplicate)
+        // 7. Record paired device (upsert by peer_name so re-pairing or DHCP IP changes update cleanly)
+        let inferred_type = if peer_name.to_ascii_lowercase().contains("android") {
+            "android"
+        } else if peer_name.to_ascii_lowercase().contains("ios") {
+            "ios"
+        } else {
+            "desktop"
+        };
         let existing_peer_id: Option<String> = tx
             .query_row(
-                "SELECT id FROM paired_devices WHERE revoked_at IS NULL AND device_name = ?1 AND ip_address = ?2 ORDER BY last_sync DESC LIMIT 1",
-                params![peer_name, peer_ip],
+                "SELECT id FROM paired_devices WHERE revoked_at IS NULL AND device_name = ?1 ORDER BY last_sync DESC LIMIT 1",
+                params![peer_name],
                 |r| r.get(0),
             )
             .optional()?;
         if let Some(id) = existing_peer_id {
             tx.execute(
-                "UPDATE paired_devices SET public_key=?1, last_sync=?2 WHERE id=?3",
-                params![peer_pk, now, id],
+                "UPDATE paired_devices SET ip_address=?1, public_key=?2, last_sync=?3 WHERE id=?4",
+                params![peer_ip, peer_pk, now, id],
             )?;
         } else {
             let dev_id = uuid::Uuid::new_v4().to_string();
             tx.execute(
                 "INSERT INTO paired_devices(id, device_name, device_type, ip_address, public_key, paired_at, last_sync)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![dev_id, peer_name, "desktop", peer_ip, peer_pk, now, now],
+                params![dev_id, peer_name, inferred_type, peer_ip, peer_pk, now, now],
             )?;
         }
 
@@ -776,6 +802,8 @@ pub async fn pairing_start_host(
     let expected_pin = pin_str;
     let s_name = device_name;
     let s_pk_hex = server_pk_hex;
+    let host_ip = local_ip;
+    let host_port = port;
     let failed_attempts = Arc::new(AtomicU32::new(0));
     let permits = Arc::new(tokio::sync::Semaphore::new(MAX_PAIRING_CONNECTIONS));
 
@@ -784,6 +812,17 @@ pub async fn pairing_start_host(
         let session_gen = generation;
         let timeout = tokio::time::sleep(Duration::from_secs(PAIRING_TIMEOUT_SECS));
         tokio::pin!(timeout);
+
+        let udp_listener = tokio::net::UdpSocket::bind(("0.0.0.0", PAIRING_DISCOVERY_PORT)).await.ok();
+        let beacon_payload = serde_json::to_vec(&DiscoveredPairingHost {
+            ip: host_ip.clone(),
+            port: host_port,
+            device_name: s_name.clone(),
+            os: std::env::consts::OS.to_string(),
+            server_public_key: s_pk_hex.clone(),
+        })
+        .unwrap_or_default();
+        let mut udp_buf = [0u8; 256];
 
         loop {
             tokio::select! {
@@ -795,6 +834,20 @@ pub async fn pairing_start_host(
                     log::info!("Pairing listener timed out after {} seconds", PAIRING_TIMEOUT_SECS);
                     let _ = app_clone.emit("pairing-expired", ());
                     break;
+                }
+                udp_res = async {
+                    match udp_listener.as_ref() {
+                        Some(sock) => sock.recv_from(&mut udp_buf).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Ok((len, peer)) = udp_res {
+                        if &udp_buf[..len] == b"drxpair-probe" && !beacon_payload.is_empty() {
+                            if let Some(ref sock) = udp_listener {
+                                let _ = sock.send_to(&beacon_payload, peer).await;
+                            }
+                        }
+                    }
                 }
                 res = listener.accept() => {
                     match res {
@@ -907,6 +960,23 @@ async fn handle_incoming_pairing(
                         stream.write_all(resp.as_bytes()).await.map_err(|e| AppError::Other(e.to_string()))?;
                         return Ok(());
                     }
+                    if headers_str.starts_with("GET /pair/info") {
+                        let info_json = serde_json::to_vec(&DiscoveredPairingHost {
+                            ip: get_local_ip(),
+                            port: stream.local_addr().map(|a| a.port()).unwrap_or(0),
+                            device_name: server_name.to_string(),
+                            os: std::env::consts::OS.to_string(),
+                            server_public_key: server_pk_hex.to_string(),
+                        })
+                        .unwrap_or_default();
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            info_json.len()
+                        );
+                        stream.write_all(resp.as_bytes()).await.map_err(|e| AppError::Other(e.to_string()))?;
+                        stream.write_all(&info_json).await.map_err(|e| AppError::Other(e.to_string()))?;
+                        return Ok(());
+                    }
 
                     for line in headers_str.lines() {
                         if line.to_ascii_lowercase().starts_with("content-length:") {
@@ -919,6 +989,10 @@ async fn handle_incoming_pairing(
                         let err_resp = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
                         let _ = stream.write_all(err_resp.as_bytes()).await;
                         return Err(AppError::Other(format!("Pairing payload exceeds maximum allowed size ({content_len} > {MAX_PAIRING_BODY_SIZE})")));
+                    }
+                    let needed = pos + 4 + content_len;
+                    if needed > buf.len() {
+                        buf.resize(needed, 0);
                     }
                 } else {
                     scan_from = n_total.saturating_sub(3);
@@ -1011,13 +1085,41 @@ async fn handle_incoming_pairing(
                     }
                 }
 
-                // Dump current vault archive
+                let cipher = XChaCha20Poly1305::new((&session_key).into());
+
+                // Two-way LAN merge: if the joining client included its own encrypted vault archive,
+                // decrypt and merge its newer changes & deletions into the host vault BEFORE dumping
+                // the host's archive so both devices end up completely synchronized in one round-trip.
+                if !req.client_nonce.is_empty() && !req.client_encrypted_payload.is_empty() {
+                    if let (Ok(c_nonce_raw), Ok(c_ct)) = (
+                        hex::decode(&req.client_nonce),
+                        B64.decode(&req.client_encrypted_payload),
+                    ) {
+                        if c_nonce_raw.len() == 24 && c_ct.len() <= MAX_PAIRING_CIPHERTEXT_SIZE {
+                            let c_nonce = XNonce::from_slice(&c_nonce_raw);
+                            if let Ok(c_plain) = cipher.decrypt(c_nonce, c_ct.as_ref()) {
+                                if let Ok(client_archive) = serde_json::from_slice::<FullVaultArchive>(&c_plain) {
+                                    if let Err(e) = restore_full_vault(
+                                        vault,
+                                        client_archive,
+                                        &req.client_device_name,
+                                        &peer_addr.ip().to_string(),
+                                        &req.client_public_key,
+                                    ) {
+                                        log::warn!("Failed to merge client archive during LAN sync: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Dump current (merged) vault archive
                 let archive = dump_full_vault(vault, server_name)?;
                 let archive_json = serde_json::to_vec(&archive)
                     .map_err(|e| AppError::Other(format!("Archive serialize error: {e}")))?;
 
                 // Encrypt with session key. The client can only decrypt if it derived the same DH secret.
-                let cipher = XChaCha20Poly1305::new((&session_key).into());
                 let mut nonce_bytes = [0u8; 24];
                 rand::thread_rng().fill_bytes(&mut nonce_bytes);
                 let nonce = XNonce::from_slice(&nonce_bytes);
@@ -1161,8 +1263,35 @@ pub async fn pairing_join_client(
         return Err(AppError::Other("The pairing code must be 6 digits.".into()));
     }
 
-    // The host's public key comes from the pairing link, obtained out of band. It is pinned, not taken from the wire.
-    let server_public = parse_x25519_public(&server_public_key)
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Network(e.to_string()))?;
+
+    // If the caller connected via IP:Port + PIN (without a full link/QR), fetch the host's public key first.
+    let resolved_pk_hex = if server_public_key.trim().is_empty() {
+        let info_url = format!("http://{}:{}/pair/info", target_host, port);
+        let info_resp = client
+            .get(&info_url)
+            .send()
+            .await
+            .map_err(|e| AppError::Network(format!("Failed to reach host {target_host}:{port} — {e}")))?;
+        if !info_resp.status().is_success() {
+            return Err(AppError::Network(format!(
+                "Host {target_host}:{port} did not provide pairing info (HTTP {})",
+                info_resp.status()
+            )));
+        }
+        let info: DiscoveredPairingHost = info_resp
+            .json()
+            .await
+            .map_err(|e| AppError::Network(format!("Invalid pairing info from host: {e}")))?;
+        info.server_public_key
+    } else {
+        server_public_key
+    };
+
+    let server_public = parse_x25519_public(&resolved_pk_hex)
         .map_err(|_| AppError::Other("The pairing link has an invalid host key.".into()))?;
     let server_pk_hex = hex::encode(server_public.as_bytes());
 
@@ -1186,13 +1315,22 @@ pub async fn pairing_join_client(
         .finalize()
         .into_bytes();
 
-    // 3. Send the handshake. Plain HTTP is acceptable here because the proof and the AEAD-encrypted
+    // 3. Seal local vault archive with the session key so the host merges our changes & deletions too
+    //    (two-way LAN sync in a single handshake).
+    let cipher = XChaCha20Poly1305::new((&session_key).into());
+    let local_archive = dump_full_vault(&vault, &my_device_name)?;
+    let local_archive_json = serde_json::to_vec(&local_archive)
+        .map_err(|e| AppError::Other(format!("Local archive serialize error: {e}")))?;
+    let mut client_nonce_bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut client_nonce_bytes);
+    let client_nonce = XNonce::from_slice(&client_nonce_bytes);
+    let client_ct = cipher
+        .encrypt(client_nonce, local_archive_json.as_ref())
+        .map_err(|e| AppError::Crypto(format!("Client archive encryption failed: {e}")))?;
+
+    // 4. Send the handshake. Plain HTTP is acceptable here because the proof and the AEAD-encrypted
     //    archive are bound to the pinned host key, so a network attacker can't impersonate the host.
     let url = format!("http://{}:{}/pair/handshake", target_host, port);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| AppError::Network(e.to_string()))?;
 
     let req_body = HandshakeRequest {
         client_public_key: client_pk_hex,
@@ -1200,6 +1338,8 @@ pub async fn pairing_join_client(
         client_device_name: my_device_name,
         client_os: std::env::consts::OS.to_string(),
         client_device_id: vault.with(|c| Ok(crate::vault::get_or_create_device_id(c)))?,
+        client_nonce: hex::encode(client_nonce_bytes),
+        client_encrypted_payload: B64.encode(client_ct),
     };
 
     let resp = client
@@ -1396,6 +1536,71 @@ pub fn pairing_get_local_info() -> AppResult<LocalDeviceInfo> {
         os: std::env::consts::OS.to_string(),
         ip: get_local_ip(),
     })
+}
+
+/// Discovers active pairing hosts on the local network via UDP broadcast probe.
+#[tauri::command]
+pub async fn pairing_discover_lan() -> AppResult<Vec<DiscoveredPairingHost>> {
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| AppError::Network(e.to_string()))?;
+    let _ = sock.set_broadcast(true);
+
+    let mut targets: Vec<std::net::SocketAddr> = vec![
+        std::net::SocketAddr::from(([255, 255, 255, 255], PAIRING_DISCOVERY_PORT)),
+        std::net::SocketAddr::from(([127, 0, 0, 1], PAIRING_DISCOVERY_PORT)),
+    ];
+    let local_ip = get_local_ip();
+    if let Ok(std::net::IpAddr::V4(ipv4)) = local_ip.parse::<std::net::IpAddr>() {
+        if !ipv4.is_loopback() {
+            let octets = ipv4.octets();
+            targets.push(std::net::SocketAddr::from((
+                [octets[0], octets[1], octets[2], 255],
+                PAIRING_DISCOVERY_PORT,
+            )));
+        }
+    }
+
+    for &t in &targets {
+        let _ = sock.send_to(b"drxpair-probe", t).await;
+    }
+
+    let mut found: Vec<DiscoveredPairingHost> = Vec::new();
+    let mut buf = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(380);
+    let mut resent = false;
+
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        if !resent && deadline.duration_since(now) <= Duration::from_millis(220) {
+            resent = true;
+            for &t in &targets {
+                let _ = sock.send_to(b"drxpair-probe", t).await;
+            }
+        }
+        let wait = deadline.duration_since(now).min(Duration::from_millis(120));
+        match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
+            Ok(Ok((len, peer))) => {
+                if let Ok(mut host) = serde_json::from_slice::<DiscoveredPairingHost>(&buf[..len]) {
+                    if host.ip.is_empty() || host.ip == "0.0.0.0" || host.ip == "127.0.0.1" {
+                        host.ip = peer.ip().to_string();
+                    }
+                    if host.port > 0
+                        && !host.server_public_key.is_empty()
+                        && !found.iter().any(|h| h.ip == host.ip && h.port == host.port)
+                    {
+                        found.push(host);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(found)
 }
 
 #[cfg(test)]

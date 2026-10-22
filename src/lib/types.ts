@@ -7,6 +7,16 @@ export interface Vault {
   color?: string | null;
   description?: string | null;
   createdAt: number;
+  role?: 'owner' | 'editor' | 'readonly' | string | null;
+  relayUrl?: string | null;
+}
+
+export interface TeamVaultSyncResult {
+  vaultId: string;
+  pushed: number;
+  pulled: number;
+  role: string;
+  lastSync: number;
 }
 
 export interface SerialPortInfo {
@@ -57,6 +67,14 @@ export interface LocalDeviceInfo {
   deviceName: string;
   os: string;
   ip: string;
+}
+
+export interface DiscoveredPairingHost {
+  ip: string;
+  port: number;
+  deviceName: string;
+  os: string;
+  serverPublicKey: string;
 }
 
 export interface EncryptedTeamVaultBundle {

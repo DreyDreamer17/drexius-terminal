@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   ShieldCheck,
+  Download,
 } from 'lucide-react';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { bridge, isTauri } from '../lib/bridge';
@@ -223,6 +224,23 @@ export function SyncModal({
     }
   };
 
+  const handleDownloadScript = () => {
+    try {
+      const blob = new Blob([RELAY_PY_SOURCE], { type: 'text/x-python;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'relay.py';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast('Downloaded relay.py');
+    } catch {
+      toast('Failed to download relay.py');
+    }
+  };
+
   const effectiveToken = token.trim() || (status?.hasToken ? '<your-saved-token>' : 'replace-with-your-token');
 
   const pythonRunCmd = `export DREXIUS_RELAY_TOKEN="${effectiveToken}"\npython3 relay.py --host 0.0.0.0 --port 8787`;
@@ -360,7 +378,6 @@ export function SyncModal({
           <button
             type="button"
             onClick={() => {
-              onClose();
               onOpenPairing();
             }}
             className="flex items-center justify-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition shrink-0 shadow-sm"
@@ -477,15 +494,27 @@ export function SyncModal({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-[11px] text-slate-400">
                       <span>Run on your VPS or home server:</span>
-                      <button
-                        type="button"
-                        onClick={handleCopyScript}
-                        className="flex items-center gap-1 text-[11px] hover:underline"
-                        style={{ color: accentColor }}
-                      >
-                        {copiedCode ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                        <span>Copy relay.py</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDownloadScript}
+                          className="flex items-center gap-1 text-[11px] hover:underline"
+                          style={{ color: accentColor }}
+                        >
+                          <Download className="h-3 w-3" />
+                          <span>Download relay.py</span>
+                        </button>
+                        <span className="text-slate-600">·</span>
+                        <button
+                          type="button"
+                          onClick={handleCopyScript}
+                          className="flex items-center gap-1 text-[11px] hover:underline"
+                          style={{ color: accentColor }}
+                        >
+                          {copiedCode ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                          <span>Copy</span>
+                        </button>
+                      </div>
                     </div>
                     <div className="relative rounded-lg border border-white/10 bg-black/60 p-2.5 font-mono text-[11px] text-emerald-300">
                       <pre className="whitespace-pre-wrap break-all">{pythonRunCmd}</pre>
@@ -522,15 +551,27 @@ export function SyncModal({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between text-[11px] text-slate-400">
                       <span>Full standalone Python relay (134 lines):</span>
-                      <button
-                        type="button"
-                        onClick={handleCopyScript}
-                        className="flex items-center gap-1 text-[11px] hover:underline"
-                        style={{ color: accentColor }}
-                      >
-                        {copiedCode ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-                        <span>Copy Script</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDownloadScript}
+                          className="flex items-center gap-1 text-[11px] hover:underline"
+                          style={{ color: accentColor }}
+                        >
+                          <Download className="h-3 w-3" />
+                          <span>Download</span>
+                        </button>
+                        <span className="text-slate-600">·</span>
+                        <button
+                          type="button"
+                          onClick={handleCopyScript}
+                          className="flex items-center gap-1 text-[11px] hover:underline"
+                          style={{ color: accentColor }}
+                        >
+                          {copiedCode ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                          <span>Copy</span>
+                        </button>
+                      </div>
                     </div>
                     <textarea
                       readOnly

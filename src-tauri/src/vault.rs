@@ -59,6 +59,26 @@ pub struct VaultRecord {
     pub color: Option<String>,
     pub description: Option<String>,
     pub created_at: i64,
+    #[serde(default)]
+    pub role: Option<String>, // "owner" | "editor" | "readonly"
+    #[serde(default)]
+    pub relay_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedSecret {
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub passphrase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamRelayBundleConfig {
+    pub relay_url: String,
+    pub relay_token: String,
+    pub relay_seed: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +126,14 @@ pub struct TeamVaultPayload {
     pub snippets: Vec<Snippet>,
     #[serde(default)]
     pub ai_configs: Vec<AiProviderConfig>,
+    #[serde(default)]
+    pub include_secrets: bool,
+    #[serde(default)]
+    pub host_secrets: HashMap<String, SharedSecret>,
+    #[serde(default)]
+    pub keychain_secrets: HashMap<String, SharedSecret>,
+    #[serde(default)]
+    pub team_relay: Option<TeamRelayBundleConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1103,14 +1131,20 @@ impl Vault {
 
     pub fn set_host_os(&self, id: &str, os: &str) -> AppResult<()> {
         self.with(|c| {
-            c.execute("UPDATE hosts SET os=?1, updated_at=?2 WHERE id=?3", params![os, now(), id])?;
-            let _ = log_sync_mutation(c, "hosts", id);
+            let changed = c.execute(
+                "UPDATE hosts SET os=?1, updated_at=?2 WHERE id=?3 AND COALESCE(os, '') != ?1",
+                params![os, now(), id],
+            )?;
+            if changed > 0 {
+                let _ = log_sync_mutation(c, "hosts", id);
+            }
             Ok(())
         })
     }
 
     pub fn host_with_secret(&self, id: &str) -> AppResult<(HostProfile, HostSecret)> {
         self.with(|c| {
+            let android_ip = latest_paired_android_ip(c);
             let host_res = c
                 .query_row(
                     "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
@@ -1147,6 +1181,7 @@ impl Vault {
 
                         profile.auth_method = auth_method;
                         profile.username = username;
+                        translate_termux_for_platform(&mut profile, android_ip.as_deref());
 
                         Ok((
                             profile,
@@ -1607,9 +1642,105 @@ pub fn request_storage_permission() -> AppResult<bool> {
 
 // ── Hosts ──
 
+#[cfg(not(target_os = "android"))]
+fn latest_paired_android_ip(conn: &Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT ip_address FROM paired_devices
+         WHERE revoked_at IS NULL
+           AND ip_address IS NOT NULL
+           AND ip_address != ''
+           AND ip_address != '127.0.0.1'
+           AND (LOWER(device_type) LIKE '%android%'
+                OR LOWER(device_name) LIKE '%android%'
+                OR LOWER(device_type) LIKE '%mobile%'
+                OR LOWER(device_type) LIKE '%phone%')
+         ORDER BY last_sync DESC LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+#[cfg(target_os = "android")]
+fn latest_paired_android_ip(_conn: &Connection) -> Option<String> {
+    None
+}
+
+fn translate_termux_for_platform(profile: &mut HostProfile, android_lan_ip: Option<&str>) {
+    #[cfg(not(target_os = "android"))]
+    if profile.port == 8022
+        && (profile.hostname.trim() == "127.0.0.1"
+            || profile.hostname.trim().eq_ignore_ascii_case("localhost"))
+    {
+        if let Some(ip) = android_lan_ip {
+            profile.hostname = ip.to_string();
+            if profile.label.trim() == "Termux (Local)" {
+                profile.label = "Termux (Phone LAN)".to_string();
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    let _ = (profile, android_lan_ip);
+}
+
+fn normalize_termux_before_save(profile: &mut HostProfile, android_lan_ip: Option<&str>) {
+    #[cfg(not(target_os = "android"))]
+    if profile.port == 8022 {
+        if let Some(ip) = android_lan_ip {
+            if profile.hostname.trim() == ip {
+                profile.hostname = "127.0.0.1".to_string();
+                if profile.label.trim() == "Termux (Phone LAN)" {
+                    profile.label = "Termux (Local)".to_string();
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    let _ = (profile, android_lan_ip);
+}
+
+pub(crate) fn get_vault_role(conn: &Connection, vault_id: &str) -> String {
+    if vault_id == "personal" || vault_id.is_empty() {
+        return "owner".into();
+    }
+    conn.query_row(
+        "SELECT value FROM ai_settings WHERE key = ?1",
+        [format!("team_vault_role:{vault_id}")],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .unwrap_or_else(|| "owner".into())
+}
+
+pub(crate) fn get_vault_relay_url(conn: &Connection, vault_id: &str) -> Option<String> {
+    if vault_id == "personal" || vault_id.is_empty() {
+        return None;
+    }
+    conn.query_row(
+        "SELECT value FROM ai_settings WHERE key = ?1",
+        [format!("team_vault_relay_url:{vault_id}")],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|s| !s.trim().is_empty())
+}
+
+pub(crate) fn ensure_vault_writable(conn: &Connection, vault_id: Option<&str>) -> AppResult<()> {
+    let vid = vault_id.unwrap_or("personal");
+    if get_vault_role(conn, vid) == "readonly" {
+        return Err(AppError::Other(
+            "This Team Vault is Read-Only. You can connect to hosts and run snippets, but cannot modify or delete items.".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
+        let android_ip = latest_paired_android_ip(c);
         let mut st = c.prepare(
             "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
                     (s.host_id IS NOT NULL OR h.keychain_id IS NOT NULL) FROM hosts h LEFT JOIN secrets s ON s.host_id=h.id ORDER BY h.grp, h.label",
@@ -1617,6 +1748,7 @@ pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
         let rows = st.query_map([], |r| {
             let mut h = row_to_host(r)?;
             h.has_secret = r.get(15)?;
+            translate_termux_for_platform(&mut h, android_ip.as_deref());
             Ok(h)
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -1630,8 +1762,18 @@ pub fn host_save_with_new_keychain(
     vault: State<'_, Vault>,
 ) -> AppResult<String> {
     vault.with(|c| {
+        ensure_vault_writable(c, profile.vault_id.as_deref())?;
+        if let Some(existing_vid) = c
+            .query_row("SELECT vault_id FROM hosts WHERE id=?1", [&profile.id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&existing_vid))?;
+        }
+        let android_ip = latest_paired_android_ip(c);
         let tx = c.unchecked_transaction()?;
         let mut profile = profile;
+        normalize_termux_before_save(&mut profile, android_ip.as_deref());
         if profile.id.is_empty() {
             profile.id = uuid::Uuid::new_v4().to_string();
         }
@@ -1640,6 +1782,8 @@ pub fn host_save_with_new_keychain(
             .vault_id
             .clone()
             .unwrap_or_else(|| host_vault.clone());
+        ensure_vault_writable(&tx, Some(&host_vault))?;
+        ensure_vault_writable(&tx, Some(&kc_vault))?;
         let mut kc_id = keychain.id.clone();
         if kc_id.is_empty() {
             kc_id = uuid::Uuid::new_v4().to_string();
@@ -1687,6 +1831,16 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
         profile.id = uuid::Uuid::new_v4().to_string();
     }
     vault.with(|c| {
+        ensure_vault_writable(c, profile.vault_id.as_deref())?;
+        if let Some(existing_vid) = c
+            .query_row("SELECT vault_id FROM hosts WHERE id=?1", [&profile.id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&existing_vid))?;
+        }
+        let android_ip = latest_paired_android_ip(c);
+        normalize_termux_before_save(&mut profile, android_ip.as_deref());
         c.execute(
             "INSERT INTO hosts(id, label, hostname, port, username, auth_method, grp, tags, color, os, keychain_id, jump_host_id, vault_id, startup_command, proxy_command, updated_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
@@ -1827,6 +1981,13 @@ pub fn log_sync_deletion(conn: &Connection, tbl: &str, record_id: &str) -> rusql
 #[tauri::command]
 pub fn host_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM hosts WHERE id=?1", [&id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute("DELETE FROM hosts WHERE id=?1", [&id])?;
         let _ = log_sync_deletion(c, "hosts", &id);
         Ok(())
@@ -1889,12 +2050,31 @@ fn upsert_keychain_identity(c: &Connection, input: &KeychainInput) -> rusqlite::
 
 #[tauri::command]
 pub fn keychain_save(input: KeychainInput, vault: State<'_, Vault>) -> AppResult<String> {
-    vault.with(|c| Ok(upsert_keychain_identity(c, &input)?))
+    vault.with(|c| {
+        ensure_vault_writable(c, input.vault_id.as_deref())?;
+        if !input.id.is_empty() {
+            if let Some(vid) = c
+                .query_row("SELECT vault_id FROM keychain WHERE id=?1", [&input.id], |r| r.get::<_, Option<String>>(0))
+                .optional()?
+                .flatten()
+            {
+                ensure_vault_writable(c, Some(&vid))?;
+            }
+        }
+        Ok(upsert_keychain_identity(c, &input)?)
+    })
 }
 
 #[tauri::command]
 pub fn keychain_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM keychain WHERE id=?1", [&id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute("DELETE FROM keychain WHERE id=?1", [&id])?;
         c.execute("UPDATE hosts SET keychain_id=NULL WHERE keychain_id=?1", [&id])?;
         let _ = log_sync_deletion(c, "keychain", &id);
@@ -2933,6 +3113,14 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
         tunnel.id = uuid::Uuid::new_v4().to_string();
     }
     vault.with(|c| {
+        ensure_vault_writable(c, tunnel.vault_id.as_deref())?;
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM tunnels WHERE id=?1", [&tunnel.id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute(
             "INSERT INTO tunnels(id, label, host_id, forward_type, local_host, local_port, remote_host, remote_port, vault_id, updated_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -2952,6 +3140,13 @@ pub fn tunnel_save(mut tunnel: TunnelConfig, vault: State<'_, Vault>) -> AppResu
 #[tauri::command]
 pub fn tunnel_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM tunnels WHERE id=?1", [&id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute("DELETE FROM tunnels WHERE id=?1", [&id])?;
         let _ = log_sync_deletion(c, "tunnels", &id);
         Ok(())
@@ -2985,6 +3180,14 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
         snippet.id = uuid::Uuid::new_v4().to_string();
     }
     vault.with(|c| {
+        ensure_vault_writable(c, snippet.vault_id.as_deref())?;
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM snippets WHERE id=?1", [&snippet.id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute(
             "INSERT OR REPLACE INTO snippets(id, name, command, folder, tags, vault_id, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -3001,6 +3204,13 @@ pub fn snippet_save(mut snippet: Snippet, vault: State<'_, Vault>) -> AppResult<
 #[tauri::command]
 pub fn snippet_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
     vault.with(|c| {
+        if let Some(vid) = c
+            .query_row("SELECT vault_id FROM snippets WHERE id=?1", [&id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten()
+        {
+            ensure_vault_writable(c, Some(&vid))?;
+        }
         c.execute("DELETE FROM snippets WHERE id=?1", [&id])?;
         let _ = log_sync_deletion(c, "snippets", &id);
         Ok(())
@@ -3021,6 +3231,8 @@ pub fn vault_list(vault: State<'_, Vault>) -> AppResult<Vec<VaultRecord>> {
                 color: r.get(3)?,
                 description: r.get(4)?,
                 created_at: r.get(5)?,
+                role: None,
+                relay_url: None,
             })
         })?;
         let mut res = rows.collect::<Result<Vec<_>, _>>()?;
@@ -3032,9 +3244,15 @@ pub fn vault_list(vault: State<'_, Vault>) -> AppResult<Vec<VaultRecord>> {
                 color: Some("#22d3ee".into()),
                 description: Some("Your private hosts & credentials".into()),
                 created_at: now(),
+                role: Some("owner".into()),
+                relay_url: None,
             };
             let _ = c.execute("INSERT OR IGNORE INTO vaults (id, name, kind, color, description, created_at) VALUES ('personal', 'Personal Vault', 'personal', '#22d3ee', 'Your private hosts & credentials', ?1)", [personal.created_at]);
             res.push(personal);
+        }
+        for v in &mut res {
+            v.role = Some(get_vault_role(c, &v.id));
+            v.relay_url = get_vault_relay_url(c, &v.id);
         }
         Ok(res)
     })
@@ -3052,6 +3270,12 @@ pub fn vault_save(mut record: VaultRecord, vault: State<'_, Vault>) -> AppResult
              ON CONFLICT(id) DO UPDATE SET name=?2, kind=?3, color=?4, description=?5",
             params![record.id, record.name, record.kind, record.color, record.description, record.created_at],
         )?;
+        if let Some(ref role) = record.role {
+            let _ = c.execute(
+                "INSERT INTO ai_settings(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("team_vault_role:{}", record.id), role],
+            );
+        }
         let _ = log_sync_mutation(c, "vaults", &record.id);
         Ok(record.id)
     })
@@ -3068,6 +3292,15 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
         c.execute("UPDATE tunnels SET vault_id='personal' WHERE vault_id=?1", [&id])?;
         c.execute("UPDATE keychain SET vault_id='personal' WHERE vault_id=?1", [&id])?;
         c.execute("DELETE FROM vaults WHERE id=?1", [&id])?;
+        for prefix in [
+            "team_vault_role",
+            "team_vault_relay_url",
+            "team_vault_relay_token",
+            "team_vault_relay_seed",
+            "team_vault_relay_cursor",
+        ] {
+            let _ = c.execute("DELETE FROM ai_settings WHERE key=?1", [format!("{prefix}:{id}")]);
+        }
         let _ = log_sync_deletion(c, "vaults", &id);
         Ok(())
     })
@@ -3079,16 +3312,23 @@ pub fn vault_delete(id: String, vault: State<'_, Vault>) -> AppResult<()> {
 pub async fn team_vault_export(
     vault_id: String,
     passphrase: String,
+    include_secrets: Option<bool>,
+    role: Option<String>,
     app: tauri::AppHandle,
 ) -> AppResult<EncryptedTeamVaultBundle> {
     if passphrase.trim().is_empty() {
         return Err(AppError::Other("Passphrase cannot be empty".into()));
     }
+    let with_secrets = include_secrets.unwrap_or(true);
+    let member_role = match role.as_deref() {
+        Some("readonly") => "readonly".to_string(),
+        _ => "editor".to_string(),
+    };
 
     tauri::async_runtime::spawn_blocking(move || {
         let vault = app.state::<Vault>();
         let payload = vault.with(|c| {
-            let v_record: VaultRecord = c.query_row(
+            let mut v_record: VaultRecord = c.query_row(
                 "SELECT id, name, kind, color, description, created_at FROM vaults WHERE id=?1",
                 [&vault_id],
                 |r| {
@@ -3099,6 +3339,8 @@ pub async fn team_vault_export(
                         color: r.get(3)?,
                         description: r.get(4)?,
                         created_at: r.get(5)?,
+                        role: Some(member_role.clone()),
+                        relay_url: get_vault_relay_url(c, &vault_id),
                     })
                 },
             ).unwrap_or_else(|_| VaultRecord {
@@ -3108,7 +3350,17 @@ pub async fn team_vault_export(
                 color: Some("#10b981".into()),
                 description: Some("Shared Team Vault".into()),
                 created_at: now(),
+                role: Some(member_role.clone()),
+                relay_url: get_vault_relay_url(c, &vault_id),
             });
+
+            if v_record.id == "personal" {
+                v_record.id = "shared-personal-vault".into();
+                if v_record.name == "Personal Vault" {
+                    v_record.name = "Shared Vault".into();
+                }
+                v_record.kind = "team".into();
+            }
 
             let mut st_hosts = c.prepare(
                 "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
@@ -3121,6 +3373,31 @@ pub async fn team_vault_export(
                 h.has_secret = r.get(15)?;
                 Ok(h)
             })?.collect::<Result<Vec<_>, _>>()?;
+
+            let mut host_secrets: HashMap<String, SharedSecret> = HashMap::new();
+            if with_secrets {
+                let mut st_sec = c.prepare(
+                    "SELECT s.host_id, s.password, s.private_key, s.passphrase
+                     FROM secrets s
+                     JOIN hosts h ON h.id = s.host_id
+                     WHERE h.vault_id = ?1",
+                )?;
+                let sec_rows = st_sec.query_map([&vault_id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        SharedSecret {
+                            password: r.get(1)?,
+                            private_key: r.get(2)?,
+                            passphrase: r.get(3)?,
+                        },
+                    ))
+                })?;
+                for row in sec_rows.flatten() {
+                    if row.1.password.is_some() || row.1.private_key.is_some() || row.1.passphrase.is_some() {
+                        host_secrets.insert(row.0, row.1);
+                    }
+                }
+            }
 
             let mut st_snips = c.prepare("SELECT id, name, command, folder, tags, vault_id FROM snippets WHERE vault_id = ?1")?;
             let snippets = st_snips.query_map([&vault_id], |r| {
@@ -3151,10 +3428,18 @@ pub async fn team_vault_export(
                 })
             })?.collect::<Result<Vec<_>, _>>()?;
 
-            let mut st_kc = c.prepare("SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id FROM keychain WHERE vault_id = ?1")?;
-            let keychain = st_kc.query_map([&vault_id], |r| {
+            let mut st_kc = c.prepare(
+                "SELECT id, label, username, auth_method, (password IS NOT NULL OR private_key IS NOT NULL), updated_at, vault_id,
+                        password, private_key, passphrase
+                 FROM keychain
+                 WHERE vault_id = ?1
+                    OR id IN (SELECT keychain_id FROM hosts WHERE vault_id = ?1 AND keychain_id IS NOT NULL)",
+            )?;
+            let mut keychain = Vec::new();
+            let mut keychain_secrets: HashMap<String, SharedSecret> = HashMap::new();
+            let kc_rows = st_kc.query_map([&vault_id], |r| {
                 let auth: String = r.get(3)?;
-                Ok(KeychainItem {
+                let item = KeychainItem {
                     id: r.get(0)?,
                     label: r.get(1)?,
                     username: r.get(2)?,
@@ -3162,8 +3447,48 @@ pub async fn team_vault_export(
                     has_secret: r.get(4)?,
                     updated_at: r.get(5)?,
                     vault_id: r.get(6)?,
-                })
-            })?.collect::<Result<Vec<_>, _>>()?;
+                };
+                let sec = SharedSecret {
+                    password: r.get(7)?,
+                    private_key: r.get(8)?,
+                    passphrase: r.get(9)?,
+                };
+                Ok((item, sec))
+            })?;
+            for row in kc_rows {
+                let (item, sec) = row?;
+                if with_secrets && (sec.password.is_some() || sec.private_key.is_some() || sec.passphrase.is_some()) {
+                    keychain_secrets.insert(item.id.clone(), sec);
+                }
+                keychain.push(item);
+            }
+
+            let relay_url = get_vault_relay_url(c, &vault_id);
+            let relay_token: Option<String> = c
+                .query_row(
+                    "SELECT value FROM ai_settings WHERE key = ?1",
+                    [format!("team_vault_relay_token:{vault_id}")],
+                    |r| r.get(0),
+                )
+                .ok()
+                .filter(|s: &String| !s.trim().is_empty());
+            let relay_seed: Option<String> = c
+                .query_row(
+                    "SELECT value FROM ai_settings WHERE key = ?1",
+                    [format!("team_vault_relay_seed:{vault_id}")],
+                    |r| r.get(0),
+                )
+                .ok()
+                .filter(|s: &String| !s.trim().is_empty());
+
+            let team_relay = match (relay_url, relay_token, relay_seed) {
+                (Some(relay_url), Some(relay_token), Some(relay_seed)) => Some(TeamRelayBundleConfig {
+                    relay_url,
+                    relay_token,
+                    relay_seed,
+                }),
+                _ => None,
+            };
 
             // Personal AI provider keys / proxy credentials are never shared with a team.
             let ai_configs: Vec<AiProviderConfig> = Vec::new();
@@ -3175,6 +3500,10 @@ pub async fn team_vault_export(
                 tunnels,
                 snippets,
                 ai_configs,
+                include_secrets: with_secrets,
+                host_secrets,
+                keychain_secrets,
+                team_relay,
             })
         })?;
 
@@ -3254,6 +3583,31 @@ pub async fn team_vault_import(
                  ON CONFLICT(id) DO UPDATE SET name=?2, color=?3, description=?4",
                 params![payload.vault.id, payload.vault.name, payload.vault.color, payload.vault.description, payload.vault.created_at],
             )?;
+            let imported_role = match payload.vault.role.as_deref() {
+                Some("readonly") => "readonly",
+                _ => "editor",
+            };
+            tx.execute(
+                "INSERT INTO ai_settings(key, value) VALUES(?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![format!("team_vault_role:{}", payload.vault.id), imported_role],
+            )?;
+            if let Some(ref tr) = payload.team_relay {
+                if crate::sync::relay_url_is_allowed(&tr.relay_url) {
+                    tx.execute(
+                        "INSERT INTO ai_settings(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![format!("team_vault_relay_url:{}", payload.vault.id), tr.relay_url],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO ai_settings(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![format!("team_vault_relay_token:{}", payload.vault.id), tr.relay_token],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO ai_settings(key, value) VALUES(?1, ?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        params![format!("team_vault_relay_seed:{}", payload.vault.id), tr.relay_seed],
+                    )?;
+                }
+            }
             log_sync_mutation(&tx, "vaults", &payload.vault.id)?;
 
             // Pass 1: determine mapped IDs for ALL incoming hosts before writing any records
@@ -3272,7 +3626,8 @@ pub async fn team_vault_import(
                     |_| Ok(true),
                 ).optional()?.unwrap_or(false);
 
-                let host_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
+                let collides_with_other_vault = is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id);
+                let host_id = if collides_with_other_vault || (!payload.include_secrets && has_secret && is_collision.is_none()) {
                     uuid::Uuid::new_v4().to_string()
                 } else {
                     h.id.clone()
@@ -3289,24 +3644,32 @@ pub async fn team_vault_import(
                     |r| r.get::<_, String>(0),
                 ).optional()?;
 
-                let has_secret: bool = tx.query_row(
-                    "SELECT 1 FROM keychain WHERE id = ?1 AND (password IS NOT NULL OR private_key IS NOT NULL)",
-                    [&kc.id],
-                    |_| Ok(true),
-                ).optional()?.unwrap_or(false);
-
-                let kc_id = if has_secret || (is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id)) {
+                let collides_with_other_vault = is_collision.is_some() && is_collision.as_deref() != Some(&payload.vault.id);
+                let kc_id = if collides_with_other_vault {
                     uuid::Uuid::new_v4().to_string()
                 } else {
                     kc.id.clone()
                 };
                 keychain_id_map.insert(kc.id.clone(), kc_id.clone());
 
+                let shared_sec = payload.keychain_secrets.get(&kc.id);
                 tx.execute(
-                    "INSERT INTO keychain(id, label, username, auth_method, vault_id, updated_at)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4, vault_id=?5, updated_at=?6",
-                    params![kc_id, kc.label, kc.username, kc.auth_method.as_str(), payload.vault.id, kc.updated_at],
+                    "INSERT INTO keychain(id, label, username, auth_method, password, private_key, passphrase, vault_id, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(id) DO UPDATE SET label=?2, username=?3, auth_method=?4,
+                         password=COALESCE(?5, password), private_key=COALESCE(?6, private_key), passphrase=COALESCE(?7, passphrase),
+                         vault_id=?8, updated_at=?9",
+                    params![
+                        kc_id,
+                        kc.label,
+                        kc.username,
+                        kc.auth_method.as_str(),
+                        shared_sec.and_then(|s| s.password.clone()),
+                        shared_sec.and_then(|s| s.private_key.clone()),
+                        shared_sec.and_then(|s| s.passphrase.clone()),
+                        payload.vault.id,
+                        kc.updated_at
+                    ],
                 )?;
                 log_sync_mutation(&tx, "keychain", &kc_id)?;
             }
@@ -3347,6 +3710,18 @@ pub async fn team_vault_import(
                         now()
                     ],
                 )?;
+                if safe_keychain_id.is_none() {
+                    if let Some(sec) = payload.host_secrets.get(&h.id) {
+                        if sec.password.is_some() || sec.private_key.is_some() || sec.passphrase.is_some() {
+                            tx.execute(
+                                "INSERT INTO secrets(host_id, password, private_key, passphrase)
+                                 VALUES(?1, ?2, ?3, ?4)
+                                 ON CONFLICT(host_id) DO UPDATE SET password=?2, private_key=?3, passphrase=?4",
+                                params![host_id, sec.password, sec.private_key, sec.passphrase],
+                            )?;
+                        }
+                    }
+                }
                 log_sync_mutation(&tx, "hosts", &host_id)?;
             }
 

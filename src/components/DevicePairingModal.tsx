@@ -16,10 +16,11 @@ import {
   CheckCircle2,
   Share2,
   Lock,
+  Wifi,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { listen } from '@tauri-apps/api/event';
-import type { LocalDeviceInfo, PairedDevice, PairingHostInfo, PairingJoinResult } from '../lib/types';
+import type { DiscoveredPairingHost, LocalDeviceInfo, PairedDevice, PairingHostInfo, PairingJoinResult } from '../lib/types';
 import { bridge, isTauri } from '../lib/bridge';
 import { cn } from '../utils/cn';
 
@@ -76,6 +77,11 @@ export function DevicePairingModal({
 
   // Join (Client) state
   const [joinLink, setJoinLink] = useState('');
+  const [joinPin, setJoinPin] = useState('');
+  const [selectedPk, setSelectedPk] = useState('');
+  const [discoveredHosts, setDiscoveredHosts] = useState<DiscoveredPairingHost[]>([]);
+  const [discoveringLan, setDiscoveringLan] = useState(false);
+  const pinInputRef = useRef<HTMLInputElement | null>(null);
   const [myDeviceName, setMyDeviceName] = useState('');
   const [joining, setJoining] = useState(false);
   const [joinResult, setJoinResult] = useState<PairingJoinResult | null>(null);
@@ -167,8 +173,9 @@ export function DevicePairingModal({
     if (isTauri) {
       listen<{ deviceName: string; ip: string }>('pairing-success', (event) => {
         setPairedSuccessPeer(event.payload);
-        toast(`Successfully paired with ${event.payload.deviceName}!`);
+        toast(`Two-way LAN sync completed with ${event.payload.deviceName}!`);
         onRefresh();
+        void loadDevices();
       }).then((u) => {
         if (disposed) u();
         else unlistenFn = u;
@@ -204,6 +211,45 @@ export function DevicePairingModal({
     loadDevices();
   }, []);
 
+  const discoverLanHosts = async () => {
+    setDiscoveringLan(true);
+    try {
+      const found = await bridge.pairingDiscoverLan();
+      setDiscoveredHosts(found);
+      if (found.length === 1 && !joinLink.trim()) {
+        setJoinLink(`${found[0].ip}:${found[0].port}`);
+        setSelectedPk(found[0].serverPublicKey);
+      }
+    } catch {
+      // Ignore discovery errors
+    } finally {
+      setDiscoveringLan(false);
+    }
+  };
+
+  useEffect(() => {
+    if (tab === 'join') {
+      discoverLanHosts();
+    }
+  }, [tab]);
+
+  const handleHostInputChange = (val: string) => {
+    const trimmed = val.trim();
+    if (trimmed.startsWith('drxpair://') || trimmed.startsWith('nxpair://')) {
+      try {
+        const parsed = parsePairingLink(trimmed);
+        setJoinLink(`${parsed.host}:${parsed.port}`);
+        setJoinPin(parsed.pin);
+        setSelectedPk(parsed.serverPublicKey);
+        return;
+      } catch {
+        // Fall through and store raw value if still typing/incomplete
+      }
+    }
+    setJoinLink(val);
+    setSelectedPk('');
+  };
+
   // Clean up host on modal close (unmount effect triggers session-scoped stop)
   const handleClose = () => {
     onClose();
@@ -224,38 +270,69 @@ export function DevicePairingModal({
     setTimeout(() => setCopiedUrl(false), 2000);
   };
 
-  const executeJoin = async (link: string) => {
-    let parsed: ParsedPairingLink;
-    try {
-      parsed = parsePairingLink(link);
-    } catch (err: any) {
-      setJoinError(err?.message || 'Invalid pairing link');
-      return;
+  const executeJoin = async (directLink?: string) => {
+    let host = '';
+    let port = 0;
+    let pin = '';
+    let pk = selectedPk;
+
+    const candidate = (directLink ?? joinLink).trim();
+    if (candidate.startsWith('drxpair://') || candidate.startsWith('nxpair://')) {
+      try {
+        const parsed = parsePairingLink(candidate);
+        host = parsed.host;
+        port = parsed.port;
+        pin = parsed.pin;
+        pk = parsed.serverPublicKey;
+      } catch (err: any) {
+        setJoinError(err?.message || 'Invalid pairing link');
+        return;
+      }
+    } else {
+      const cleanedHost = candidate.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+      const colonIdx = cleanedHost.lastIndexOf(':');
+      if (colonIdx <= 0) {
+        setJoinError('Enter the host address as IP:Port (e.g. 192.168.1.105:48291) or select a nearby device above.');
+        return;
+      }
+      host = cleanedHost.slice(0, colonIdx).trim();
+      port = parseInt(cleanedHost.slice(colonIdx + 1).trim(), 10);
+      if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) {
+        setJoinError('Invalid host IP or port number.');
+        return;
+      }
+      pin = joinPin.replace(/\D/g, '');
+      if (pin.length !== 6) {
+        setJoinError('Enter the 6-digit PIN code shown on the host device.');
+        return;
+      }
     }
+
     setJoining(true);
     setJoinError(null);
     setJoinResult(null);
 
     try {
       const res = await bridge.pairingJoinClient(
-        parsed.host,
-        parsed.port,
-        parsed.pin,
-        parsed.serverPublicKey,
+        host,
+        port,
+        pin,
+        pk,
         myDeviceName.trim() || undefined
       );
       setJoinResult(res);
       await onRefresh();
+      void loadDevices();
       if (res.syncReady) {
         try {
           await bridge.syncNow();
           await onRefresh();
-          toast(`Linked and synced with ${res.serverDeviceName}`);
+          toast(`Two-way LAN sync + relay sync completed with ${res.serverDeviceName}`);
         } catch (syncError) {
-          toast(`Snapshot received; relay sync needs attention: ${String(syncError)}`);
+          toast(`Two-way LAN sync completed; relay sync needs attention: ${String(syncError)}`);
         }
       } else {
-        toast(`Snapshot received from ${res.serverDeviceName}; ongoing sync was not enabled on the source`);
+        toast(`Two-way LAN sync completed with ${res.serverDeviceName}`);
       }
     } catch (err: any) {
       setJoinError(err?.message || String(err) || 'Failed to connect to host');
@@ -266,7 +343,7 @@ export function DevicePairingModal({
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
-    await executeJoin(joinLink);
+    await executeJoin();
   };
 
   const handleRemove = async (id: string, name: string) => {
@@ -416,16 +493,16 @@ export function DevicePairingModal({
             {pairedSuccessPeer ? (
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-4 text-center space-y-2">
                 <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-400 animate-bounce" />
-                <h4 className="text-sm font-semibold text-emerald-200">Device Linked Successfully!</h4>
+                <h4 className="text-sm font-semibold text-emerald-200">Two-Way LAN Sync Complete!</h4>
                 <p className="text-xs text-slate-300">
-                  Transferred encrypted vault to <strong className="text-white">{pairedSuccessPeer.deviceName}</strong> ({pairedSuccessPeer.ip}).
+                  Synchronized vaults in both directions with <strong className="text-white">{pairedSuccessPeer.deviceName}</strong> ({pairedSuccessPeer.ip}).
                 </p>
                 <div className="pt-2">
                   <button
                     onClick={() => setPairedSuccessPeer(null)}
                     className="rounded-lg bg-emerald-500/20 border border-emerald-400/40 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30 transition"
                   >
-                    Pair another device
+                    Sync or pair another device
                   </button>
                 </div>
               </div>
@@ -516,7 +593,7 @@ export function DevicePairingModal({
           <form onSubmit={handleJoin} className="p-5 space-y-4">
             <div>
               <p className="text-xs text-slate-400">
-                Use the pairing link from your existing device. The snapshot excludes AI API keys and proxy URLs. If the source has relay sync configured, pairing also enrolls this empty vault for ongoing sync.
+                Performs a <strong className="text-slate-200">two-way LAN sync</strong> (additions, newest edits, and deletions in both directions). Select a nearby device on Wi-Fi or enter its <span className="font-mono text-slate-300">IP:Port</span> and 6-digit PIN.
               </p>
             </div>
 
@@ -530,7 +607,7 @@ export function DevicePairingModal({
               <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/30 p-3.5 text-xs text-emerald-200 space-y-1.5">
                 <div className="flex items-center gap-1.5 font-semibold text-emerald-300">
                   <CheckCircle2 className="h-4 w-4" />
-                  <span>Vault cloned successfully from {joinResult.serverDeviceName}!</span>
+                  <span>Two-way LAN sync completed with {joinResult.serverDeviceName}!</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 pt-1 font-mono text-[11px] text-slate-300">
                   <div>• {joinResult.vaultsCount} Vaults</div>
@@ -540,55 +617,120 @@ export function DevicePairingModal({
                 </div>
                 <p className="mt-2 text-[11px] text-slate-300">
                   {joinResult.syncReady
-                    ? 'Shared sync key and relay settings installed. This device uses its own local master password.'
-                    : 'One-time snapshot only. Set up a relay on the source and pair a new, empty vault to enroll in ongoing sync.'}
+                    ? 'Both devices merged each other’s changes, and shared relay settings are installed.'
+                    : 'Both devices merged each other’s changes over LAN (newest edit wins, deletions synced). Re-link anytime to sync without a relay.'}
                 </p>
               </div>
             )}
 
-            {/* 1-Tap Camera Scanner Button */}
-            <div className="rounded-xl border border-dashed border-white/20 bg-white/[0.02] p-4 text-center space-y-2">
-              <div className="flex flex-col items-center gap-1.5">
+            {/* Nearby Devices on LAN (Auto-Discovery) */}
+            <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-300">
+                  <Wifi className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>Nearby Devices Sharing on Wi-Fi</span>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setShowScanner(true)}
-                  className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg"
-                  style={{
-                    backgroundColor: accentColor,
-                    color: '#000000',
-                    boxShadow: `0 0 20px ${accentColor}35`,
-                  }}
+                  onClick={discoverLanHosts}
+                  disabled={discoveringLan}
+                  className="flex items-center gap-1 text-[10px] text-cyan-400 hover:underline disabled:opacity-50"
                 >
-                  <Camera className="h-4 w-4" />
-                  <span>Scan QR Code with Camera</span>
+                  <RefreshCw className={`h-3 w-3 ${discoveringLan ? 'animate-spin' : ''}`} />
+                  <span>{discoveringLan ? 'Scanning…' : 'Scan LAN'}</span>
                 </button>
-                <p className="text-[11px] text-slate-400">
-                  Point camera at the host's screen to connect and sync automatically.
-                </p>
+              </div>
+
+              {discoveredHosts.length === 0 ? (
+                <div className="text-[11px] text-slate-500 py-1">
+                  {discoveringLan
+                    ? 'Searching local network for devices in "Share Vault" mode…'
+                    : 'No nearby host detected automatically. Make sure the other device has "Share Vault" open, or enter its IP:Port below.'}
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {discoveredHosts.map((h) => {
+                    const addr = `${h.ip}:${h.port}`;
+                    const isSelected = joinLink.trim() === addr;
+                    return (
+                      <button
+                        key={addr}
+                        type="button"
+                        onClick={() => {
+                          setJoinLink(addr);
+                          setSelectedPk(h.serverPublicKey);
+                          pinInputRef.current?.focus();
+                        }}
+                        className={`w-full flex items-center justify-between rounded-lg border px-3 py-2 text-left transition ${
+                          isSelected
+                            ? 'border-cyan-400/50 bg-cyan-500/15 text-white'
+                            : 'border-white/10 bg-black/40 text-slate-300 hover:border-white/25'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <Laptop className="h-4 w-4 text-cyan-400 shrink-0" />
+                          <div>
+                            <div className="text-xs font-semibold">{h.deviceName}</div>
+                            <div className="text-[10px] font-mono text-slate-400">
+                              {addr} · {h.os}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="rounded bg-cyan-500/20 px-2 py-0.5 text-[10px] font-semibold text-cyan-300">
+                          {isSelected ? 'Selected' : 'Select'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Host IP:Port + 6-Digit PIN Inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                  Host Address (<span className="font-mono">IP:Port</span> or Pairing Link)
+                </label>
+                <input
+                  required
+                  value={joinLink}
+                  onChange={(e) => handleHostInputChange(e.target.value)}
+                  placeholder="192.168.1.105:48291 or drxpair://…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                  6-Digit PIN Code
+                </label>
+                <input
+                  ref={pinInputRef}
+                  value={joinPin}
+                  onChange={(e) => setJoinPin(e.target.value.replace(/[^\d-]/g, '').slice(0, 7))}
+                  placeholder="123-456"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className="w-full rounded-lg border border-cyan-400/30 bg-black/50 px-3 py-2 font-mono text-sm font-bold tracking-widest text-cyan-300 text-center placeholder:text-slate-600 placeholder:font-normal focus:border-cyan-400 focus:outline-none"
+                />
               </div>
             </div>
 
-            <div className="relative flex items-center justify-center my-1">
-              <div className="border-t border-white/10 w-full" />
-              <span className="bg-black/60 px-2 text-[10px] uppercase font-semibold text-slate-500 absolute">or paste link manually</span>
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-medium text-slate-300 mb-1">
-                Pairing Link (copy it from the host device)
-              </label>
-              <input
-                required
-                value={joinLink}
-                onChange={(e) => setJoinLink(e.target.value)}
-                placeholder="drxpair://192.168.1.105:48291?pin=…&pk=…"
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 font-mono text-xs text-slate-200 placeholder:text-slate-600 focus:border-cyan-400/40 focus:outline-none"
-              />
-              <p className="mt-1 text-[10px] text-slate-500">
-                The link includes the host's key, so the connection is checked against that key, not just the PIN.
-              </p>
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <span className="text-[10px] text-slate-500">
+                Have a camera? Scan the QR code instead of typing:
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowScanner(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/10 transition shrink-0"
+              >
+                <Camera className="h-3.5 w-3.5 text-cyan-400" />
+                <span>Scan QR Code</span>
+              </button>
             </div>
 
             <div>
@@ -705,6 +847,22 @@ export function DevicePairingModal({
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
+                        {d.revokedAt == null && d.ipAddress && (
+                          <button
+                            onClick={() => {
+                              setJoinLink(`${d.ipAddress}:48291`);
+                              setSelectedPk('');
+                              setJoinPin('');
+                              setTab('join');
+                              setTimeout(() => pinInputRef.current?.focus(), 80);
+                            }}
+                            title="Two-way sync with this device over LAN (open Share Vault on the other device)"
+                            className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-300 hover:bg-cyan-500/20 transition mr-1"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            <span>Sync LAN</span>
+                          </button>
+                        )}
                         {d.revokedAt != null ? (
                           <button
                             onClick={() => handleAllow(d.id, d.deviceName)}
@@ -745,7 +903,7 @@ export function DevicePairingModal({
           title="Scan Pairing QR Code"
           onScan={(scanned) => {
             setShowScanner(false);
-            setJoinLink(scanned);
+            handleHostInputChange(scanned);
             toast('QR code scanned! Connecting…');
             executeJoin(scanned);
           }}

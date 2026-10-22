@@ -261,14 +261,14 @@ export function HostModal({
                 </span>
               </div>
               <p className="text-[11px] leading-relaxed text-slate-300">
-                Run this once inside Termux to enable its local SSH daemon (works completely offline, even in Airplane Mode):
+                Run this once inside Termux to install SSH, auto-start <code className="text-emerald-300 font-mono">sshd</code> whenever Termux opens, and set your password:
               </p>
               <div className="flex items-center justify-between gap-2 rounded-lg border border-white/10 bg-black/50 px-2.5 py-1.5 font-mono text-[11px] text-emerald-200">
-                <code className="truncate">pkg install openssh &amp;&amp; passwd &amp;&amp; sshd</code>
+                <code className="truncate">pkg install -y openssh &amp;&amp; echo &apos;pgrep -x sshd &gt;/dev/null || sshd&apos; &gt;&gt; ~/.bashrc &amp;&amp; passwd &amp;&amp; sshd</code>
                 <button
                   type="button"
                   onClick={() => {
-                    bridge.writeClipboard('pkg install openssh && passwd && sshd').catch(() => {});
+                    bridge.writeClipboard("pkg install -y openssh && (grep -qxF 'pgrep -x sshd >/dev/null || sshd' ~/.bashrc 2>/dev/null || echo 'pgrep -x sshd >/dev/null || sshd' >> ~/.bashrc) && passwd && sshd").catch(() => {});
                     setCopiedSetup(true);
                     setTimeout(() => setCopiedSetup(false), 1800);
                   }}

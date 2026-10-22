@@ -4443,7 +4443,7 @@ export default function App() {
           }}
           onOpenPairing={() => {
             setShowSync(false);
-            setShowPairing({ initialTab: 'share' });
+            setShowPairing({ initialTab: isAndroid ? 'join' : 'share' });
           }}
           toast={toast}
           theme={theme}

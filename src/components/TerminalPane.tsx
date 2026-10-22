@@ -3083,6 +3083,31 @@ export const TerminalPane = memo(function TerminalPane({
                 {error}
               </p>
 
+              {host?.port === 8022 && error && /connection refused|os error 111/i.test(error) && (
+                <div className="mt-3 w-full rounded-xl border border-emerald-500/25 bg-emerald-950/30 p-3 text-left space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-300">
+                    <TerminalIcon className="h-3.5 w-3.5 shrink-0" />
+                    <span>Termux SSH daemon (`sshd`) is stopped</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-slate-300">
+                    Open the <strong>Termux</strong> app so <code className="font-mono text-emerald-300">sshd</code> starts. To make <code className="font-mono text-emerald-300">sshd</code> start automatically every time Termux opens, paste this once in Termux:
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      bridge.writeClipboard("grep -qxF 'pgrep -x sshd >/dev/null || sshd' ~/.bashrc 2>/dev/null || echo 'pgrep -x sshd >/dev/null || sshd' >> ~/.bashrc && sshd").catch(() => {});
+                    }}
+                    className="flex w-full items-center justify-between gap-2 rounded-lg border border-emerald-400/30 bg-black/50 px-2.5 py-1.5 font-mono text-[10.5px] text-emerald-200 hover:bg-emerald-500/15 transition cursor-pointer"
+                  >
+                    <span className="truncate">echo &apos;pgrep -x sshd &gt;/dev/null || sshd&apos; &gt;&gt; ~/.bashrc &amp;&amp; sshd</span>
+                    <span className="flex shrink-0 items-center gap-1 rounded bg-emerald-500/20 px-2 py-0.5 font-sans text-[10px] font-semibold text-emerald-300">
+                      <Copy className="h-3 w-3" />
+                      Copy
+                    </span>
+                  </button>
+                </div>
+              )}
+
               <div className="mt-6 flex w-full items-center justify-end gap-2.5">
                 <button
                   type="button"

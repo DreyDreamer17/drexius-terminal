@@ -247,6 +247,16 @@ export function VaultMenu({
                             Default
                           </span>
                         )}
+                        {!isPersonal && v.role === 'readonly' && (
+                          <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-300">
+                            Read-Only
+                          </span>
+                        )}
+                        {!isPersonal && v.relayUrl && (
+                          <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
+                            Live
+                          </span>
+                        )}
                         {isSelected && <Check className="h-3.5 w-3.5 shrink-0" style={{ color: accentColor }} />}
                       </button>
                       {!isPersonal && (
@@ -452,6 +462,16 @@ export function VaultMenu({
                           {isPersonal && (
                             <span className="rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
                               Default
+                            </span>
+                          )}
+                          {!isPersonal && v.role === 'readonly' && (
+                            <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                              Read-Only
+                            </span>
+                          )}
+                          {!isPersonal && v.relayUrl && (
+                            <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
+                              Live
                             </span>
                           )}
                         </div>

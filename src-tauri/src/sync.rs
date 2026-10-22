@@ -538,10 +538,8 @@ fn collect_local_records(conn: &rusqlite::Connection, device_id: &str) -> AppRes
     Ok(out)
 }
 
-/// Apply a remote SyncRecord to the local database using HLC last-writer-wins.
-fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResult<()> {
-    let tx = conn.unchecked_transaction()?;
-
+/// Apply a remote SyncRecord inside an already-open transaction (or connection).
+fn apply_remote_record_in_tx(tx: &rusqlite::Connection, rec: &SyncRecord) -> AppResult<()> {
     if rec.deleted {
         match rec.table.as_str() {
             "hosts" => {
@@ -574,7 +572,6 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
              ON CONFLICT(record_id) DO UPDATE SET tbl=excluded.tbl, hlc=excluded.hlc, deleted=1",
             rusqlite::params![rec.id, rec.table, rec.hlc],
         )?;
-        tx.commit()?;
         return Ok(());
     }
 
@@ -686,7 +683,8 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
         }
         "vaults" => {
             tx.execute(
-                "INSERT OR IGNORE INTO vaults (id,name,kind,color,description,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO vaults (id,name,kind,color,description,created_at) VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, kind=excluded.kind, color=excluded.color, description=excluded.description",
                 rusqlite::params![
                     obj.get("id").and_then(|v|v.as_str()),
                     obj.get("name").and_then(|v|v.as_str()),
@@ -706,8 +704,73 @@ fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResu
         rusqlite::params![rec.id, rec.table, rec.hlc],
     )?;
 
+    Ok(())
+}
+
+/// Apply a remote SyncRecord to the local database using HLC last-writer-wins.
+fn apply_remote_record(conn: &rusqlite::Connection, rec: &SyncRecord) -> AppResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    apply_remote_record_in_tx(&tx, rec)?;
     tx.commit()?;
     Ok(())
+}
+
+/// Collects all local syncable records (and deletion tombstones) for direct LAN sync.
+pub(crate) fn collect_local_records_for_conn(conn: &rusqlite::Connection) -> AppResult<Vec<SyncRecord>> {
+    let device_id = crate::vault::get_or_create_device_id(conn);
+    collect_local_records(conn, &device_id)
+}
+
+/// Merges a slice of remote `SyncRecord`s into `conn` (which may already be inside a transaction)
+/// using HLC last-writer-wins (and applying deletion tombstones when newer). Returns count of records applied.
+pub(crate) fn merge_sync_records(conn: &rusqlite::Connection, records: &[SyncRecord]) -> AppResult<usize> {
+    let device_id = crate::vault::get_or_create_device_id(conn);
+    let mut sorted_remotes: Vec<&SyncRecord> = records
+        .iter()
+        .filter(|r| SYNC_TABLES.contains(&r.table.as_str()))
+        .collect();
+    let table_rank = |tbl: &str| match tbl {
+        "vaults" => 0,
+        "keychain" => 1,
+        "hosts" => 2,
+        "tunnels" => 3,
+        "snippets" => 4,
+        _ => 5,
+    };
+    sorted_remotes.sort_by_key(|r| table_rank(&r.table));
+
+    let mut applied = 0usize;
+    for remote in sorted_remotes {
+        let local_logged_hlc: Option<String> = conn
+            .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [&remote.id], |r| r.get(0))
+            .ok();
+        let local_hlc = if let Some(thlc) = local_logged_hlc {
+            thlc
+        } else {
+            let local_ts: Option<i64> = match remote.table.as_str() {
+                "hosts" | "snippets" | "keychain" | "tunnels" => conn
+                    .query_row(
+                        &format!("SELECT updated_at FROM {} WHERE id=?1", remote.table),
+                        [&remote.id],
+                        |r| r.get(0),
+                    )
+                    .ok(),
+                "vaults" => conn
+                    .query_row("SELECT created_at FROM vaults WHERE id=?1", [&remote.id], |r| r.get(0))
+                    .ok(),
+                _ => None,
+            };
+            match local_ts {
+                Some(ts) if ts > 0 => format!("{}:0:{}", ts * 1000, device_id),
+                _ => "0:0:".to_string(),
+            }
+        };
+        if hlc_wins(&remote.hlc, &local_hlc) {
+            apply_remote_record_in_tx(conn, remote)?;
+            applied += 1;
+        }
+    }
+    Ok(applied)
 }
 
 /// Parse HLC string "<ms>:<counter>:<device>" — returns (ms, counter, device).
@@ -1085,6 +1148,297 @@ async fn sync_now_inner(engine: &SyncEngine, vault: &Vault) -> AppResult<SyncSta
     Ok(s.clone())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamVaultSyncResult {
+    pub vault_id: String,
+    pub pushed: usize,
+    pub pulled: usize,
+    pub role: String,
+    pub last_sync: i64,
+}
+
+#[tauri::command]
+pub fn team_vault_configure_relay(
+    vault_id: String,
+    relay_url: Option<String>,
+    relay_token: Option<String>,
+    vault: tauri::State<'_, Vault>,
+) -> AppResult<()> {
+    if vault_id == "personal" || vault_id.trim().is_empty() {
+        return Err(AppError::Other("Personal Vault uses your primary device sync relay.".into()));
+    }
+    let relay_url = relay_url
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+        .filter(|u| !u.is_empty());
+    if let Some(ref url) = relay_url {
+        if !relay_url_is_allowed(url) {
+            return Err(AppError::Network(
+                "Public sync relays must use https:// (http:// is allowed only for localhost or private LAN IPs).".into(),
+            ));
+        }
+    }
+    vault.with(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(ref url) = relay_url {
+            tx.execute(
+                "INSERT INTO ai_settings(key,value) VALUES(?1,?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![format!("team_vault_relay_url:{vault_id}"), url],
+            )?;
+            if let Some(ref token) = relay_token {
+                let tok = token.trim();
+                if !tok.is_empty() {
+                    tx.execute(
+                        "INSERT INTO ai_settings(key,value) VALUES(?1,?2)
+                         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        rusqlite::params![format!("team_vault_relay_token:{vault_id}"), tok],
+                    )?;
+                }
+            }
+            let existing_seed: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM ai_settings WHERE key=?1",
+                    [format!("team_vault_relay_seed:{vault_id}")],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if existing_seed.as_deref().unwrap_or("").is_empty() {
+                let mut seed = Zeroizing::new([0u8; 32]);
+                rand::thread_rng().fill_bytes(seed.as_mut());
+                let encoded = hex::encode(seed.as_ref());
+                tx.execute(
+                    "INSERT INTO ai_settings(key,value) VALUES(?1,?2)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    rusqlite::params![format!("team_vault_relay_seed:{vault_id}"), encoded],
+                )?;
+            }
+        } else {
+            tx.execute(
+                "DELETE FROM ai_settings WHERE key=?1",
+                [format!("team_vault_relay_url:{vault_id}")],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn team_vault_sync_now(
+    vault_id: String,
+    vault: tauri::State<'_, Vault>,
+) -> AppResult<TeamVaultSyncResult> {
+    if vault_id == "personal" || vault_id.trim().is_empty() {
+        return Err(AppError::Other("Select a Team Vault to run Team Relay Sync.".into()));
+    }
+    let (relay_url, relay_token, seed, cursor, device_id, role) = vault.with(|conn| {
+        let url: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key=?1",
+                [format!("team_vault_relay_url:{vault_id}")],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let url = url
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| AppError::Network("No Live Relay URL configured for this Team Vault.".into()))?;
+        let token: String = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key=?1",
+                [format!("team_vault_relay_token:{vault_id}")],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let seed_hex: String = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key=?1",
+                [format!("team_vault_relay_seed:{vault_id}")],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::Crypto("Missing Team Vault relay encryption seed.".into()))?;
+        let seed_bytes = hex::decode(seed_hex).map_err(|_| AppError::Crypto("Invalid Team Vault relay seed".into()))?;
+        let seed_arr: [u8; 32] = seed_bytes
+            .try_into()
+            .map_err(|_| AppError::Crypto("Invalid Team Vault relay seed length".into()))?;
+        let cur: u64 = conn
+            .query_row(
+                "SELECT value FROM ai_settings WHERE key=?1",
+                [format!("team_vault_relay_cursor:{vault_id}")],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let dev_id = crate::vault::get_or_create_device_id(conn);
+        let role = crate::vault::get_vault_role(conn, &vault_id);
+        Ok((url, token, Zeroizing::new(seed_arr), cur, dev_id, role))
+    })?;
+
+    let keys = SyncKeys::derive(&seed)?;
+    let relay = HttpRelay::new(relay_url, relay_token);
+
+    let changes = relay.changes_since(cursor).await?;
+    let ids_to_fetch: Vec<(String, u64)> = changes
+        .iter()
+        .filter(|(id, _)| id.starts_with("v2-"))
+        .cloned()
+        .collect();
+    let max_cursor: u64 = changes.iter().map(|(_, cur)| *cur).max().unwrap_or(0);
+
+    let mut remote_blobs: HashMap<String, (SyncRecord, u64)> = HashMap::new();
+    let mut remote_hlcs: HashMap<(String, String), String> = HashMap::new();
+
+    for (blob_id, cur) in ids_to_fetch {
+        let res = relay.get(&blob_id).await;
+        let _ = open_remote_blob(&blob_id, cur, res, &keys, &mut remote_blobs, &mut remote_hlcs)?;
+    }
+
+    let mut pulled = 0usize;
+    vault.with(|conn| -> AppResult<()> {
+        let mut sorted_remotes: Vec<(SyncRecord, u64)> = remote_blobs.into_values().collect();
+        let table_rank = |tbl: &str| match tbl {
+            "vaults" => 0,
+            "keychain" => 1,
+            "hosts" => 2,
+            "tunnels" => 3,
+            "snippets" => 4,
+            _ => 5,
+        };
+        sorted_remotes.sort_by_key(|(r, _)| table_rank(&r.table));
+
+        for (mut remote, _cur) in sorted_remotes {
+            // Strict Team Vault isolation: only accept records belonging to `vault_id`.
+            let belongs_to_team_vault = if remote.table == "vaults" {
+                remote.id == vault_id && !remote.deleted
+            } else if remote.deleted {
+                let local_vid: Option<String> = match remote.table.as_str() {
+                    "hosts" | "snippets" | "keychain" | "tunnels" => conn
+                        .query_row(
+                            &format!("SELECT vault_id FROM {} WHERE id=?1", remote.table),
+                            [&remote.id],
+                            |r| r.get::<_, Option<String>>(0),
+                        )
+                        .ok()
+                        .flatten(),
+                    _ => None,
+                };
+                local_vid.as_deref() == Some(vault_id.as_str())
+            } else {
+                let body_vid = remote
+                    .body
+                    .get("vault_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if body_vid != vault_id {
+                    false
+                } else {
+                    let existing_vid: Option<String> = match remote.table.as_str() {
+                        "hosts" | "snippets" | "keychain" | "tunnels" => conn
+                            .query_row(
+                                &format!("SELECT vault_id FROM {} WHERE id=?1", remote.table),
+                                [&remote.id],
+                                |r| r.get::<_, Option<String>>(0),
+                            )
+                            .ok()
+                            .flatten(),
+                        _ => None,
+                    };
+                    existing_vid.is_none() || existing_vid.as_deref() == Some(vault_id.as_str())
+                }
+            };
+            if !belongs_to_team_vault {
+                continue;
+            }
+            if remote.table == "hosts" {
+                if let serde_json::Value::Object(ref mut o) = remote.body {
+                    o.insert("startup_command".into(), serde_json::Value::Null);
+                    o.insert("proxy_command".into(), serde_json::Value::Null);
+                }
+            }
+
+            let local_logged_hlc: Option<String> = conn
+                .query_row("SELECT hlc FROM sync_log WHERE record_id=?1", [&remote.id], |r| r.get(0))
+                .ok();
+            let local_hlc = local_logged_hlc.unwrap_or_else(|| "0:0:".to_string());
+            if hlc_wins(&remote.hlc, &local_hlc) {
+                apply_remote_record(conn, &remote)?;
+                pulled += 1;
+            }
+        }
+        Ok(())
+    })?;
+
+    let mut pushed = 0usize;
+    if role != "readonly" {
+        let local_records = vault.with(|conn| {
+            let all = collect_local_records(conn, &device_id)?;
+            let mut linked_keychains: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut st = conn.prepare("SELECT keychain_id FROM hosts WHERE vault_id=?1 AND keychain_id IS NOT NULL")?;
+            let rows = st.query_map([&vault_id], |r| r.get::<_, String>(0))?;
+            for r in rows.flatten() {
+                linked_keychains.insert(r);
+            }
+            let filtered: Vec<SyncRecord> = all
+                .into_iter()
+                .filter_map(|mut rec| {
+                    if rec.table == "vaults" && rec.id == vault_id && !rec.deleted {
+                        return Some(rec);
+                    }
+                    if rec.deleted {
+                        return None;
+                    }
+                    let rec_vid = rec.body.get("vault_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if rec_vid == vault_id {
+                        return Some(rec);
+                    }
+                    if rec.table == "keychain" && linked_keychains.contains(&rec.id) {
+                        if let serde_json::Value::Object(ref mut o) = rec.body {
+                            o.insert("vault_id".into(), serde_json::Value::String(vault_id.clone()));
+                        }
+                        return Some(rec);
+                    }
+                    None
+                })
+                .collect();
+            Ok(filtered)
+        })?;
+
+        for rec in local_records {
+            if let Some(r_hlc) = remote_hlcs.get(&(rec.table.clone(), rec.id.clone())) {
+                if !hlc_wins(&rec.hlc, r_hlc) {
+                    continue;
+                }
+            }
+            let blob_id = keys.blind_id(&rec.table, &rec.id);
+            let blob = keys.seal(&rec)?;
+            relay.put(&blob_id, blob).await?;
+            pushed += 1;
+        }
+    }
+
+    let next_cursor = cursor.max(max_cursor);
+    let completed_at = chrono::Utc::now().timestamp();
+    vault.with(|conn| {
+        conn.execute(
+            "INSERT INTO ai_settings(key,value) VALUES(?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![format!("team_vault_relay_cursor:{vault_id}"), next_cursor.to_string()],
+        )?;
+        Ok(())
+    })?;
+
+    Ok(TeamVaultSyncResult {
+        vault_id,
+        pushed,
+        pulled,
+        role,
+        last_sync: completed_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,6 +1509,21 @@ mod tests {
         apply_remote_record(&b, &removed).unwrap();
         let count: i64 = b.query_row("SELECT count(*) FROM secrets", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0);
+
+        // Verify merge_sync_records succeeds inside an outer transaction (as used by restore_full_vault)
+        b.execute("CREATE TABLE ai_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        let records = collect_local_records(&a, "a").unwrap();
+        let tx = b.unchecked_transaction().unwrap();
+        let applied = merge_sync_records(&tx, &records).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(applied, 0); // b already has newer HLC for 'h'
+
+        let c = db();
+        c.execute("CREATE TABLE ai_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
+        let tx_c = c.unchecked_transaction().unwrap();
+        let applied_c = merge_sync_records(&tx_c, &records).unwrap();
+        tx_c.commit().unwrap();
+        assert_eq!(applied_c, 1);
     }
 
     #[test]

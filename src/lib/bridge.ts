@@ -18,6 +18,7 @@ import type {
   CommandHistoryItem,
   ConnectionLog,
   DetectedLocalKey,
+  DiscoveredPairingHost,
   EncryptedTeamVaultBundle,
   FileEntry,
   GeneratedKeySaved,
@@ -40,6 +41,7 @@ import type {
   Snapshot,
   Snippet,
   TailscaleDevice,
+  TeamVaultSyncResult,
   NetbirdCredentials,
   NetbirdDevice,
   CloudCredentials,
@@ -1589,8 +1591,13 @@ export const bridge = {
   },
 
   // ── Zero-Knowledge Team Sharing ──
-  async exportTeamVault(vaultId: string, passphrase: string): Promise<EncryptedTeamVaultBundle> {
-    if (isTauri) return invoke('team_vault_export', { vaultId, passphrase });
+  async exportTeamVault(
+    vaultId: string,
+    passphrase: string,
+    includeSecrets = true,
+    role: 'editor' | 'readonly' = 'editor'
+  ): Promise<EncryptedTeamVaultBundle> {
+    if (isTauri) return invoke('team_vault_export', { vaultId, passphrase, includeSecrets, role });
     const st = need();
     const v = (st.vaults ?? []).find((x: Vault) => x.id === vaultId) ?? { id: vaultId, name: 'Team Vault', kind: 'team', createdAt: Date.now() };
     return {
@@ -1599,13 +1606,22 @@ export const bridge = {
       vaultName: v.name,
       salt: '00112233445566778899aabbccddeeff',
       nonce: '00112233445566778899aabbccddeeff0011223344556677',
-      ciphertext: btoa(JSON.stringify({ vault: v, hosts: st.hosts.filter((h: Host) => h.vaultId === vaultId) })),
+      ciphertext: btoa(JSON.stringify({ vault: { ...v, role }, hosts: st.hosts.filter((h: Host) => h.vaultId === vaultId), includeSecrets })),
     };
   },
 
   async importTeamVault(bundle: EncryptedTeamVaultBundle, passphrase: string): Promise<string> {
     if (isTauri) return invoke('team_vault_import', { bundle, passphrase });
     return bundle.vaultName;
+  },
+
+  async configureTeamVaultRelay(vaultId: string, relayUrl: string | null, relayToken?: string): Promise<void> {
+    if (isTauri) return invoke('team_vault_configure_relay', { vaultId, relayUrl, relayToken: relayToken ?? null });
+  },
+
+  async syncTeamVaultNow(vaultId: string): Promise<TeamVaultSyncResult> {
+    if (isTauri) return invoke('team_vault_sync_now', { vaultId });
+    return { vaultId, pushed: 0, pulled: 0, role: 'owner', lastSync: Math.floor(Date.now() / 1000) };
   },
 
   // ── Direct Device Pairing & LAN Sync ──
@@ -1677,6 +1693,11 @@ export const bridge = {
       os: 'linux',
       ip: '192.168.1.105',
     };
+  },
+
+  async pairingDiscoverLan(): Promise<DiscoveredPairingHost[]> {
+    if (isTauri) return invoke('pairing_discover_lan');
+    return [];
   },
 
   // ── AI Provider Configuration & Key Pooling ──

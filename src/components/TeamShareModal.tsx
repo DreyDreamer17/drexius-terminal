@@ -1,15 +1,19 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Users,
   Server,
   Share2,
   Download,
+  Upload,
   Copy,
   Check,
   X,
   Lock,
   ShieldCheck,
   FileCheck,
+  KeyRound,
+  RefreshCw,
+  Radio,
 } from 'lucide-react';
 import type { EncryptedTeamVaultBundle, Host, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
@@ -49,16 +53,43 @@ export function TeamShareModal({
     teamVaults.find((v) => v.id === activeVaultId) ?? teamVaults[0] ?? vaults[0];
 
   const [selectedVaultId, setSelectedVaultId] = useState(defaultVault?.id ?? 'personal');
+  const selectedVault = vaults.find((v) => v.id === selectedVaultId) ?? defaultVault;
+  const [includeSecrets, setIncludeSecrets] = useState(true);
+  const [memberRole, setMemberRole] = useState<'editor' | 'readonly'>('editor');
   const [passphrase, setPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [exportBundle, setExportBundle] = useState<EncryptedTeamVaultBundle | null>(null);
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Live Team Relay state
+  const [showRelayConfig, setShowRelayConfig] = useState(false);
+  const [relayUrl, setRelayUrl] = useState(selectedVault?.relayUrl ?? '');
+  const [relayToken, setRelayToken] = useState('');
+  const [savingRelay, setSavingRelay] = useState(false);
+  const [syncingRelay, setSyncingRelay] = useState(false);
+
   // Import state
   const [importJson, setImportJson] = useState('');
+  const [importFileName, setImportFileName] = useState<string | null>(null);
   const [importPassphrase, setImportPassphrase] = useState('');
   const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleLoadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setImportJson(text.trim());
+      setImportFileName(file.name);
+      toast(`Loaded ${file.name}`);
+    } catch (err: unknown) {
+      toast(`Failed to read file: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      e.target.value = '';
+    }
+  };
 
   // Host selection for Vault assignment
   const [assignedHostIds, setAssignedHostIds] = useState<Set<string>>(() => {
@@ -94,13 +125,71 @@ export function TeamShareModal({
     }
     setLoading(true);
     try {
-      const bundle = await bridge.exportTeamVault(selectedVaultId, passphrase.trim());
+      const bundle = await bridge.exportTeamVault(
+        selectedVaultId,
+        passphrase.trim(),
+        includeSecrets,
+        memberRole
+      );
       setExportBundle(bundle);
       toast('Encrypted Team Vault bundle generated!');
     } catch (err: unknown) {
       toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveRelay = async () => {
+    setSavingRelay(true);
+    try {
+      let targetVaultId = selectedVaultId;
+      if (targetVaultId === 'personal') {
+        targetVaultId = 'shared-personal-vault';
+        await bridge.saveVault({
+          id: targetVaultId,
+          name: 'Shared Team Vault',
+          kind: 'team',
+          color: '#10b981',
+          description: 'Shared Team Vault with Live Relay Sync',
+          createdAt: Math.floor(Date.now() / 1000),
+          role: 'owner',
+        });
+        for (const hid of assignedHostIds) {
+          const h = hosts.find((x) => x.id === hid);
+          if (h) {
+            await bridge.saveHost({ ...h, vaultId: targetVaultId });
+          }
+        }
+        setSelectedVaultId(targetVaultId);
+      }
+      await bridge.configureTeamVaultRelay(
+        targetVaultId,
+        relayUrl.trim() || null,
+        relayToken.trim() || undefined
+      );
+      await onRefresh();
+      setRelayToken('');
+      setShowRelayConfig(false);
+      toast(relayUrl.trim() ? 'Team Vault Live Relay configured!' : 'Team Vault Live Relay removed.');
+    } catch (err: unknown) {
+      toast(`Relay config failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSavingRelay(false);
+    }
+  };
+
+  const handleSyncRelayNow = async () => {
+    if (selectedVaultId === 'personal') return;
+    setSyncingRelay(true);
+    try {
+      const res = await bridge.syncTeamVaultNow(selectedVaultId);
+      await onRefresh();
+      toast(`Team Vault synced (pushed ${res.pushed}, pulled ${res.pulled})`);
+    } catch (err: unknown) {
+      toast(`Team sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSyncingRelay(false);
     }
   };
 
@@ -242,10 +331,12 @@ export function TeamShareModal({
                   value={selectedVaultId}
                   options={vaults.map((v) => ({
                     value: v.id,
-                    label: `${v.name} (${v.kind === 'personal' ? 'Personal' : 'Team Vault'})`,
+                    label: `${v.name} (${v.kind === 'personal' ? 'Personal' : v.role === 'readonly' ? 'Team · Read-Only' : 'Team Vault'})`,
                   }))}
                   onChange={(val) => {
                     setSelectedVaultId(val);
+                    const nextV = vaults.find((v) => v.id === val);
+                    setRelayUrl(nextV?.relayUrl ?? '');
                     setAssignedHostIds(
                       new Set(hosts.filter((h) => h.vaultId === val).map((h) => h.id))
                     );
@@ -253,6 +344,88 @@ export function TeamShareModal({
                   }}
                   accentColor={accentColor}
                 />
+              </div>
+
+              {/* Live Team Relay Sync (Termius-style auto-sync for Team Vaults) */}
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Radio className={cn('h-4 w-4 shrink-0', selectedVault?.relayUrl ? 'text-emerald-400' : 'text-slate-400')} />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold text-slate-200">Live Team Relay Sync</span>
+                        {selectedVault?.relayUrl && (
+                          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.2 text-[9px] font-semibold text-emerald-300">
+                            Active
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {selectedVault?.relayUrl
+                          ? `Connected to ${selectedVault.relayUrl}`
+                          : 'Optional: link a relay.py server so changes sync live across teammates'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {selectedVault?.relayUrl && (
+                      <button
+                        type="button"
+                        disabled={syncingRelay}
+                        onClick={handleSyncRelayNow}
+                        className="flex items-center gap-1 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-500/25 transition disabled:opacity-50"
+                      >
+                        <RefreshCw className={cn('h-3 w-3', syncingRelay && 'animate-spin')} />
+                        <span>{syncingRelay ? 'Syncing…' : 'Sync Now'}</span>
+                      </button>
+                    )}
+                    {selectedVault?.role !== 'readonly' && (
+                      <button
+                        type="button"
+                        onClick={() => setShowRelayConfig((s) => !s)}
+                        className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:bg-white/10 transition"
+                      >
+                        {showRelayConfig ? 'Close' : selectedVault?.relayUrl ? 'Edit Relay' : 'Link relay.py'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {showRelayConfig && selectedVault?.role !== 'readonly' && (
+                  <div className="space-y-2 pt-2 border-t border-white/5">
+                    <div>
+                      <label className="text-[10px] font-medium text-slate-400">Team Relay URL (https:// or LAN http://)</label>
+                      <input
+                        type="url"
+                        placeholder="https://relay.team.example.com or http://192.168.1.50:8787"
+                        value={relayUrl}
+                        onChange={(e) => setRelayUrl(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-mono text-white placeholder:text-slate-600 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-medium text-slate-400">Relay Bearer Token (32+ chars)</label>
+                      <input
+                        type="password"
+                        placeholder={selectedVault?.relayUrl ? 'Leave blank to keep existing token' : 'DREXIUS_RELAY_TOKEN value'}
+                        value={relayToken}
+                        onChange={(e) => setRelayToken(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-mono text-white placeholder:text-slate-600 focus:outline-none"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      When configured, any `.drxvault` invite you export below automatically includes this Team Relay so teammates stay in live sync after importing.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={savingRelay}
+                      onClick={handleSaveRelay}
+                      className="w-full rounded-lg border border-white/15 bg-white/10 py-1.5 text-xs font-semibold text-white hover:bg-white/15 transition disabled:opacity-50"
+                    >
+                      {savingRelay ? 'Saving…' : 'Save Team Relay Settings'}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Step 2: Assign Hosts */}
@@ -263,7 +436,7 @@ export function TeamShareModal({
                   </label>
                   <span className="text-[10px] text-slate-500">Toggle hosts into this vault</span>
                 </div>
-                <div className="max-h-40 overflow-y-auto rounded-lg border border-white/5 bg-white/[0.02] p-1.5 space-y-1">
+                <div className="max-h-36 overflow-y-auto rounded-lg border border-white/5 bg-white/[0.02] p-1.5 space-y-1">
                   {hosts.length === 0 ? (
                     <div className="p-3 text-center text-xs text-slate-500">No saved hosts yet.</div>
                   ) : (
@@ -277,6 +450,7 @@ export function TeamShareModal({
                           <input
                             type="checkbox"
                             checked={checked}
+                            disabled={selectedVault?.role === 'readonly'}
                             onChange={() => toggleHostAssignment(h.id)}
                             className="rounded border-white/20 bg-white/10 text-emerald-500 focus:ring-0"
                           />
@@ -292,13 +466,72 @@ export function TeamShareModal({
                 </div>
               </div>
 
-              {/* Step 3: Set Team Passphrase & Encrypt */}
+              {/* Step 3: Credentials & Role Options (Termius-style) */}
               {!exportBundle ? (
                 <form onSubmit={handleExport} className="space-y-3 pt-2 border-t border-white/5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-white/[0.03] p-2.5 cursor-pointer hover:bg-white/[0.05] transition">
+                      <input
+                        type="checkbox"
+                        checked={includeSecrets}
+                        onChange={(e) => setIncludeSecrets(e.target.checked)}
+                        className="mt-0.5 rounded border-white/20 bg-white/10 text-emerald-500 focus:ring-0"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                          <KeyRound className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                          <span>Include SSH Keys & Passwords</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          {includeSecrets
+                            ? 'Teammates can one-click connect immediately using shared SSH keys & passwords.'
+                            : 'Configs only: teammates must enter their own SSH key or password.'}
+                        </p>
+                      </div>
+                    </label>
+
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-2.5">
+                      <label className="text-[11px] font-semibold text-slate-200 block mb-1.5">
+                        Teammate Access Role
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setMemberRole('editor')}
+                          className={cn(
+                            'rounded-lg border px-2 py-1 text-[11px] font-medium transition',
+                            memberRole === 'editor'
+                              ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200'
+                              : 'border-white/10 bg-white/5 text-slate-400 hover:text-slate-200'
+                          )}
+                        >
+                          Editor (R/W)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMemberRole('readonly')}
+                          className={cn(
+                            'rounded-lg border px-2 py-1 text-[11px] font-medium transition',
+                            memberRole === 'readonly'
+                              ? 'border-amber-400/50 bg-amber-500/15 text-amber-200'
+                              : 'border-white/10 bg-white/5 text-slate-400 hover:text-slate-200'
+                          )}
+                        >
+                          Read-Only
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        {memberRole === 'editor'
+                          ? 'Can connect and add/edit shared hosts & snippets.'
+                          : 'Can connect to hosts & run snippets, cannot edit.'}
+                      </p>
+                    </div>
+                  </div>
+
                   <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/10 p-2.5 text-xs text-cyan-200 flex items-start gap-2">
                     <ShieldCheck className="h-4 w-4 shrink-0 text-cyan-400 mt-0.5" />
                     <span>
-                      End-to-End Encryption: The bundle is encrypted with Argon2id + ChaCha20-Poly1305. Only teammates with this passphrase can decrypt the shared hosts and snippets. (Passwords and private keys are never exported, ensuring zero-knowledge isolation).
+                      End-to-End Encryption: Sealed with Argon2id + XChaCha20-Poly1305. Only teammates with this passphrase can decrypt the {includeSecrets ? 'hosts, SSH keys, passwords, tunnels & snippets' : 'host configurations, tunnels & snippets'}.
                     </span>
                   </div>
 
@@ -400,13 +633,35 @@ export function TeamShareModal({
               </div>
 
               <div>
-                <label className="text-[11px] font-medium text-slate-300">Encrypted Bundle JSON</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-[11px] font-medium text-slate-300">
+                    Encrypted Bundle JSON {importFileName && <span className="text-emerald-400">({importFileName})</span>}
+                  </label>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".drxvault,.json,application/json,text/plain"
+                    onChange={handleLoadFile}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:bg-white/10 transition"
+                  >
+                    <Upload className="h-3 w-3" style={{ color: accentColor }} />
+                    <span>Load .drxvault File</span>
+                  </button>
+                </div>
                 <textarea
                   rows={4}
                   required
-                  placeholder='Paste {"version": 1, "format": "drexius-team-vault", ...}'
+                  placeholder='Load a .drxvault file above, or paste {"version": 1, "format": "drexius-team-vault", ...}'
                   value={importJson}
-                  onChange={(e) => setImportJson(e.target.value)}
+                  onChange={(e) => {
+                    setImportJson(e.target.value);
+                    setImportFileName(null);
+                  }}
                   className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 p-2.5 font-mono text-[11px] text-slate-200 placeholder:text-slate-600 focus:outline-none"
                 />
               </div>
