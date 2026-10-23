@@ -876,7 +876,16 @@ export const TerminalPane = memo(function TerminalPane({
             if (dead()) return;
             switch (ev.type) {
               case 'output':
-                smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+                try {
+                  smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+                } catch (writeErr) {
+                  console.error('[Serial smartWriter error]:', writeErr);
+                  try {
+                    term.write(ev.data);
+                  } catch (termErr) {
+                    console.error('[Serial fallback term.write error]:', termErr);
+                  }
+                }
                 break;
               case 'cwd':
                 setCwd(ev.path);
@@ -924,30 +933,47 @@ export const TerminalPane = memo(function TerminalPane({
         let suppressLocalBanner = false;
         const onLocalEvent = (ev: SessionEvent) => {
           if (dead()) return;
-          switch (ev.type) {
-            case 'output':
-              smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
-              if (!suppressLocalBanner) {
-                const found = portDetectorRef.current.feed(ev.data);
-                if (found.length > 0) handleDetectedPorts(found);
-              }
-              break;
-            case 'cwd':
-              setCwd(ev.path);
-              update({ cwd: ev.path });
-              break;
-            case 'connected':
-              if (!suppressLocalBanner) {
-                term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
-              }
-              break;
-            case 'disconnected':
-              sessionRef.current = null;
-              try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
-              term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
-              setStatus('disconnected');
-              update({ status: 'disconnected', sessionId: null });
-              break;
+          try {
+            switch (ev.type) {
+              case 'output':
+                try {
+                  smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+                } catch (writeErr) {
+                  console.error('[Terminal smartWriter error]:', writeErr);
+                  try {
+                    term.write(ev.data);
+                  } catch (termErr) {
+                    console.error('[Terminal fallback term.write error]:', termErr);
+                  }
+                }
+                if (!suppressLocalBanner) {
+                  try {
+                    const found = portDetectorRef.current.feed(ev.data);
+                    if (found.length > 0) handleDetectedPorts(found);
+                  } catch (portErr) {
+                    console.warn('[Terminal portDetector error]:', portErr);
+                  }
+                }
+                break;
+              case 'cwd':
+                setCwd(ev.path);
+                update({ cwd: ev.path });
+                break;
+              case 'connected':
+                if (!suppressLocalBanner) {
+                  term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
+                }
+                break;
+              case 'disconnected':
+                sessionRef.current = null;
+                try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
+                term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
+                setStatus('disconnected');
+                update({ status: 'disconnected', sessionId: null });
+                break;
+            }
+          } catch (err) {
+            console.error('[onLocalEvent error]:', err);
           }
         };
 
@@ -1018,43 +1044,60 @@ export const TerminalPane = memo(function TerminalPane({
         let suppressConnectBanner = false;
         const onSshEvent = (ev: SessionEvent) => {
           if (dead()) return;
-          switch (ev.type) {
-            case 'output':
-              smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
-              if (!suppressConnectBanner) {
-                const found = portDetectorRef.current.feed(ev.data);
-                if (found.length > 0) handleDetectedPorts(found);
+          try {
+            switch (ev.type) {
+              case 'output':
+                try {
+                  smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+                } catch (writeErr) {
+                  console.error('[SSH smartWriter error]:', writeErr);
+                  try {
+                    term.write(ev.data);
+                  } catch (termErr) {
+                    console.error('[SSH fallback term.write error]:', termErr);
+                  }
+                }
+                if (!suppressConnectBanner) {
+                  try {
+                    const found = portDetectorRef.current.feed(ev.data);
+                    if (found.length > 0) handleDetectedPorts(found);
+                  } catch (portErr) {
+                    console.warn('[SSH portDetector error]:', portErr);
+                  }
+                }
+                break;
+              case 'cwd':
+                setCwd(ev.path);
+                update({ cwd: ev.path });
+                if (sessionRef.current) bridge.recordSnapshot(host.id, sessionRef.current, { cwd: ev.path });
+                break;
+              case 'connected': {
+                if (!suppressConnectBanner) {
+                  term.write(
+                    `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
+                  );
+                }
+                const detected = ev.os ?? parseOsFromBanner(ev.banner);
+                if (detected && detected !== host.os) {
+                  bridge.saveHost({ ...host, os: detected }).then(() => onChange()).catch(() => {});
+                }
+                break;
               }
-              break;
-            case 'cwd':
-              setCwd(ev.path);
-              update({ cwd: ev.path });
-              if (sessionRef.current) bridge.recordSnapshot(host.id, sessionRef.current, { cwd: ev.path });
-              break;
-            case 'connected': {
-              if (!suppressConnectBanner) {
-                term.write(
-                  `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
-                );
-              }
-              const detected = ev.os ?? parseOsFromBanner(ev.banner);
-              if (detected && detected !== host.os) {
-                bridge.saveHost({ ...host, os: detected }).then(() => onChange()).catch(() => {});
-              }
-              break;
+              case 'disconnected':
+                sessionRef.current = null;
+                try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
+                lastSentSize.current = { cols: 0, rows: 0 };
+                term.write(`\r\n\x1b[31m✖ ${ev.reason}\x1b[0m\r\n`);
+                setStatus('disconnected');
+                update({ status: 'disconnected', sessionId: null });
+                if (ev.resumable) {
+                  retryRef.current += 1;
+                  setCountdown(Math.min(30, 3 * 2 ** (retryRef.current - 1)));
+                }
+                break;
             }
-            case 'disconnected':
-              sessionRef.current = null;
-              try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
-              lastSentSize.current = { cols: 0, rows: 0 };
-              term.write(`\r\n\x1b[31m✖ ${ev.reason}\x1b[0m\r\n`);
-              setStatus('disconnected');
-              update({ status: 'disconnected', sessionId: null });
-              if (ev.resumable) {
-                retryRef.current += 1;
-                setCountdown(Math.min(30, 3 * 2 ** (retryRef.current - 1)));
-              }
-              break;
+          } catch (err) {
+            console.error('[onSshEvent error]:', err);
           }
         };
 
