@@ -34,11 +34,13 @@ env:
   NODE_VERSION: '22'
 
 jobs:
-  # Proves the bundle actually builds before any of the (slow) platform jobs run.
+  # Runs the test suite alongside the platform builds. It no longer gates them:
+  # the release is a draft anyway, so a red `verify` simply means "don't publish".
+  # Gating meant one stalled apt mirror blocked every platform for 30 minutes.
   verify:
     name: Verify before release
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -47,13 +49,28 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
+      # Retries + per-request timeouts so a stalled mirror fails over in seconds
+      # instead of hanging until the job timeout.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get ${APT_OPTS} update
+          sudo apt-get ${APT_OPTS} install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libudev-dev
+
+      # Vendored OpenSSL + SQLCipher take minutes to compile from scratch; cache
+      # the registry and target dir so re-runs only rebuild what changed.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: verify-cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: verify-cargo-${{ runner.os }}-
 
       - name: Select stable toolchain
         run: |
@@ -72,7 +89,6 @@ jobs:
 
   build:
     name: Build ${{ matrix.label }}
-    needs: verify
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -113,8 +129,9 @@ jobs:
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get ${APT_OPTS} update
+          sudo apt-get ${APT_OPTS} install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libudev-dev rpm
