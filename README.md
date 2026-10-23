@@ -39,6 +39,15 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 
 ## Downloads
 
+> [!IMPORTANT]
+> **What's New in v0.1.0:**
+> If you installed the earlier beta preview, this release brings major stability upgrades, native platform installers, and security fixes:
+> - **Full Desktop Launch:** Official **Windows** (`.exe`, `.msi`) and **macOS** (`.dmg` for Apple Silicon & Intel) installers are now live alongside Linux and Android.
+> - **Android Persistence & Upgrades:** Seamless in-place updates that safely preserve your existing encrypted vault, optimized 18.5 MB ARM64 build, and fallback emergency kit storage persistence.
+> - **SFTP Transfer Controls:** Interactive cancel `(X)` button on the active transfer progress modal with automatic `.part` temporary file cleanup.
+> - **Security & Vault Hardening:** Atomic `0600` permissions on emergency recovery exports, shell injection defense on `ProxyCommand`, team bundle command isolation, and a 10 MB memory safety cap on AI HTTP proxies.
+> - **Cloud & Mesh Fleet Sync:** Added **NetBird** mesh discovery, plus **Hetzner Cloud**, **DigitalOcean**, and **Proxmox VE** fleet imports with live power state tracking.
+
 Pre-built binaries for **v0.1.0**:
 
 | Platform | Format | Architecture | Direct Download | Notes |
