@@ -239,6 +239,19 @@ jobs:
           echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
           echo "${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}" >> "$GITHUB_PATH"
 
+          # Modern NDKs replaced standalone GNU binutils with llvm-ar/llvm-ranlib.
+          # Create cross-compile symlinks so vendored OpenSSL build scripts find ranlib/ar.
+          TOOLCHAIN="${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          BIN_DIR="${RUNNER_TEMP}/ndk-bin"
+          mkdir -p "${BIN_DIR}"
+          for arch in aarch64-linux-android arm-linux-androideabi armv7-linux-androideabi x86_64-linux-android i686-linux-android; do
+            ln -sf "${TOOLCHAIN}/llvm-ar" "${BIN_DIR}/${arch}-ar"
+            ln -sf "${TOOLCHAIN}/llvm-ranlib" "${BIN_DIR}/${arch}-ranlib"
+            ln -sf "${TOOLCHAIN}/llvm-strip" "${BIN_DIR}/${arch}-strip"
+          done
+          echo "${BIN_DIR}" >> "$GITHUB_PATH"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
       - run: npm ci
 
       # Universal first: every ABI that is built ends up inside the one APK, so the
