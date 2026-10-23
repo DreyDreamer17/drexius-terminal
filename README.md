@@ -310,6 +310,8 @@ checks that must pass, and the conventions the Rust core follows.
 Security reports are handled privately; please do not open a public issue for a
 vulnerability. See [docs/SECURITY.md](docs/SECURITY.md#7-reporting-a-vulnerability).
 
+By submitting a pull request, you agree that your contribution is licensed under the project's license and grant the maintainer the right to distribute and relicense the contribution as part of Drexius Terminal.
+
 ---
 
 ## License & trademarks
