@@ -60,23 +60,13 @@ const uid = () => (typeof crypto !== 'undefined' && typeof crypto.randomUUID ===
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function b64ToBytes(b64: string): Uint8Array {
-  if (!b64) return new Uint8Array(0);
-  try {
-    const fn = (Uint8Array as unknown as { fromBase64?: (s: string, opt?: Record<string, string>) => Uint8Array }).fromBase64;
-    if (typeof fn === 'function') {
-      return fn.call(Uint8Array, b64, { alphabet: 'base64', lastChunkHandling: 'loose' });
-    }
-  } catch {
-    // Draft or older WebKit (e.g. WebKit 2.44 on Linux CI) throws if options are omitted or on specific padding; fall back to atob
+  if (typeof (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array }).fromBase64 === 'function') {
+    return (Uint8Array as unknown as { fromBase64: (s: string) => Uint8Array }).fromBase64(b64);
   }
-  try {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  } catch {
-    return new Uint8Array(0);
-  }
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 export function isBridgeError(e: unknown): e is BridgeError {

@@ -220,48 +220,6 @@ pub fn local_pty_spawn(
         }
     }
 
-    // When packaged as an AppImage, linuxdeploy/AppRun sets environment variables
-    // (LD_LIBRARY_PATH, PYTHONHOME, PYTHONPATH, and prepends AppImage paths to PATH).
-    // Leaving these active causes host tools (zsh, python, starship, fastfetch, git)
-    // to fail or crash by loading mismatched bundled libraries from the AppImage mount.
-    if std::env::var("APPDIR").is_ok() || std::env::var("APPIMAGE").is_ok() {
-        for key in &[
-            "APPDIR",
-            "APPIMAGE",
-            "ARGV0",
-            "OWD",
-            "LD_LIBRARY_PATH",
-            "LD_PRELOAD",
-            "PYTHONHOME",
-            "PYTHONPATH",
-            "PYTHONDONTWRITEBYTECODE",
-            "PERLLIB",
-            "GSETTINGS_SCHEMA_DIR",
-            "GIO_MODULE_DIR",
-            "GI_TYPELIB_PATH",
-            "GTK_PATH",
-            "GTK_EXE_PREFIX",
-            "GTK_DATA_PREFIX",
-            "GTK_IM_MODULE_FILE",
-            "GDK_PIXBUF_MODULE_FILE",
-            "QT_PLUGIN_PATH",
-            "GST_PLUGIN_SYSTEM_PATH",
-        ] {
-            cmd.env_remove(key);
-        }
-        if let Ok(path_val) = std::env::var("PATH") {
-            if let Ok(appdir) = std::env::var("APPDIR") {
-                if !appdir.is_empty() {
-                    let cleaned: Vec<&str> = path_val
-                        .split(':')
-                        .filter(|p| !p.starts_with(&appdir))
-                        .collect();
-                    cmd.env("PATH", cleaned.join(":"));
-                }
-            }
-        }
-    }
-
     let requested_cwd = req
         .cwd
         .as_deref()
