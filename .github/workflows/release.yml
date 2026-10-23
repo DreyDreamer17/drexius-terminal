@@ -219,6 +219,15 @@ jobs:
 
       - name: Install Android SDK components
         run: |
+          CMDLINE_BIN="$(find "${ANDROID_HOME}/cmdline-tools" -type f -name "sdkmanager" 2>/dev/null | head -n 1)"
+          if [ -n "${CMDLINE_BIN}" ]; then
+            CMDLINE_DIR="$(dirname "${CMDLINE_BIN}")"
+            export PATH="${CMDLINE_DIR}:${PATH}"
+            echo "${CMDLINE_DIR}" >> "$GITHUB_PATH"
+          elif [ -d "${ANDROID_HOME}/tools/bin" ]; then
+            export PATH="${ANDROID_HOME}/tools/bin:${PATH}"
+            echo "${ANDROID_HOME}/tools/bin" >> "$GITHUB_PATH"
+          fi
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager \
             "${ANDROID_PLATFORM}" \
