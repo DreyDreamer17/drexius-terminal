@@ -10,7 +10,7 @@ Terminals, SSH & SFTP, serial ports, tunnels, an encrypted SQLCipher vault, and 
 multi-provider AI copilot — on your desktop, on your phone, and entirely under your control.
 
 [![Tests](https://img.shields.io/badge/tests-passing-3DDC84?logo=rust&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal)
-[![Release](https://img.shields.io/badge/release-v0.1.0--beta.1-238636?logo=github&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1)
+[![Release](https://img.shields.io/badge/release-v0.1.0-238636?logo=github&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0)
 [![Downloads](https://img.shields.io/github/downloads/DreyDreamer17/drexius-terminal/total?color=blue&label=downloads&logo=github)](https://github.com/DreyDreamer17/drexius-terminal/releases)
 [![License: GPL-3.0-only](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](./LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
@@ -39,19 +39,19 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 
 ## Downloads
 
-Pre-built binaries for **v0.1.0-beta.1 (Public Beta)**:
+Pre-built binaries for **v0.1.0**:
 
 | Platform | Format | Architecture | Direct Download | Notes |
 |:---|:---|:---|:---|:---|
-| **Android** | `.apk` | Universal (ARM64, ARMv7, x86_64) | [**Download APK**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-universal.apk) *(62.7 MB)* | Install directly on phone or tablet |
-| **Windows** | `.exe` (Setup) | x86_64 | [**Download Setup.exe**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64-setup.exe) *(5.56 MB)* | Standard installer ([.msi](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64_en-US.msi) *(7.23 MB)*) |
-| **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) | [**Download DMG (Apple Silicon)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_aarch64.dmg) *(8.21 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_aarch64.app.tar.gz)) |
-| **macOS** | `.dmg` | Intel (x86_64) | [**Download DMG (Intel)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_0.1.0_x64.dmg) *(8.20 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/DrexiusTerminal_x64.app.tar.gz)) |
-| **Linux** | `.AppImage` | x86_64 | [**Download AppImage**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.AppImage) *(107 MB)* | Standalone executable (`chmod +x`) |
-| **Linux** | `.deb` | x86_64 | [**Download .deb**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-amd64.deb) *(7.57 MB)* | Debian, Ubuntu, Linux Mint |
-| **Linux** | `.rpm` | x86_64 | [**Download .rpm**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/drexius-terminal-v0.1.0-beta.1-x86_64.rpm) *(7.58 MB)* | Fedora, RHEL, openSUSE |
+| **Android** | `.apk` | ARM64 *(Recommended)* | [**Download APK (ARM64)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal-arm64.apk) *(18.5 MB)* | Install directly on phone or tablet ([Universal APK](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal-universal.apk) *(48 MB)*) |
+| **Windows** | `.exe` (Setup) | x86_64 | [**Download Setup.exe**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_x64-setup.exe) *(6.32 MB)* | Standard installer ([.msi](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_x64_en-US.msi) *(8.05 MB)*) |
+| **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) | [**Download DMG (Apple Silicon)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_aarch64.dmg) *(9.02 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_aarch64.app.tar.gz) *(8.34 MB)*) |
+| **macOS** | `.dmg` | Intel (x86_64) | [**Download DMG (Intel)**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_x64.dmg) *(9.01 MB)* | Drag & drop to Applications ([.tar.gz](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_x64.app.tar.gz) *(8.36 MB)*) |
+| **Linux** | `.AppImage` | x86_64 | [**Download AppImage**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_amd64.AppImage) *(82.8 MB)* | Standalone executable (`chmod +x`) |
+| **Linux** | `.deb` | x86_64 | [**Download .deb**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal_0.1.0_amd64.deb) *(8.32 MB)* | Debian, Ubuntu, Linux Mint |
+| **Linux** | `.rpm` | x86_64 | [**Download .rpm**](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/DrexiusTerminal-0.1.0-1.x86_64.rpm) *(8.32 MB)* | Fedora, RHEL, openSUSE |
 
-> Checksums and release notes are available on the [GitHub Releases](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1) page. Verify integrity with [SHA256SUMS.txt](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0-beta.1/SHA256SUMS.txt).
+> Checksums and release notes are available on the [GitHub Releases](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0) page. Android signatures can be verified with [SHA256SUMS-android.txt](https://github.com/DreyDreamer17/drexius-terminal/releases/download/v0.1.0/SHA256SUMS-android.txt).
 
 ---
 
