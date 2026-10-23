@@ -262,7 +262,7 @@ ai_client::ai_stream_proxy
 
 **Build/config notes and known limitations**
 
-* The npm package name and license now match the product (`drexius-terminal`, `GPL-3.0-or-later`) in both `package.json` and `package-lock.json`; the lockfile previously still carried the `react-vite-tailwind` scaffold metadata. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
+* The npm package name and license now match the product (`drexius-terminal`, `GPL-3.0-only`) in both `package.json` and `package-lock.json`; the lockfile previously still carried the `react-vite-tailwind` scaffold metadata. `tauri-plugin-shell` is a declared and initialized dependency, but the default Tauri capability grants no shell permission to the WebView; local terminals use `local_pty.rs` instead.
 * On Windows, local PTYs launch `%COMSPEC%` when set (normally `cmd.exe`), falling back to `powershell.exe` only if that variable is absent. Do not assume PowerShell is the default.
 * The AI relay verifies configured provider origins before attaching pooled credentials. Requests without a matching provider carry no pooled keys. The WebView CSP is broader (see §1).
 * The AI relay's public-destination policy pins the connection to the addresses it validated, so a name cannot be re-resolved to a private address between the check and the connect. The pin covers the direct connector and SOCKS5 proxies that resolve locally (`socks5://`); a proxy that resolves the name itself (an HTTP proxy, or `socks5h://`) does the lookup on the far side, where the client cannot constrain it.

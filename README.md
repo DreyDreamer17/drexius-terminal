@@ -12,7 +12,7 @@ multi-provider AI copilot — on your desktop, on your phone, and entirely under
 [![Tests](https://img.shields.io/badge/tests-passing-3DDC84?logo=rust&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal)
 [![Release](https://img.shields.io/badge/release-v0.1.0--beta.1-238636?logo=github&logoColor=white)](https://github.com/DreyDreamer17/drexius-terminal/releases/tag/v0.1.0-beta.1)
 [![Downloads](https://img.shields.io/github/downloads/DreyDreamer17/drexius-terminal/total?color=blue&label=downloads&logo=github)](https://github.com/DreyDreamer17/drexius-terminal/releases)
-[![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](./LICENSE)
+[![License: GPL-3.0-only](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](./LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2-FFC131?logo=tauri&logoColor=black)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![Tailwind](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)](https://tailwindcss.com)
@@ -316,8 +316,8 @@ By submitting a pull request, you agree that your contribution is licensed under
 
 ## License & trademarks
 
-**Drexius Terminal** source code is licensed under the **GNU General Public License v3.0 or
-later (`GPL-3.0-or-later`)**. See [LICENSE](./LICENSE) for full details.
+**Drexius Terminal** source code is licensed under the **GNU General Public License v3.0 only
+(`GPL-3.0-only`)**. See [LICENSE](./LICENSE) for full details.
 
 **Trademarks & branding:** the name "Drexius Terminal", the "Drexius" mark, the
 `dev.drexius.terminal` application identifier, and the official Drexius Terminal logos and
