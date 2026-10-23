@@ -94,22 +94,14 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export function base64ToBytes(b64: string): Uint8Array {
-  if (!b64) return new Uint8Array(0);
-  try {
-    let clean = b64.replace(/\s+/g, '');
-    while (clean.length % 4 !== 0) {
-      clean += '=';
-    }
-    const bin = atob(clean);
-    const len = bin.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = bin.charCodeAt(i);
-    }
-    return bytes;
-  } catch {
-    return new Uint8Array(0);
+  const clean = b64.replace(/\s+/g, '');
+  const bin = atob(clean);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = bin.charCodeAt(i);
   }
+  return bytes;
 }
 
 /**

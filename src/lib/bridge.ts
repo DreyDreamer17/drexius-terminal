@@ -903,16 +903,12 @@ export const bridge = {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
-        try {
-          const d = msg.data as Record<string, string & boolean>;
-          switch (msg.event) {
-            case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
-            case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
-            case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
-            case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
-          }
-        } catch (err) {
-          console.error('[SSH channel.onmessage error]:', err);
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
       return invoke<string>('ssh_connect', { req: { hostId, cols, rows, resume }, onEvent: channel });
@@ -973,16 +969,12 @@ export const bridge = {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
-        try {
-          const d = msg.data as Record<string, string & boolean>;
-          switch (msg.event) {
-            case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
-            case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
-            case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
-            case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
-          }
-        } catch (err) {
-          console.error('[SSH channel.onmessage error]:', err);
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
       return invoke<boolean>('ssh_attach', { sessionId, cols, rows, onEvent: channel }).catch(() => false);
@@ -1416,16 +1408,12 @@ export const bridge = {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
         if (!onEvent) return;
-        try {
-          const d = msg.data as Record<string, string & boolean>;
-          switch (msg.event) {
-            case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
-            case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
-            case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
-            case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
-          }
-        } catch (err) {
-          console.error('[Local PTY channel.onmessage error]:', err);
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
       return invoke<string>('local_pty_spawn', { req: { cols, rows, shell, cwd, cellWidth, cellHeight }, onEvent: channel });
@@ -1497,16 +1485,12 @@ export const bridge = {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
-        try {
-          const d = msg.data as Record<string, string & boolean>;
-          switch (msg.event) {
-            case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
-            case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
-            case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
-            case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
-          }
-        } catch (err) {
-          console.error('[SSH channel.onmessage error]:', err);
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: (d as Record<string, unknown>).os as string | null ?? null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
       return invoke<boolean>('local_pty_attach', { sessionId, cols, rows, onEvent: channel }).catch(() => false);
@@ -1568,16 +1552,12 @@ export const bridge = {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
-        try {
-          const d = msg.data as Record<string, string & boolean>;
-          switch (msg.event) {
-            case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
-            case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
-            case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: null }); break;
-            case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
-          }
-        } catch (err) {
-          console.error('[Serial channel.onmessage error]:', err);
+        const d = msg.data as Record<string, string & boolean>;
+        switch (msg.event) {
+          case 'output': onEvent({ type: 'output', data: b64ToBytes(d.b64) }); break;
+          case 'cwd': onEvent({ type: 'cwd', path: d.path }); break;
+          case 'connected': onEvent({ type: 'connected', sessionId: d.sessionId, fingerprint: d.fingerprint, banner: d.banner, os: null }); break;
+          case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
       return invoke<string>('serial_open', { req: opts, onEvent: channel });
