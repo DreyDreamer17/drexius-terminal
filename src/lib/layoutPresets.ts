@@ -1,4 +1,5 @@
 import type { Layout, Host, Pane, LayoutPreset, LayoutPresetPane } from './types';
+import { leafIds, toPresetTree, type LayoutNode } from './splitTree';
 
 export type { LayoutPreset, LayoutPresetPane };
 
@@ -101,13 +102,17 @@ export function saveUserLayoutPresets(presets: LayoutPreset[]): void {
   } catch {}
 }
 
+/** Snapshot a tab's free-form arrangement. Panes are stored in visual order. */
 export function createUserPreset(
   name: string,
-  layout: Layout,
+  tree: LayoutNode,
   panes: Pane[],
   hostMap: Map<string, Host>
 ): LayoutPreset {
-  const presetPanes: LayoutPresetPane[] = panes.map((p) => {
+  const order = leafIds(tree);
+  const byId = new Map(panes.map((p) => [p.id, p]));
+  const ordered = order.map((id) => byId.get(id)).filter((p): p is Pane => !!p);
+  const presetPanes: LayoutPresetPane[] = ordered.map((p) => {
     const h = hostMap.get(p.hostId);
     const lbl = h?.label || (p.isLocal ? 'Local Terminal' : 'Remote Session');
     return {
@@ -122,9 +127,10 @@ export function createUserPreset(
   return {
     id: 'preset_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
     name: name.trim() || 'Custom Layout',
-    description: `${panes.length} panes (${getLayoutDescription(layout)})`,
+    description: `${ordered.length} panes (${getLayoutDescription('custom')})`,
     createdAt: Date.now(),
-    layout,
+    layout: 'custom',
+    tree: toPresetTree(tree, order),
     panes: presetPanes,
     isBuiltin: false,
   };
@@ -150,8 +156,14 @@ export function getLayoutDescription(layout: Layout): string {
       return '3 Rows (Stacked)';
     case '4-columns':
       return '4 Columns (Side-by-side)';
+    case 'columns':
+      return 'Columns (Side-by-side)';
+    case 'rows':
+      return 'Rows (Stacked)';
     case 'grid':
-      return '2x2 Quad Grid';
+      return 'Grid';
+    case 'custom':
+      return 'Free-form split layout';
     case 'single':
     default:
       return 'Single Pane';

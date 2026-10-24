@@ -3,8 +3,6 @@
  * Persists general settings, UI element toggles, and customizable shortcuts.
  */
 
-import type { Layout, Pane } from './types';
-
 export type TerminalFontWeight = '300' | '400' | '500' | '600' | '700';
 
 export interface TerminalFontOption {
@@ -258,17 +256,45 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
   },
   split_vertical: {
     id: 'split_vertical',
-    label: 'Split Pane Vertical',
+    label: 'Split Right',
     category: 'Splits & Navigation',
     keys: 'Ctrl+Shift+D',
-    description: 'Split the current terminal pane vertically (side-by-side)',
+    description: 'Instantly split the focused pane to the right with a copy of it (same host, same directory)',
   },
   split_horizontal: {
     id: 'split_horizontal',
-    label: 'Split Pane Horizontal',
+    label: 'Split Down',
     category: 'Splits & Navigation',
     keys: 'Ctrl+Shift+E',
-    description: 'Split the current terminal pane horizontally (top/bottom)',
+    description: 'Instantly split the focused pane downward with a copy of it (same host, same directory)',
+  },
+  split_left: {
+    id: 'split_left',
+    label: 'Split Left',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+D',
+    description: 'Instantly split the focused pane to the left with a copy of it',
+  },
+  split_up: {
+    id: 'split_up',
+    label: 'Split Up',
+    category: 'Splits & Navigation',
+    keys: 'Alt+Shift+E',
+    description: 'Instantly split the focused pane upward with a copy of it',
+  },
+  split_menu: {
+    id: 'split_menu',
+    label: 'Split With Host…',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+O',
+    description: 'Open the split menu to choose a direction and a different host or local shell',
+  },
+  equalize_splits: {
+    id: 'equalize_splits',
+    label: 'Equalize Splits',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+N',
+    description: 'Resize every split in the tab so all panes get an equal share',
   },
   maximize_pane: {
     id: 'maximize_pane',
@@ -404,7 +430,10 @@ export function loadShortcuts(): Record<string, ShortcutBinding> {
     const parsed = JSON.parse(raw);
     const result: Record<string, ShortcutBinding> = {};
     for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
-      result[id] = { ...def, ...(parsed[id] || {}) };
+      // Only the key combination is user data; labels and descriptions always come from the
+      // current defaults so wording fixes reach users who customised a shortcut.
+      const saved = parsed?.[id]?.keys;
+      result[id] = typeof saved === 'string' && saved ? { ...def, keys: saved } : { ...def };
     }
     return result;
   } catch {
@@ -416,6 +445,97 @@ export function saveShortcuts(shortcuts: Record<string, ShortcutBinding>): void 
   try {
     localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcuts));
   } catch {}
+}
+
+export interface BuiltinShortcut {
+  label: string;
+  description: string;
+  /** Combinations as shown to the user. */
+  keys: string[];
+  /** Combinations a rebindable shortcut must not take. Defaults to `keys`; narrower where a
+   *  displayed key is only a macOS spelling of a combo that means something else elsewhere
+   *  (Cmd+C copies on macOS, but Ctrl+C is the shell's interrupt). */
+  reserved?: string[];
+}
+
+/**
+ * Shortcuts handled outside the rebindable list (in TerminalPane.tsx and App.tsx). They are shown
+ * read-only in Settings, and a rebindable shortcut may not shadow them. Keep in step with those
+ * handlers; tests/shortcuts.test.mjs checks that no default collides with this list.
+ */
+export const BUILTIN_SHORTCUTS: BuiltinShortcut[] = [
+  {
+    label: 'Copy selection',
+    description: 'Copy the selected terminal text to the clipboard',
+    keys: ['Ctrl+Shift+C', 'Cmd+C (macOS)'],
+    reserved: ['Ctrl+Shift+C'],
+  },
+  {
+    label: 'Paste',
+    description: 'Paste the system clipboard into the terminal',
+    keys: ['Ctrl+Shift+V', 'Cmd+V (macOS)'],
+    reserved: ['Ctrl+Shift+V'],
+  },
+  {
+    label: 'Find in terminal',
+    description: 'Search the focused terminal\u2019s scrollback',
+    keys: ['Ctrl+F'],
+  },
+  {
+    label: 'Clipboard history',
+    description: 'Open the clipboard history and paste an earlier entry',
+    keys: ['Ctrl+Shift+H', 'Ctrl+Alt+V'],
+  },
+  {
+    label: 'Docker manager',
+    description: 'Open the container manager for the focused host',
+    keys: ['Ctrl+Shift+U', 'Ctrl+Alt+D'],
+  },
+  {
+    label: 'Quick connect (alternate)',
+    description: 'Same as Quick Switch, and works while a terminal has focus',
+    keys: ['Ctrl+Shift+K'],
+  },
+  {
+    label: 'Toggle status bar',
+    description: 'Show or hide the status bar along the bottom',
+    keys: ['Ctrl+/'],
+  },
+];
+
+/** Every reserved combination mapped to the built-in it belongs to. */
+export const RESERVED_SHORTCUTS: Record<string, string> = Object.fromEntries(
+  BUILTIN_SHORTCUTS.flatMap((b) => (b.reserved ?? b.keys).map((k) => [k, b.label] as [string, string]))
+);
+
+/** Canonical form of a combo ("Cmd+shift+d" and "Shift+Ctrl+D" compare equal), as `matchesShortcut` reads it. */
+export function normalizeCombo(keys: string): string {
+  const parts = keys.split('+').map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const mods = new Set<string>();
+  let key = '';
+  for (const p of parts) {
+    if (p === 'ctrl' || p === 'cmd') mods.add('ctrl');
+    else if (p === 'alt' || p === 'opt') mods.add('alt');
+    else if (p === 'shift') mods.add('shift');
+    else if (!key) key = p;
+  }
+  return [...['ctrl', 'alt', 'shift'].filter((m) => mods.has(m)), key].join('+');
+}
+
+/** What `combo` would collide with if assigned to shortcut `id`: another binding's label, a built-in's name, or null. */
+export function findShortcutConflict(
+  shortcuts: Record<string, ShortcutBinding>,
+  id: string,
+  combo: string
+): string | null {
+  const wanted = normalizeCombo(combo);
+  for (const other of Object.values(shortcuts)) {
+    if (other.id !== id && normalizeCombo(other.keys) === wanted) return other.label;
+  }
+  for (const [reserved, label] of Object.entries(RESERVED_SHORTCUTS)) {
+    if (normalizeCombo(reserved) === wanted) return `${label} (built-in)`;
+  }
+  return null;
 }
 
 /**
@@ -459,145 +579,4 @@ export function matchesShortcut(e: KeyboardEvent, shortcutKey: string): boolean 
   if ((targetKey === 'space' || targetKey === ' ') && eventKey === ' ') return true;
 
   return false;
-}
-
-/**
- * Directional Split Navigation
- * Finds the adjacent pane in the active tab based on layout and direction.
- */
-export function getAdjacentPaneId(
-  currentPaneId: string,
-  panes: Pane[],
-  layout: Layout,
-  direction: 'left' | 'right' | 'up' | 'down'
-): string | null {
-  if (panes.length <= 1) return null;
-  const idx = panes.findIndex((p) => p.id === currentPaneId);
-  if (idx === -1) return panes[0]?.id ?? null;
-
-  if (layout === 'vertical') {
-    // 2 panes side-by-side: Index 0 (Left), Index 1 (Right)
-    if (direction === 'left' && idx > 0) return panes[idx - 1].id;
-    if (direction === 'right' && idx < panes.length - 1) return panes[idx + 1].id;
-    // Allow Alt+Left/Right to wrap or switch between two panes
-    if (direction === 'left' && idx === 0) return panes[panes.length - 1].id;
-    if (direction === 'right' && idx === panes.length - 1) return panes[0].id;
-    return null;
-  }
-
-  if (layout === 'horizontal') {
-    // 2 panes stacked: Index 0 (Top), Index 1 (Bottom)
-    if (direction === 'up' && idx > 0) return panes[idx - 1].id;
-    if (direction === 'down' && idx < panes.length - 1) return panes[idx + 1].id;
-    // Allow Alt+Up/Down to wrap
-    if (direction === 'up' && idx === 0) return panes[panes.length - 1].id;
-    if (direction === 'down' && idx === panes.length - 1) return panes[0].id;
-    return null;
-  }
-
-  if (layout === '3-columns' || layout === '4-columns') {
-    if (direction === 'left') return idx > 0 ? panes[idx - 1].id : panes[panes.length - 1].id;
-    if (direction === 'right') return idx < panes.length - 1 ? panes[idx + 1].id : panes[0].id;
-    return null;
-  }
-
-  if (layout === '3-rows') {
-    if (direction === 'up') return idx > 0 ? panes[idx - 1].id : panes[panes.length - 1].id;
-    if (direction === 'down') return idx < panes.length - 1 ? panes[idx + 1].id : panes[0].id;
-    return null;
-  }
-
-  if (layout === 'main-left') {
-    // Index 0: Main Left, Index 1: Top Right, Index 2: Bottom Right
-    if (idx === 0) {
-      if (direction === 'right' || direction === 'up') return panes[1]?.id ?? null;
-      if (direction === 'down') return panes[2]?.id ?? panes[1]?.id ?? null;
-    } else if (idx === 1) {
-      if (direction === 'left') return panes[0]?.id ?? null;
-      if (direction === 'down') return panes[2]?.id ?? null;
-    } else if (idx === 2) {
-      if (direction === 'left') return panes[0]?.id ?? null;
-      if (direction === 'up') return panes[1]?.id ?? null;
-    }
-    return null;
-  }
-
-  if (layout === 'main-right') {
-    // Index 0: Top Left, Index 1: Bottom Left, Index 2: Main Right
-    if (idx === 0) {
-      if (direction === 'right') return panes[2]?.id ?? null;
-      if (direction === 'down') return panes[1]?.id ?? null;
-    } else if (idx === 1) {
-      if (direction === 'right') return panes[2]?.id ?? null;
-      if (direction === 'up') return panes[0]?.id ?? null;
-    } else if (idx === 2) {
-      if (direction === 'left' || direction === 'up') return panes[0]?.id ?? null;
-      if (direction === 'down') return panes[1]?.id ?? panes[0]?.id ?? null;
-    }
-    return null;
-  }
-
-  if (layout === 'main-top') {
-    // Index 0: Main Top, Index 1: Bottom Left, Index 2: Bottom Right
-    if (idx === 0) {
-      if (direction === 'down' || direction === 'left') return panes[1]?.id ?? null;
-      if (direction === 'right') return panes[2]?.id ?? panes[1]?.id ?? null;
-    } else if (idx === 1) {
-      if (direction === 'up') return panes[0]?.id ?? null;
-      if (direction === 'right') return panes[2]?.id ?? null;
-    } else if (idx === 2) {
-      if (direction === 'up') return panes[0]?.id ?? null;
-      if (direction === 'left') return panes[1]?.id ?? null;
-    }
-    return null;
-  }
-
-  if (layout === 'main-bottom') {
-    // Index 0: Top Left, Index 1: Top Right, Index 2: Main Bottom
-    if (idx === 0) {
-      if (direction === 'right') return panes[1]?.id ?? null;
-      if (direction === 'down') return panes[2]?.id ?? null;
-    } else if (idx === 1) {
-      if (direction === 'left') return panes[0]?.id ?? null;
-      if (direction === 'down') return panes[2]?.id ?? null;
-    } else if (idx === 2) {
-      if (direction === 'up' || direction === 'left') return panes[0]?.id ?? null;
-      if (direction === 'right') return panes[1]?.id ?? panes[0]?.id ?? null;
-    }
-    return null;
-  }
-
-  if (layout === 'grid') {
-    // 2x2 Grid:
-    // [0] [1]
-    // [2] [3]
-    switch (direction) {
-      case 'left':
-        if (idx === 1) return panes[0]?.id ?? null;
-        if (idx === 3) return panes[2]?.id ?? null;
-        if (idx === 0 && panes.length > 1) return panes[1]?.id ?? null;
-        if (idx === 2 && panes.length > 3) return panes[3]?.id ?? null;
-        break;
-      case 'right':
-        if (idx === 0) return panes[1]?.id ?? null;
-        if (idx === 2) return panes[3]?.id ?? panes[1]?.id ?? null;
-        if (idx === 1) return panes[0]?.id ?? null;
-        if (idx === 3) return panes[2]?.id ?? null;
-        break;
-      case 'up':
-        if (idx === 2) return panes[0]?.id ?? null;
-        if (idx === 3) return panes[1]?.id ?? panes[0]?.id ?? null;
-        if (idx === 0 && panes.length > 2) return panes[2]?.id ?? null;
-        if (idx === 1 && panes.length > 3) return panes[3]?.id ?? null;
-        break;
-      case 'down':
-        if (idx === 0) return panes[2]?.id ?? panes[1]?.id ?? null;
-        if (idx === 1) return panes[3]?.id ?? panes[2]?.id ?? null;
-        if (idx === 2) return panes[0]?.id ?? null;
-        if (idx === 3) return panes[1]?.id ?? null;
-        break;
-    }
-  }
-
-  return null;
 }

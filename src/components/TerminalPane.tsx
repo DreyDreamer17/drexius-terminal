@@ -140,6 +140,22 @@ function stripShellPrompt(line: string): string | null {
  *  unlock the radio can need a few attempts before DNS/TCP works again. */
 const MAX_RESUME_ATTEMPTS = 6;
 
+/**
+ * What to type into a fresh *SSH* session: a `cd` into the directory a split pane was copied from
+ * (POSIX paths only, as reported by OSC 7), then the startup command. A leading space keeps the
+ * `cd` out of shell history in shells that honour it. Null when there is nothing to send. Local
+ * shells never need the `cd`: they are spawned in that directory instead.
+ */
+function startupInput(initialCwd: string | undefined, startupCommand: string | null | undefined): string | null {
+  const cd =
+    initialCwd && initialCwd.startsWith('/') && !/[\u0000-\u001f\u007f]/.test(initialCwd)
+      ? ` cd -- '${initialCwd.replace(/'/g, `'\\''`)}'`
+      : '';
+  const startup = (startupCommand ?? '').trim();
+  const lines = [cd, startup].filter(Boolean);
+  return lines.length ? lines.join('\n') + '\n' : null;
+}
+
 interface Props {
   pane: Pane;
   host: Host;
@@ -978,7 +994,8 @@ export const TerminalPane = memo(function TerminalPane({
           const t = term as any;
           const cw = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.width || 9);
           const ch = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.height || 18);
-          const sid = await bridge.spawnLocalPty(initCols, initRows, pane.customShell, undefined, onLocalEvent, cw, ch);
+          // A copied pane starts in the original's directory via the spawn itself, so nothing is typed.
+          const sid = await bridge.spawnLocalPty(initCols, initRows, pane.customShell, pane.initialCwd, onLocalEvent, cw, ch);
           if (dead()) {
             bridge.closeLocalPty(sid);
             return;
@@ -991,9 +1008,8 @@ export const TerminalPane = memo(function TerminalPane({
           if (term.cols && term.rows) {
             bridge.resizeLocalPty(sid, term.cols, term.rows, cw, ch);
           }
-          const startupCmd = pane.startupCommand || host.startupCommand;
-          if (startupCmd && startupCmd.trim()) {
-            const startup = startupCmd.trim() + '\n';
+          const startup = startupInput(undefined, pane.startupCommand || host.startupCommand);
+          if (startup) {
             setTimeout(() => {
               if (sessionRef.current === sid) {
                 bridge.writeLocalPty(sid, startup);
@@ -1115,9 +1131,8 @@ export const TerminalPane = memo(function TerminalPane({
           lastSentSize.current = { cols: term.cols, rows: term.rows };
           bridge.resize(sid, term.cols, term.rows);
         }
-        const startupCmd = pane.startupCommand || host.startupCommand;
-        if (startupCmd && startupCmd.trim()) {
-          const startup = startupCmd.trim() + '\n';
+        const startup = startupInput(pane.initialCwd, pane.startupCommand || host.startupCommand);
+        if (startup) {
           setTimeout(() => {
             if (sessionRef.current === sid) {
               bridge.write(sid, startup);
@@ -1753,11 +1768,8 @@ export const TerminalPane = memo(function TerminalPane({
       // nano/history-search) — never swallow plain Ctrl combos here. App-level
       // bindings use the Ctrl/Cmd+Shift+* family.
 
-      // Ctrl/Cmd+Shift+R -> Command History Search overlay
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r' && e.type === 'keydown') {
-        setShowCmdSearch(true);
-        return false;
-      }
+      // The Command History overlay (default Ctrl/Cmd+Shift+R) is a rebindable workspace shortcut
+      // handled in App.tsx through `registry.get(id).openHistory`, so it is not hardcoded here.
 
       // Allow directional split shortcuts (Alt+ArrowLeft/Right/Up/Down) to bubble to window listener
       if (e.altKey && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase()) && e.type === 'keydown') {

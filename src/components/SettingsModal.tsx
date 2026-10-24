@@ -53,6 +53,8 @@ import {
   resolveTerminalFontFamily,
   DEFAULT_UI_PREFERENCES,
   DEFAULT_SHORTCUTS,
+  BUILTIN_SHORTCUTS,
+  findShortcutConflict,
 } from '../lib/settings';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
 import { CustomSelect } from './CustomSelect';
@@ -333,6 +335,15 @@ export function SettingsModal({
 
     parts.push(keyPart);
     const newKeyCombo = parts.join('+');
+
+    // Two actions on one key would both fire, or one would silently shadow the other.
+    const clash = findShortcutConflict(shortcuts, id, newKeyCombo);
+    if (clash) {
+      setEditingShortcutId(null);
+      setRecordedKeys('');
+      toast(`${newKeyCombo} is already used by ${clash}`);
+      return;
+    }
 
     const next = {
       ...shortcuts,
@@ -1372,6 +1383,34 @@ export function SettingsModal({
                     </div>
                   </div>
                 ))}
+
+                {/* Fixed shortcuts: handled outside the rebindable list, shown so they can be found. */}
+                <div className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.03] px-4 py-2 text-xs font-semibold text-slate-300">
+                    <span>Built-in</span>
+                    <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">Fixed · cannot be rebound</span>
+                  </div>
+                  <div className="divide-y divide-white/5">
+                    {BUILTIN_SHORTCUTS.map((item) => (
+                      <div key={item.label} className="flex items-center justify-between gap-4 px-4 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-white">{item.label}</div>
+                          <div className="text-[11px] text-slate-400 truncate">{item.description}</div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                          {item.keys.map((k) => (
+                            <kbd
+                              key={k}
+                              className="rounded-lg border border-white/5 bg-white/[0.03] px-2.5 py-1 font-mono text-xs font-semibold text-slate-400"
+                            >
+                              {k}
+                            </kbd>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           )}

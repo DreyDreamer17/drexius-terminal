@@ -13,6 +13,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "test:mobile": "node --experimental-strip-types --test tests/mobile-terminal.test.mjs",
+    "test:split": "node --experimental-strip-types --test tests/split-tree.test.mjs tests/shortcuts.test.mjs",
+    "test:split-ui": "node tests/split-layout.smoke.mjs",
     "test:mobile-ui": "node tests/mobile-ui.smoke.mjs",
     "test:csp": "node scripts/check-csp-guards.mjs",
     "screenshots": "node scripts/capture-screenshots.mjs",

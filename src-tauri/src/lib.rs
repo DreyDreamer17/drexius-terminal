@@ -1,23 +1,23 @@
 //! DrexiusTerminal Rust core — wires state + IPC commands into the Tauri runtime.
 
+mod ai_client;
+mod cloud_sync;
+mod docker;
 mod error;
 mod fs_guard;
 mod local_pty;
+mod netbird;
+mod opencode;
 mod pairing;
 mod serial;
 mod sftp;
 mod snapshot;
 mod ssh;
+mod ssh_config;
 mod sync;
+mod tailscale;
 mod tunnel;
 mod vault;
-mod ai_client;
-mod opencode;
-mod ssh_config;
-mod tailscale;
-mod netbird;
-mod cloud_sync;
-mod docker;
 
 use std::time::Duration;
 use tauri::Manager;
@@ -162,6 +162,7 @@ pub fn run() {
             local_pty::local_pty_write,
             local_pty::local_pty_resize,
             local_pty::local_pty_close,
+            local_pty::local_pty_cwd,
             local_pty::read_file_base64,
             // native serial port
             serial::serial_open,

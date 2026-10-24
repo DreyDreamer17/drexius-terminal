@@ -1,3 +1,5 @@
+import type { LayoutNode } from './splitTree';
+
 export type AuthMethod = 'password' | 'key' | 'agent';
 
 export interface Vault {
@@ -228,6 +230,9 @@ export interface Pane {
   sessionId?: string | null;
   /** Startup command executed right after connection initializes. */
   startupCommand?: string;
+  /** Directory to `cd` into once connected. Set when a pane is created by splitting another
+   *  so the new shell starts where the focused one was. POSIX paths only. */
+  initialCwd?: string;
 }
 
 export interface ActiveSshSession {
@@ -247,7 +252,11 @@ export type Layout =
   | 'main-bottom'
   | '3-columns'
   | '3-rows'
-  | '4-columns';
+  | '4-columns'
+  | 'columns'
+  | 'rows'
+  /** A free-form arrangement described by a split tree rather than a named template. */
+  | 'custom';
 
 export interface LayoutPresetPane {
   hostId: string;
@@ -263,6 +272,9 @@ export interface LayoutPreset {
   description?: string;
   createdAt: number;
   layout: Layout;
+  /** Free-form geometry. Leaf `paneId`s are indices into `panes`. Absent on templates and on
+   *  presets saved before split trees existed, which are rebuilt from `layout`. */
+  tree?: LayoutNode;
   panes: LayoutPresetPane[];
   isBuiltin?: boolean;
 }
@@ -281,7 +293,11 @@ export interface Tab {
   sftpRightHostId?: string | null;
   sftpRightSessionId?: string | null;
   panes: Pane[];
-  layout: Layout;
+  /** Where each pane sits. Authoritative when present and consistent with `panes`; see
+   *  `ensureTree` in lib/splitTree.ts, which repairs or rebuilds it. */
+  tree?: LayoutNode;
+  /** Legacy named layout. Only used to build a `tree` for workspaces saved before split trees. */
+  layout?: Layout;
   activePaneId: string;
 }
 

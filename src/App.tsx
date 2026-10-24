@@ -61,6 +61,25 @@ import {
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
+import {
+  type LayoutNode,
+  type SplitDirection,
+  computeRects,
+  computeSplits,
+  ensureTree,
+  equalize,
+  fromPresetTree,
+  hasLeaf,
+  leaf,
+  leafIds,
+  lastLeafId,
+  neighborPane,
+  removeLeaf,
+  setRatio,
+  splitLeaf,
+  swapLeaves,
+  treeFromLayout,
+} from './lib/splitTree';
 import { THEMES, type DrexiusTheme } from './lib/themes';
 import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import {
@@ -97,6 +116,7 @@ import { DockerModal } from './components/DockerModal';
 import { AIPanel } from './components/AIPanel';
 import { SftpTab } from './components/SftpTab';
 import { PaneErrorBoundary } from './components/PaneErrorBoundary';
+import { SplitDivider, paneRectStyle } from './components/SplitDivider';
 import { cn } from './utils/cn';
 import { safeUid } from './utils/uuid';
 import { ConfirmHost, cancelPendingConfirm, confirmDialog, hasPendingConfirm } from './components/ConfirmDialog';
@@ -110,14 +130,24 @@ import {
   loadShortcuts,
   saveShortcuts,
   matchesShortcut,
-  getAdjacentPaneId,
   POPULAR_TERMINAL_FONTS,
   type UiPreferences,
   type ShortcutBinding,
 } from './lib/settings';
 
 const uid = safeUid;
-const layoutFor = (n: number, pref?: Layout): Layout => (n <= 1 ? 'single' : n === 2 ? (pref === 'horizontal' ? 'horizontal' : 'vertical') : 'grid');
+
+/**
+ * Upper bound on panes in one tab. The split tree has no structural limit; this protects the
+ * machine: every pane is a PTY or SSH session plus an xterm renderer (and a WebGL context,
+ * which browsers cap and which falls back to the DOM renderer when lost).
+ */
+const MAX_PANES_PER_TAB = 16;
+
+/** The split tree for a terminal tab: its stored tree if consistent with its panes, else a rebuilt one. */
+function tabTree(t: Tab): LayoutNode | null {
+  return ensureTree(t.tree, t.panes.map((p) => p.id), t.layout);
+}
 
 const RECENT_HOSTS_STORAGE_KEY = 'drx.recent_hosts.v1';
 
@@ -136,63 +166,6 @@ function saveRecentHostIds(ids: string[]): void {
   try {
     localStorage.setItem(RECENT_HOSTS_STORAGE_KEY, JSON.stringify(ids.slice(0, 20)));
   } catch {}
-}
-
-function getSplitContainerClasses(layout: Layout, paneCount: number): string {
-  if (paneCount <= 1) return 'flex p-0';
-  switch (layout) {
-    case 'vertical':
-      return 'grid grid-cols-2 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-    case 'horizontal':
-      return 'grid grid-cols-1 grid-rows-2 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-    case '3-columns':
-      return 'grid grid-cols-3 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-    case '3-rows':
-      return 'grid grid-cols-1 grid-rows-3 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-    case '4-columns':
-      return 'grid grid-cols-4 grid-rows-1 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-    case 'main-left':
-    case 'main-right':
-    case 'main-top':
-    case 'main-bottom':
-    case 'grid':
-    default:
-      return 'grid grid-cols-2 grid-rows-2 gap-1 p-1 bg-black/40 max-md:!flex max-md:!p-0';
-  }
-}
-
-function getPaneSpanClasses(layout: Layout, index: number, totalPanes: number): string {
-  if (totalPanes <= 2) return '';
-
-  if (layout === 'main-left') {
-    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-2';
-    if (index === 1) return 'col-start-2 col-span-1 row-start-1 row-span-1';
-    if (index === 2) return 'col-start-2 col-span-1 row-start-2 row-span-1';
-  }
-
-  if (layout === 'main-right') {
-    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-1';
-    if (index === 1) return 'col-start-1 col-span-1 row-start-2 row-span-1';
-    if (index === 2) return 'col-start-2 col-span-1 row-start-1 row-span-2';
-  }
-
-  if (layout === 'main-top') {
-    if (index === 0) return 'col-start-1 col-span-2 row-start-1 row-span-1';
-    if (index === 1) return 'col-start-1 col-span-1 row-start-2 row-span-1';
-    if (index === 2) return 'col-start-2 col-span-1 row-start-2 row-span-1';
-  }
-
-  if (layout === 'main-bottom') {
-    if (index === 0) return 'col-start-1 col-span-1 row-start-1 row-span-1';
-    if (index === 1) return 'col-start-2 col-span-1 row-start-1 row-span-1';
-    if (index === 2) return 'col-start-1 col-span-2 row-start-2 row-span-1';
-  }
-
-  if (layout === 'grid' && totalPanes === 3) {
-    if (index === 2) return 'col-start-1 col-span-2 row-start-2 row-span-1';
-  }
-
-  return '';
 }
 
 /** Tools that slide up over the phone terminal screen. */
@@ -258,16 +231,17 @@ function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mo
         };
       }
       if (!Array.isArray(tab.panes)) return tab;
-      return {
-        ...tab,
-        panes: tab.panes.map((pane) => {
-          try {
-            const latestSid = localStorage.getItem('drx.pane.sid.' + pane.id);
-            if (latestSid) return { ...pane, sessionId: latestSid };
-          } catch {}
-          return pane;
-        }),
-      };
+      const panes = tab.panes.map((pane) => {
+        try {
+          const latestSid = localStorage.getItem('drx.pane.sid.' + pane.id);
+          if (latestSid) return { ...pane, sessionId: latestSid };
+        } catch {}
+        return pane;
+      });
+      // Workspaces saved before split trees only have a named layout; settle on a tree once, at
+      // load, so divider ids stay stable from here on.
+      const tree = ensureTree(tab.tree, panes.map((p) => p.id), tab.layout);
+      return { ...tab, panes, ...(tree ? { tree } : {}) };
     });
     return {
       tabs,
@@ -736,6 +710,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('drx.font', String(fontSize)); }, [fontSize]);
   useEffect(() => { localStorage.setItem('drx.lineHeight', String(lineHeight)); }, [lineHeight]);
   useEffect(() => { localStorage.setItem('drx.zen', zen ? '1' : '0'); }, [zen]);
+
   useEffect(() => { localStorage.setItem('drx.rail', showRail ? '1' : '0'); }, [showRail]);
   useEffect(() => { localStorage.setItem('drx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
   useEffect(() => { localStorage.setItem('drx.vault.active', activeVaultId); }, [activeVaultId]);
@@ -1016,107 +991,72 @@ export default function App() {
     setModal({ host: newHost });
   }, [hosts, openHost, activeVaultId]);
 
+  /**
+   * Split a pane. With no `hostToUse` the new pane is a copy of the one being split: same host
+   * (a fresh session), same local shell, and it starts in the same directory. `targetPaneId`
+   * defaults to the focused pane.
+   */
   const splitPaneInDirection = useCallback(
-    (direction: 'right' | 'down' | 'left' | 'up', hostToUse?: Host) => {
-      const h = hostToUse || (activePane ? hostMap.get(activePane.hostId) : undefined) || LOCAL_HOST;
+    async (direction: SplitDirection, hostToUse?: Host, targetPaneId?: string): Promise<void> => {
+      const source: Pane | undefined =
+        activeTab && activeTab.kind !== 'sftp'
+          ? activeTab.panes.find((p) => p.id === (targetPaneId ?? activeTab.activePaneId)) ??
+            activeTab.panes.find((p) => p.id === activeTab.activePaneId)
+          : activePane;
+      // A serial port can only be opened once, so "copying" one gives a local shell instead.
+      const h = hostToUse || (source && source.kind !== 'serial' ? hostMap.get(source.hostId) : undefined) || LOCAL_HOST;
       if (h.id && h.id !== LOCAL_HOST.id) {
         markHostRecent(h.id);
       }
       if (!activeTab || activeTab.kind === 'sftp') return openHost(h);
-      if (activeTab.panes.length >= 4) {
-        toast('Maximum 4 panes per tab');
+      if (activeTab.panes.length >= MAX_PANES_PER_TAB) {
+        toast(`Maximum ${MAX_PANES_PER_TAB} panes per tab`);
         return;
       }
 
       if (maximizedPaneId) {
         setMaximizedPaneId(null);
       }
-      const newPane: Pane = { id: uid(), hostId: h.id, isLocal: h.id === LOCAL_HOST.id };
-      const currentPanes = activeTab.panes;
-      const activeIdx = Math.max(0, currentPanes.findIndex((p) => p.id === activeTab.activePaneId));
-
-      let nextLayout: Layout = activeTab.layout;
-      let nextPanes: Pane[] = [...currentPanes];
-
-      if (currentPanes.length === 1) {
-        if (direction === 'right') {
-          nextPanes = [currentPanes[0], newPane];
-          nextLayout = 'vertical';
-        } else if (direction === 'left') {
-          nextPanes = [newPane, currentPanes[0]];
-          nextLayout = 'vertical';
-        } else if (direction === 'down') {
-          nextPanes = [currentPanes[0], newPane];
-          nextLayout = 'horizontal';
-        } else if (direction === 'up') {
-          nextPanes = [newPane, currentPanes[0]];
-          nextLayout = 'horizontal';
-        }
-      } else if (currentPanes.length === 2) {
-        if (activeTab.layout === 'vertical') {
-          if (direction === 'down' || direction === 'up') {
-            if (activeIdx === 0) {
-              nextLayout = 'main-right';
-              const insertIdx = direction === 'down' ? 1 : 0;
-              nextPanes.splice(insertIdx, 0, newPane);
-            } else {
-              nextLayout = 'main-left';
-              const insertIdx = direction === 'down' ? 2 : 1;
-              nextPanes.splice(insertIdx, 0, newPane);
-            }
-          } else {
-            nextLayout = '3-columns';
-            const insertIdx = direction === 'right' ? activeIdx + 1 : activeIdx;
-            nextPanes.splice(insertIdx, 0, newPane);
-          }
-        } else if (activeTab.layout === 'horizontal') {
-          if (direction === 'right' || direction === 'left') {
-            if (activeIdx === 0) {
-              nextLayout = 'main-bottom';
-              const insertIdx = direction === 'right' ? 1 : 0;
-              nextPanes.splice(insertIdx, 0, newPane);
-            } else {
-              nextLayout = 'main-top';
-              const insertIdx = direction === 'right' ? 2 : 1;
-              nextPanes.splice(insertIdx, 0, newPane);
-            }
-          } else {
-            nextLayout = '3-rows';
-            const insertIdx = direction === 'down' ? activeIdx + 1 : activeIdx;
-            nextPanes.splice(insertIdx, 0, newPane);
-          }
-        } else {
-          nextLayout = 'main-left';
-          nextPanes.push(newPane);
-        }
-      } else if (currentPanes.length === 3) {
-        if (activeTab.layout === '3-columns' && (direction === 'right' || direction === 'left')) {
-          nextLayout = '4-columns';
-          const insertIdx = direction === 'right' ? activeIdx + 1 : activeIdx;
-          nextPanes.splice(insertIdx, 0, newPane);
-        } else {
-          nextLayout = 'grid';
-          const insertIdx = direction === 'right' || direction === 'down' ? activeIdx + 1 : activeIdx;
-          nextPanes.splice(insertIdx, 0, newPane);
-        }
-      }
+      const clone = source && source.kind !== 'serial' && h.id === source.hostId ? source : undefined;
+      // Local shells are asked the OS: one that never emits OSC 7 would otherwise leave the
+      // tracked directory stuck at wherever the shell started. SSH relies on the OSC 7 hook.
+      const liveSid = clone ? registry.get(clone.id)?.sessionId : null;
+      const osCwd = clone?.isLocal && liveSid ? await bridge.localPtyCwd(liveSid) : null;
+      const cwd = osCwd ?? (clone ? registry.get(clone.id)?.cwd : undefined);
+      // A new SSH session already starts in the user's home directory, so only a different
+      // directory is worth a `cd` (which would otherwise show up as a typed command).
+      const user = h.username;
+      const atRemoteHome =
+        !clone?.isLocal && !!user && (cwd === `/home/${user}` || cwd === `/Users/${user}` || (user === 'root' && cwd === '/root'));
+      const newPane: Pane = {
+        id: uid(),
+        hostId: h.id,
+        isLocal: h.id === LOCAL_HOST.id,
+        ...(clone?.customShell ? { customShell: clone.customShell } : {}),
+        ...(cwd && cwd.startsWith('/') && !atRemoteHome ? { initialCwd: cwd } : {}),
+      };
+      const anchorId = source && activeTab.panes.some((p) => p.id === source.id) ? source.id : activeTab.activePaneId;
 
       setTabs((ts) =>
-        ts.map((t) =>
-          t.id !== activeTab.id
-            ? t
-            : {
-                ...t,
-                panes: nextPanes,
-                layout: nextLayout,
-                activePaneId: newPane.id,
-                title: t.panes.length ? `${t.title.split(' +')[0]} +${nextPanes.length - 1}` : h.label,
-              }
-        )
+        ts.map((t) => {
+          if (t.id !== activeTab.id) return t;
+          const current = tabTree(t);
+          const anchor = current ? (hasLeaf(current, anchorId) ? anchorId : lastLeafId(current)) : null;
+          const tree = current && anchor ? splitLeaf(current, anchor, newPane.id, direction) : leaf(newPane.id);
+          const panes = [...t.panes, newPane];
+          return {
+            ...t,
+            panes,
+            tree,
+            layout: undefined,
+            activePaneId: newPane.id,
+            title: t.panes.length ? `${t.title.split(' +')[0]} +${panes.length - 1}` : h.label,
+          };
+        })
       );
       toast(`Split ${direction} with ${h.label}`);
     },
-    [activeTab, activePane, hostMap, openHost, toast]
+    [activeTab, activePane, hostMap, openHost, toast, maximizedPaneId, markHostRecent]
   );
 
   const splitWith = useCallback(
@@ -1132,11 +1072,44 @@ export default function App() {
       if (maximizedPaneId) {
         setMaximizedPaneId(null);
       }
-      setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, layout: newLayout } : t)));
+      setTabs((ts) =>
+        ts.map((t) => {
+          if (t.id !== activeTab.id) return t;
+          const current = tabTree(t);
+          if (!current) return t;
+          return { ...t, layout: newLayout, tree: treeFromLayout(newLayout, leafIds(current)) };
+        })
+      );
       toast(`Switched layout: ${getLayoutDescription(newLayout)}`);
     },
-    [activeTab, toast]
+    [activeTab, maximizedPaneId, toast]
   );
+
+  const equalizeActiveTab = useCallback(() => {
+    if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length < 2) return;
+    setTabs((ts) =>
+      ts.map((t) => {
+        if (t.id !== activeTab.id) return t;
+        const current = tabTree(t);
+        return current ? { ...t, tree: equalize(current) } : t;
+      })
+    );
+    toast('Equalized splits');
+  }, [activeTab, toast]);
+
+  const resizeSplit = useCallback((tabId: string, splitId: string, ratio: number) => {
+    setTabs((ts) =>
+      ts.map((t) => {
+        if (t.id !== tabId || t.kind === 'sftp') return t;
+        const current = tabTree(t);
+        if (!current) return t;
+        const next = setRatio(current, splitId, ratio);
+        return next === t.tree ? t : { ...t, tree: next };
+      })
+    );
+  }, []);
+
+  const resetSplit = useCallback((tabId: string, splitId: string) => resizeSplit(tabId, splitId, 0.5), [resizeSplit]);
 
   const applyLayoutPreset = useCallback(
     (preset: LayoutPreset) => {
@@ -1158,14 +1131,17 @@ export default function App() {
           isLocal: isLocal ?? (hostId === LOCAL_HOST.id),
         };
       });
+      if (newPanes.length === 0) return;
 
+      const ids = newPanes.map((p) => p.id);
+      const tree = (preset.tree ? fromPresetTree(preset.tree, ids) : null) ?? treeFromLayout(preset.layout, ids);
       const tab: Tab = {
         id: uid(),
         title: preset.name,
         color: theme.accent,
         panes: newPanes,
-        layout: preset.layout,
-        activePaneId: newPanes[0]?.id ?? '',
+        tree,
+        activePaneId: ids[0],
       };
 
       setTabs((ts) => [...ts, tab]);
@@ -1178,8 +1154,10 @@ export default function App() {
 
   const handleSavePreset = () => {
     if (!activeTab || activeTab.panes.length < 2) return;
+    const tree = tabTree(activeTab);
+    if (!tree) return;
     const name = presetNameInput.trim() || `Workspace ${userPresets.length + 1}`;
-    const newPreset = createUserPreset(name, activeTab.layout, activeTab.panes, hostMap);
+    const newPreset = createUserPreset(name, tree, activeTab.panes, hostMap);
     const updated = [newPreset, ...userPresets];
     setUserPresets(updated);
     saveUserLayoutPresets(updated);
@@ -1214,20 +1192,42 @@ export default function App() {
     }
   }, [activeTab, maximizedPaneId]);
 
-  const navigateSplitDirection = useCallback((direction: 'left' | 'right' | 'up' | 'down') => {
-    if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
-    const nextPaneId = getAdjacentPaneId(activeTab.activePaneId, activeTab.panes, activeTab.layout, direction);
-    if (nextPaneId && nextPaneId !== activeTab.activePaneId) {
-      setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: nextPaneId } : t)));
-      const live = registry.get(nextPaneId);
-      if (live?.term) {
-        live.term.focus();
-      }
+  /** Focus a pane by id, keeping a zoomed pane zoomed onto the new target. */
+  const focusPaneInTab = useCallback(
+    (tabId: string, paneId: string) => {
+      setTabs((ts) => ts.map((t) => (t.id === tabId && t.activePaneId !== paneId ? { ...t, activePaneId: paneId } : t)));
+      registry.get(paneId)?.term?.focus();
       if (maximizedPaneId) {
-        setMaximizedPaneId(nextPaneId);
+        setMaximizedPaneId(paneId);
       }
+    },
+    [maximizedPaneId]
+  );
+
+  /** Pane ids in visual (left-to-right, top-to-bottom) order. */
+  const visualPaneOrder = useCallback((t: Tab): string[] => {
+    const tree = tabTree(t);
+    return tree ? leafIds(tree) : t.panes.map((p) => p.id);
+  }, []);
+
+  const navigateSplitDirection = useCallback((direction: SplitDirection) => {
+    if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
+    const tree = tabTree(activeTab);
+    if (!tree) return;
+    const nextPaneId = neighborPane(tree, activeTab.activePaneId, direction);
+    if (nextPaneId && nextPaneId !== activeTab.activePaneId) {
+      focusPaneInTab(activeTab.id, nextPaneId);
     }
-  }, [activeTab, maximizedPaneId]);
+  }, [activeTab, focusPaneInTab]);
+
+  /** Cycle focus through panes in visual order. */
+  const cyclePane = useCallback((step: 1 | -1) => {
+    if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
+    const order = visualPaneOrder(activeTab);
+    const idx = order.indexOf(activeTab.activePaneId);
+    const next = order[(idx + step + order.length) % order.length];
+    if (next) focusPaneInTab(activeTab.id, next);
+  }, [activeTab, focusPaneInTab, visualPaneOrder]);
 
   const swapPanes = useCallback(
     (tabId: string, paneIdA: string, paneIdB: string) => {
@@ -1235,16 +1235,11 @@ export default function App() {
       setTabs((ts) =>
         ts.map((t) => {
           if (t.id !== tabId) return t;
-          const idxA = t.panes.findIndex((p) => p.id === paneIdA);
-          const idxB = t.panes.findIndex((p) => p.id === paneIdB);
-          if (idxA === -1 || idxB === -1) return t;
-          const nextPanes = [...t.panes];
-          const temp = nextPanes[idxA];
-          nextPanes[idxA] = nextPanes[idxB];
-          nextPanes[idxB] = temp;
+          const current = tabTree(t);
+          if (!current || !hasLeaf(current, paneIdA) || !hasLeaf(current, paneIdB)) return t;
           return {
             ...t,
-            panes: nextPanes,
+            tree: swapLeaves(current, paneIdA, paneIdB),
             activePaneId: paneIdA,
           };
         })
@@ -1265,10 +1260,12 @@ export default function App() {
   );
 
   const swapSplitDirection = useCallback(
-    (direction: 'left' | 'right' | 'up' | 'down') => {
+    (direction: SplitDirection) => {
       if (!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length <= 1) return;
+      const tree = tabTree(activeTab);
+      if (!tree) return;
       const currentId = activeTab.activePaneId;
-      const targetId = getAdjacentPaneId(currentId, activeTab.panes, activeTab.layout, direction);
+      const targetId = neighborPane(tree, currentId, direction);
       if (targetId && targetId !== currentId) {
         swapPanes(activeTab.id, currentId, targetId);
       }
@@ -1303,14 +1300,19 @@ export default function App() {
         const closing = t.panes.find((p) => p.id === paneId);
         if (closing) cleanupPaneSession(closing);
         const panes = t.panes.filter((p) => p.id !== paneId);
+        const before = tabTree(t);
+        const removed = before && hasLeaf(before, paneId) ? removeLeaf(before, paneId) : null;
+        const tree = ensureTree(removed ? removed.tree : before, panes.map((p) => p.id), t.layout) ?? undefined;
+        const heir = removed?.focus && panes.some((p) => p.id === removed.focus) ? removed.focus : panes[0]?.id ?? '';
         return {
           ...t,
           panes,
-          layout: layoutFor(panes.length, t.layout),
-          activePaneId: t.activePaneId === paneId ? panes[0]?.id ?? '' : t.activePaneId,
+          tree,
+          layout: undefined,
+          activePaneId: t.activePaneId === paneId ? heir : t.activePaneId,
           title: panes.length > 1 ? `${t.title.split(' +')[0]} +${panes.length - 1}` : hostMap.get(panes[0]?.hostId ?? '')?.label ?? t.title,
         };
-      }).filter((t) => t.panes.length);
+      }).filter((t) => t.kind === 'sftp' || t.panes.length);
     });
   }, [hostMap, cleanupPaneSession]);
 
@@ -1610,16 +1612,7 @@ export default function App() {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
-          const idx = activeTab.panes.findIndex((p) => p.id === activeTab.activePaneId);
-          const nextIdx = (idx + 1) % activeTab.panes.length;
-          const nextP = activeTab.panes[nextIdx];
-          if (nextP) {
-            setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: nextP.id } : t)));
-            registry.get(nextP.id)?.term?.focus();
-            if (maximizedPaneId) {
-              setMaximizedPaneId(nextP.id);
-            }
-          }
+          cyclePane(1);
           return;
         }
       }
@@ -1627,16 +1620,7 @@ export default function App() {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
-          const idx = activeTab.panes.findIndex((p) => p.id === activeTab.activePaneId);
-          const prevIdx = (idx - 1 + activeTab.panes.length) % activeTab.panes.length;
-          const prevP = activeTab.panes[prevIdx];
-          if (prevP) {
-            setTabs((ts) => ts.map((t) => (t.id === activeTab.id ? { ...t, activePaneId: prevP.id } : t)));
-            registry.get(prevP.id)?.term?.focus();
-            if (maximizedPaneId) {
-              setMaximizedPaneId(prevP.id);
-            }
-          }
+          cyclePane(-1);
           return;
         }
       }
@@ -1673,20 +1657,39 @@ export default function App() {
         return;
       }
 
-      // ── Split Pane Vertical / Right (Ctrl+Shift+D) ──
-      if (matchesShortcut(e, shortcuts.split_vertical?.keys || 'Ctrl+Shift+D')) {
+      // ── Instant splits: copy the focused pane, no menu ──
+      // Ctrl+Shift+D / E split right / down; Alt+Shift+D / E split left / up.
+      const instantSplits: Array<[string, string, SplitDirection]> = [
+        ['split_vertical', 'Ctrl+Shift+D', 'right'],
+        ['split_horizontal', 'Ctrl+Shift+E', 'down'],
+        ['split_left', 'Alt+Shift+D', 'left'],
+        ['split_up', 'Alt+Shift+E', 'up'],
+      ];
+      for (const [id, fallback, direction] of instantSplits) {
+        if (matchesShortcut(e, shortcuts[id]?.keys || fallback) && activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          splitPaneInDirection(direction);
+          return;
+        }
+      }
+
+      // ── Split with a different host (opens the menu) ──
+      if (matchesShortcut(e, shortcuts.split_menu?.keys || 'Ctrl+Shift+O')) {
         e.preventDefault();
         e.stopPropagation();
-        setSplitMenu((prev) => (prev?.direction === 'right' && prev.tab === 'split' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: 400, top: 45 }));
+        setSplitMenu((prev) => (prev?.tab === 'split' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: 400, top: 45 }));
         return;
       }
 
-      // ── Split Pane Horizontal / Down (Ctrl+Shift+E) ──
-      if (matchesShortcut(e, shortcuts.split_horizontal?.keys || 'Ctrl+Shift+E')) {
-        e.preventDefault();
-        e.stopPropagation();
-        setSplitMenu((prev) => (prev?.direction === 'down' && prev.tab === 'split' ? null : { tab: 'split', direction: 'down', pref: 'horizontal', left: 430, top: 45 }));
-        return;
+      // ── Equalize all splits in the tab (Ctrl+Shift+N) ──
+      if (matchesShortcut(e, shortcuts.equalize_splits?.keys || 'Ctrl+Shift+N')) {
+        if (activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          equalizeActiveTab();
+          return;
+        }
       }
 
       // ── Open Layout & Presets Menu (Ctrl+Shift+L) ──
@@ -1730,6 +1733,17 @@ export default function App() {
         e.stopPropagation();
         setZen((v) => !v);
         return;
+      }
+
+      // ── Command History search (Ctrl+Shift+R) ──
+      if (matchesShortcut(e, shortcuts.command_history?.keys || 'Ctrl+Shift+R')) {
+        const live = activePaneId ? registry.get(activePaneId) : undefined;
+        if (live?.openHistory) {
+          e.preventDefault();
+          e.stopPropagation();
+          live.openHistory();
+          return;
+        }
       }
 
       // ── Toggle Sidebar Rail (Ctrl+Shift+B) ──
@@ -1776,6 +1790,10 @@ export default function App() {
     showSettings,
     shortcuts,
     navigateSplitDirection,
+    swapSplitDirection,
+    cyclePane,
+    splitPaneInDirection,
+    equalizeActiveTab,
     closePane,
     toggleMaximizePane,
     toast,
@@ -2285,7 +2303,7 @@ export default function App() {
             )}
             <button
               title="Split vertical (⌘⇧D)"
-              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
+              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= MAX_PANES_PER_TAB}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 setSplitMenu((prev) => (prev?.tab === 'split' && prev.direction === 'right' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: rect.left, top: rect.bottom + 6 }));
@@ -2309,7 +2327,7 @@ export default function App() {
             </button>
             <button
               title="Split horizontal (⌘⇧E)"
-              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= 4}
+              disabled={!activeTab || (activeTab?.panes.length ?? 0) >= MAX_PANES_PER_TAB}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect();
                 setSplitMenu((prev) => (prev?.tab === 'split' && prev.direction === 'down' ? null : { tab: 'split', direction: 'down', pref: 'horizontal', left: rect.left, top: rect.bottom + 6 }));
@@ -2544,62 +2562,75 @@ export default function App() {
                           Split the current tab into 2+ panes to switch between multi-pane geometries.
                         </div>
                       ) : (
-                        <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
-                          {(
-                            activeTab.panes.length === 2
-                              ? [
-                                  { layout: 'vertical' as Layout, label: 'Vertical Split', desc: '2 Columns', icon: Columns2 },
-                                  { layout: 'horizontal' as Layout, label: 'Horizontal Split', desc: '2 Rows', icon: Rows2 },
-                                ]
-                              : activeTab.panes.length === 3
-                              ? [
-                                  { layout: 'main-left' as Layout, label: 'Main Left', desc: 'Large left + 2 right', icon: PanelLeft },
-                                  { layout: 'main-right' as Layout, label: 'Main Right', desc: '2 left + large right', icon: PanelLeft },
-                                  { layout: 'main-top' as Layout, label: 'Main Top', desc: 'Wide top + 2 bottom', icon: PanelTop },
-                                  { layout: 'main-bottom' as Layout, label: 'Main Bottom', desc: '2 top + wide bottom', icon: PanelTop },
-                                  { layout: '3-columns' as Layout, label: '3 Columns', desc: '3 equal vertical cols', icon: Columns3 },
-                                  { layout: '3-rows' as Layout, label: '3 Rows', desc: '3 equal horizontal rows', icon: Rows2 },
-                                ]
-                              : [
-                                  { layout: 'grid' as Layout, label: '2x2 Grid', desc: '4 equal quadrants', icon: Grid2x2 },
-                                  { layout: '4-columns' as Layout, label: '4 Columns', desc: '4 vertical columns', icon: Columns3 },
-                                ]
-                          ).map((item) => {
-                            const isCurrent = activeTab.layout === item.layout;
-                            const IconComponent = item.icon;
-                            return (
-                              <button
-                                key={item.layout}
-                                type="button"
-                                onClick={() => {
-                                  changeActiveTabLayout(item.layout);
-                                  setSplitMenu(null);
-                                }}
-                                className={cn(
-                                  'flex flex-col items-start p-2 rounded-lg border text-left transition',
-                                  isCurrent
-                                    ? 'bg-white/10 text-white'
-                                    : 'bg-white/[0.03] text-slate-300 hover:bg-white/[0.07] border-white/5'
-                                )}
-                                style={
-                                  isCurrent
-                                    ? {
-                                        backgroundColor: `${theme.accent}20`,
-                                        borderColor: `${theme.accent}60`,
-                                        boxShadow: `0 0 10px ${theme.accent}20`,
-                                      }
-                                    : undefined
-                                }
-                              >
-                                <div className="flex items-center gap-1.5 w-full">
-                                  <IconComponent className="h-3.5 w-3.5" style={{ color: isCurrent ? theme.accent : undefined }} />
-                                  <span className="text-xs font-semibold">{item.label}</span>
-                                </div>
-                                <span className="text-[10px] text-slate-400 mt-0.5">{item.desc}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
+                        <>
+                          <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto pr-0.5">
+                            {(() => {
+                              const n = activeTab.panes.length;
+                              const items: Array<{ layout: Layout; label: string; desc: string; icon: typeof Columns3 }> = [
+                                { layout: 'columns', label: 'Columns', desc: `${n} side by side`, icon: Columns3 },
+                                { layout: 'rows', label: 'Rows', desc: `${n} stacked`, icon: Rows2 },
+                                ...(n >= 3
+                                  ? [
+                                      { layout: 'grid' as Layout, label: 'Grid', desc: 'As square as possible', icon: Grid2x2 },
+                                      { layout: 'main-left' as Layout, label: 'Main Left', desc: 'Large left, rest stacked', icon: PanelLeft },
+                                      { layout: 'main-right' as Layout, label: 'Main Right', desc: 'Rest stacked, large right', icon: PanelLeft },
+                                      { layout: 'main-top' as Layout, label: 'Main Top', desc: 'Wide top, rest below', icon: PanelTop },
+                                      { layout: 'main-bottom' as Layout, label: 'Main Bottom', desc: 'Rest above, wide bottom', icon: PanelTop },
+                                    ]
+                                  : []),
+                              ];
+                              return items.map((item) => {
+                                const isCurrent = activeTab.layout === item.layout;
+                                const IconComponent = item.icon;
+                                return (
+                                  <button
+                                    key={item.layout}
+                                    type="button"
+                                    onClick={() => {
+                                      changeActiveTabLayout(item.layout);
+                                      setSplitMenu(null);
+                                    }}
+                                    className={cn(
+                                      'flex flex-col items-start p-2 rounded-lg border text-left transition',
+                                      isCurrent
+                                        ? 'bg-white/10 text-white'
+                                        : 'bg-white/[0.03] text-slate-300 hover:bg-white/[0.07] border-white/5'
+                                    )}
+                                    style={
+                                      isCurrent
+                                        ? {
+                                            backgroundColor: `${theme.accent}20`,
+                                            borderColor: `${theme.accent}60`,
+                                            boxShadow: `0 0 10px ${theme.accent}20`,
+                                          }
+                                        : undefined
+                                    }
+                                  >
+                                    <div className="flex items-center gap-1.5 w-full">
+                                      <IconComponent className="h-3.5 w-3.5" style={{ color: isCurrent ? theme.accent : undefined }} />
+                                      <span className="text-xs font-semibold">{item.label}</span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-400 mt-0.5">{item.desc}</span>
+                                  </button>
+                                );
+                              });
+                            })()}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              equalizeActiveTab();
+                              setSplitMenu(null);
+                            }}
+                            className="flex w-full items-center justify-between rounded-lg border border-white/5 bg-white/[0.03] px-2.5 py-1.5 text-left text-xs text-slate-200 transition hover:bg-white/[0.07]"
+                          >
+                            <span className="font-semibold">Equalize splits</span>
+                            <span className="font-mono text-[10px] text-slate-500">Ctrl+Shift+N</span>
+                          </button>
+                          <div className="px-1 text-[10px] leading-snug text-slate-500">
+                            Drag the dividers between panes to resize; double-click one to split evenly.
+                          </div>
+                        </>
                       )}
                     </div>
                   )}
@@ -3198,6 +3229,14 @@ export default function App() {
             }
             const isSplit = t.panes.length > 1;
             const currentTabMaximized = (isSplit && t.id === activeTabId) ? maximizedPaneId : null;
+            // Desktop splits are laid out from the tab's split tree, each pane absolutely placed so a
+            // split, close or resize never re-parents (and so never remounts) a terminal. Phones and a
+            // zoomed pane fall back to one flex box that shows a single pane.
+            const tree = isSplit ? tabTree(t) : null;
+            const freeForm = !!tree && !currentTabMaximized && !mobile;
+            const rects = freeForm && tree ? computeRects(tree) : null;
+            const dividers = freeForm && tree && draggedPaneId === null ? computeSplits(tree) : [];
+            const visualIndex = new Map((tree ? leafIds(tree) : t.panes.map((p) => p.id)).map((id, i) => [id, i]));
             return (
               <div
                 key={t.id}
@@ -3205,7 +3244,7 @@ export default function App() {
                 className={cn(
                   'absolute inset-0',
                   (t.id !== activeTabId || (mobile && mobilePage !== 'terminals')) && 'invisible',
-                  isSplit && !currentTabMaximized ? getSplitContainerClasses(t.layout, t.panes.length) : 'flex p-0'
+                  freeForm ? 'bg-black/40' : 'flex p-0'
                 )}
               >
                 {[...t.panes]
@@ -3213,20 +3252,20 @@ export default function App() {
                   .map((p) => {
                     const h = hostMap.get(p.hostId);
                     if (!h) return null;
-                    const slotIndex = t.panes.findIndex((item) => item.id === p.id);
+                    const rect = rects?.get(p.id);
                     const isPaneMaximized = currentTabMaximized === p.id;
                     const isPaneHidden = currentTabMaximized !== null && currentTabMaximized !== p.id;
-                    const spanClasses = isSplit && !currentTabMaximized ? getPaneSpanClasses(t.layout, slotIndex, t.panes.length) : '';
                     const isDraggingThis = draggedPaneId === p.id;
                     const isDropTarget = dropTargetPaneId === p.id && draggedPaneId !== null && draggedPaneId !== p.id;
                     return (
                       <div
                         key={p.id}
+                        data-pane-id={p.id}
+                        data-pane-active={t.activePaneId === p.id ? 'true' : undefined}
                         inert={isPaneHidden || undefined}
-                        style={{ order: currentTabMaximized ? (isPaneMaximized ? 0 : 99) : slotIndex }}
+                        style={rect ? paneRectStyle(rect) : { order: currentTabMaximized ? (isPaneMaximized ? 0 : 99) : (visualIndex.get(p.id) ?? 0) }}
                         className={cn(
-                          'min-h-0 min-w-0 h-full w-full flex relative',
-                          spanClasses,
+                          rect ? 'absolute min-h-0 min-w-0 flex' : 'min-h-0 min-w-0 h-full w-full flex relative',
                           isDraggingThis && 'opacity-50 ring-2 ring-cyan-400/60 ring-dashed',
                           t.activePaneId !== p.id && mobile && 'max-md:hidden',
                           isPaneHidden
@@ -3304,7 +3343,7 @@ export default function App() {
                           isSplit={isSplit}
                           isMaximized={isPaneMaximized}
                           onToggleMaximize={() => toggleMaximizePane(p.id)}
-                          onSplitPane={(dir) => splitPaneInDirection(dir)}
+                          onSplitPane={(dir) => splitPaneInDirection(dir, undefined, p.id)}
                           onDragStart={(id) => setDraggedPaneId(id)}
                           onDragEnd={() => {
                             setDraggedPaneId(null);
@@ -3341,6 +3380,16 @@ export default function App() {
                     </div>
                   );
                 })}
+                {dividers.map((s) => (
+                  <SplitDivider
+                    key={s.id}
+                    tabId={t.id}
+                    split={s}
+                    accent={theme.accent}
+                    onRatio={resizeSplit}
+                    onReset={resetSplit}
+                  />
+                ))}
               </div>
             );
           })}
@@ -3359,7 +3408,21 @@ export default function App() {
 
         {/* Zen restore */}
         {zen && (
-          <button onClick={() => setZen(false)} title="Exit Zen (⌘⇧Z)" className="max-md:hidden absolute bottom-10 right-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#0e131d]/95 text-slate-400 shadow-2xl backdrop-blur hover:text-white"><Minimize2 className="h-4 w-4" /></button>
+          <div className={cn('group max-md:hidden absolute right-0 z-40 h-9 w-9', showStatusBar ? 'bottom-7' : 'bottom-0')}>
+            <button
+              type="button"
+              onClick={() => setZen(false)}
+              title="Exit Zen (⌘⇧Z)"
+              aria-label="Exit zen mode"
+              className={cn(
+                // Faint at rest so it never competes with output; full strength on hover or keyboard focus.
+                'absolute bottom-1.5 right-1.5 grid h-6 w-6 place-items-center rounded-md border border-white/10 bg-[#0e131d]/80 text-slate-400 opacity-30 backdrop-blur transition-opacity duration-200',
+                'hover:text-white focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400/60 group-hover:opacity-100'
+              )}
+            >
+              <Minimize2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
         )}
       </main>
 
@@ -4547,7 +4610,7 @@ export default function App() {
                 <div className="flex items-center justify-between text-slate-300">
                   <span className="text-slate-400">Layout Geometry:</span>
                   <span className="font-mono font-semibold" style={{ color: theme.accent }}>
-                    {getLayoutDescription(activeTab.layout)}
+                    {getLayoutDescription(activeTab.layout ?? 'custom')}
                   </span>
                 </div>
                 <div className="flex items-start justify-between text-slate-300">

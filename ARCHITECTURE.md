@@ -29,6 +29,7 @@ drexiusterminal/
 │   │   ├── LockScreen.tsx              # Master-password unlock
 │   │   ├── HostSidebar.tsx / HostModal.tsx   # Connection profiles (vault-backed) + Quick Connect
 │   │   ├── TerminalPane.tsx            # xterm.js, OSC-7 cwd tracking, search, broadcast input
+│   │   ├── SplitDivider.tsx            # Draggable / keyboard-resizable divider between two split panes
 │   │   ├── AIPanel.tsx                 # AI assistant, provider/key/proxy settings, Run/Insert gating
 │   │   ├── SftpTab.tsx                 # Graphical local/remote file manager
 │   │   ├── SnippetsPanel.tsx           # Snippet library → broadcast to sessions
@@ -42,6 +43,7 @@ drexiusterminal/
 │       ├── bridge.ts                   # Single IPC surface: Tauri invoke() ⇄ in-browser demo sandbox
 │       ├── demoShell.ts                # Sandbox shell & virtual FS (preview mode only)
 │       ├── ollama.ts                   # AI provider engine (all providers, not just Ollama)
+│       ├── splitTree.ts                # Pane layout as a binary split tree (pure; unit-tested)
 │       ├── sessions.ts · themes.ts · os.ts · types.ts
 │       └── (utils/cn.ts)
 └── src-tauri/                          # Rust core (vault, SSH, AI relay; WebView can handle secrets)
@@ -68,6 +70,34 @@ drexiusterminal/
         ├── cloud_sync.rs               # Cloud fleet sync (Hetzner, DigitalOcean, Proxmox VE) → import hosts
         └── docker.rs                   # Container listing / lifecycle / logs, locally or over SSH
 ```
+
+## Split panes
+
+A terminal tab's panes are the leaves of a **binary split tree** (`src/lib/splitTree.ts`). Each
+internal node divides its rectangle in two, side by side (`row`) or stacked (`column`), at an
+adjustable ratio. Splitting the focused pane replaces its leaf with a node holding the old pane and
+the new one, so any pane can be split in any direction at any depth. There is no layout enum to
+outgrow and nothing snaps to a grid; the only cap is `MAX_PANES_PER_TAB` (16) in `App.tsx`, which
+guards resources (each pane is a PTY or SSH session plus an xterm renderer), not geometry.
+
+* **Rendering.** `App.tsx` turns the tree into unit-space rectangles (`computeRects`) and places
+  every pane with an absolutely positioned `calc()` box, so a split, close, swap or resize
+  changes styles only and never re-parents (and so never remounts) a terminal. Dividers
+  (`SplitDivider.tsx`) are drawn from `computeSplits`. On phones and while a pane is zoomed, the
+  same panes fall back to one flex box that shows a single pane.
+* **Navigation is geometric.** `neighborPane` picks the pane that actually touches the focused
+  pane's edge, so focus and swap shortcuts behave in any arrangement; `Ctrl+]` / `Ctrl+[` cycle in
+  visual order.
+* **Persistence and migration.** `Tab.tree` is saved with the workspace. Tabs and presets saved
+  before split trees only carry a named `layout`; `ensureTree` rebuilds the identical geometry from
+  it, and also repairs a tree that drifted from the pane list. Trees come from `localStorage` and
+  presets, so `isLayoutNode` validates the shape first.
+* **Copying a pane.** `Ctrl+Shift+D/E` (right/down) and `Alt+Shift+D/E` (left/up) split instantly
+  with a copy of the focused pane: same host (a fresh session), same local shell, and the same
+  working directory (`Pane.initialCwd`, from OSC 7). A local copy is spawned in that directory, so
+  nothing is typed. An SSH copy types a `cd` (POSIX paths only, control characters rejected,
+  single-quoted), and only when the directory is not already the user's home. A serial pane cannot be duplicated, so it yields a local shell. `Ctrl+Shift+O`
+  opens the host-picker menu instead; `Ctrl+Shift+N` equalizes every split.
 
 ## 1. Trust boundaries
 

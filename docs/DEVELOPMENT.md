@@ -54,11 +54,12 @@ drexius-terminal/
 ├── package.json               # Frontend scripts and dependencies
 ├── src/                       # React frontend (the WebView)
 │   ├── App.tsx                # Workspace shell: lock screen, rail, tabs, panes, panels
-│   ├── components/            # LockScreen, TerminalPane, AIPanel, SftpTab, HostSidebar, …
+│   │   ├── components/            # LockScreen, TerminalPane, AIPanel, SftpTab, HostSidebar, …
 │   └── lib/
 │       ├── bridge.ts          # THE IPC surface: Tauri invoke() ⇄ in-browser demo sandbox
 │       ├── demoShell.ts       # Sandbox shell and virtual filesystem (preview mode only)
 │       ├── ollama.ts          # Multi-provider AI engine
+│       ├── splitTree.ts       # Pane layout as a binary split tree (pure, unit-tested)
 │       └── sessions.ts        # Imperative LivePane registry used by mobile drawers
 ├── src-tauri/                 # Rust core
 │   ├── Cargo.toml · build.rs · tauri.conf.json
@@ -120,13 +121,15 @@ Argon2id, real SSH, the OS keychain, the Rust AI relay, and real pairing.
 
 ## 4. The test matrix
 
-Five suites. Each catches a different class of regression.
+Several suites. Each catches a different class of regression.
 
 | Suite | Command | Covers |
 |---|---|---|
 | **Frontend typecheck** | `npm run typecheck` | `tsc --noEmit` over the whole frontend; the contract between `src/lib/types.ts` and the component bindings |
 | **Frontend build** | `npm run build` | Typecheck *plus* a real Vite bundle, including the single-file plugin |
 | **Mobile unit tests** | `npm run test:mobile` | The accessory-key pipeline: ASCII control mapping, ALT and combined modifiers, normal vs application cursor-mode arrows, paste/IME preservation, every accessory key sequence |
+| **Split-tree unit tests** | `npm run test:split` | The pure pane-layout logic in `src/lib/splitTree.ts`: splitting in every direction with no pane limit, tiling without gaps or overlap, close/swap/resize/equalize, geometric focus navigation, migration of every legacy layout name, repair of corrupted saved trees, and preset round trips |
+| **Split-layout browser smoke** | `npm run test:split-ui` | Real Chromium, desktop size: instant `Ctrl+Shift+D/E` splits without a menu, eight panes, a free-form (non-grid) arrangement, divider drag and double-click reset, directional focus, cycling, closing and equalizing. Needs `CHROMIUM_PATH` and the Vite dev server like the mobile smoke test |
 | **Mobile browser smoke** | `npm run test:mobile-ui` | The real UI in a real browser: layouts at 320/390/640/767/768/1280 px, CTRL+C, ALT+X, TAB, latches, focus preservation, touch scrolling, long-press selection with handle dragging, pinch-to-zoom, drawer detents, split↔single-pane transitions |
 | **Rust core** | `cd src-tauri && cargo test --locked --no-fail-fast` | The vault, Argon2id, SQLCipher CRUD, SSH, the AI destination policy, pairing, sync, the local-FS guard, and the OpenCode policy |
 | **Relay** | `python3 -m unittest discover -s relay -v` | The reference relay's auth, blob caps, and change paging |

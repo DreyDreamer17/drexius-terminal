@@ -236,7 +236,22 @@ Rust, and unlocking brings the same terminals back.
 
 ### Can I have several terminals at once?
 
-Yes. Split vertically and horizontally, and run independent sessions in each pane.
+Yes. Split any pane in any direction, as many times as you like (up to 16 per tab), and run
+independent sessions in each. Splits are free-form rather than a fixed grid, and the dividers
+between panes can be dragged.
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Shift+D` / `Ctrl+Shift+E` | Split right / down with a copy of the focused pane (same host, same directory), instantly |
+| `Alt+Shift+D` / `Alt+Shift+E` | Split left / up the same way |
+| `Ctrl+Shift+O` | Split with a *different* host or a local shell (opens the picker) |
+| `Alt+Arrow` / `Alt+Shift+Arrow` | Move focus / swap the pane in that direction |
+| `Ctrl+]` / `Ctrl+[` | Next / previous pane |
+| `Ctrl+Shift+N` | Equalize all splits |
+| `Ctrl+Shift+M` / `Ctrl+Shift+W` | Zoom / close the focused pane |
+
+Double-click a divider to split it evenly. Every shortcut can be rebound in Settings → Shortcuts.
+
 Broadcast input sends what you type to every pane at once — useful for a fleet, and worth
 being deliberate about.
 

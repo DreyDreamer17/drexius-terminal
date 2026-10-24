@@ -49,6 +49,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:mobile
+      - run: npm run test:split
       - run: npm run test:csp
       # Not redundant with the rust job: this is the check that actually
       # protects src/lib/types.ts <-> component bindings.

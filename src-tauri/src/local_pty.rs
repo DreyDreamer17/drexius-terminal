@@ -30,10 +30,17 @@ pub enum PtyEvent {
         banner: Option<String>,
         os: Option<String>,
     },
-    Output { b64: String },
-    Cwd { path: String },
+    Output {
+        b64: String,
+    },
+    Cwd {
+        path: String,
+    },
     #[serde(rename_all = "camelCase")]
-    Disconnected { reason: String, resumable: bool },
+    Disconnected {
+        reason: String,
+        resumable: bool,
+    },
 }
 
 #[derive(Deserialize)]
@@ -84,10 +91,10 @@ impl LocalPtyManager {
             .get(session_id)
             .ok_or_else(|| AppError::SessionNotFound(session_id.into()))?;
         h.tx.try_send(cmd).map_err(|e| match e {
-            mpsc::TrySendError::Full(_) =>
-                AppError::Other("terminal input queue is full; try again in a moment".into()),
-            mpsc::TrySendError::Disconnected(_) =>
-                AppError::SessionNotFound(session_id.into()),
+            mpsc::TrySendError::Full(_) => {
+                AppError::Other("terminal input queue is full; try again in a moment".into())
+            }
+            mpsc::TrySendError::Disconnected(_) => AppError::SessionNotFound(session_id.into()),
         })
     }
 }
@@ -120,7 +127,13 @@ fn resolve_shell_candidate(
         return "/system/bin/sh".into();
     }
 
-    for cand in &["/bin/bash", "/usr/bin/bash", "/bin/zsh", "/usr/bin/zsh", "/bin/sh"] {
+    for cand in &[
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/bin/sh",
+    ] {
         if exists(cand) {
             return (*cand).into();
         }
@@ -137,12 +150,9 @@ fn detect_default_shell() -> String {
     let is_android = cfg!(target_os = "android")
         || (std::path::Path::new("/system/bin/sh").is_file()
             && !std::path::Path::new("/bin/bash").is_file());
-    resolve_shell_candidate(
-        env_val.as_deref(),
-        is_android,
-        cfg!(windows),
-        |p| std::path::Path::new(p).is_file(),
-    )
+    resolve_shell_candidate(env_val.as_deref(), is_android, cfg!(windows), |p| {
+        std::path::Path::new(p).is_file()
+    })
 }
 
 fn build_android_path(existing: Option<&str>) -> String {
@@ -232,10 +242,9 @@ pub fn local_pty_spawn(
         // Isolate the local shell's HOME inside `<app_data_dir>/home` so the user
         // starts in a clean, writable directory without exposing `drexius.vault`
         // and its sidecars in `ls`.
-        let base_data = app
-            .path()
-            .app_data_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/data/user/0/dev.drexius.terminal/files"));
+        let base_data = app.path().app_data_dir().unwrap_or_else(|_| {
+            std::path::PathBuf::from("/data/user/0/dev.drexius.terminal/files")
+        });
         let home_dir = base_data.join("home");
         let _ = std::fs::create_dir_all(&home_dir);
 
@@ -261,7 +270,10 @@ pub fn local_pty_spawn(
             build_android_path(std::env::var("PATH").ok().as_deref()),
         );
         // Compact prompt for narrow mobile viewports (replaces the 52-char `/data/user/0/...` path with `~`).
-        cmd.env("PS1", "\x1b[1;36mdrexius\x1b[0m:\x1b[1;34m${PWD/#$HOME/\x7e}\x1b[0m$ ");
+        cmd.env(
+            "PS1",
+            "\x1b[1;36mdrexius\x1b[0m:\x1b[1;34m${PWD/#$HOME/\x7e}\x1b[0m$ ",
+        );
 
         requested_cwd.unwrap_or(home_dir)
     } else {
@@ -280,8 +292,7 @@ pub fn local_pty_spawn(
 
     // Wrap child in Arc<Mutex<…>> so local_pty_close can kill it from another
     // thread while the I/O thread is blocked in reader.read().
-    let child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>> =
-        Arc::new(Mutex::new(child));
+    let child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>> = Arc::new(Mutex::new(child));
 
     let session_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = mpsc::sync_channel::<PtyCmd>(INPUT_QUEUE_CAP);
@@ -323,9 +334,7 @@ pub fn local_pty_spawn(
         os: Some(os_name.into()),
     });
 
-    let _ = on_event.send(PtyEvent::Cwd {
-        path: cwd_str,
-    });
+    let _ = on_event.send(PtyEvent::Cwd { path: cwd_str });
 
     let sid_thread = session_id.clone();
     let events_for_thread = events_shared.clone();
@@ -333,14 +342,23 @@ pub fn local_pty_spawn(
     if let Err(e) = thread::Builder::new()
         .name(format!("local-pty-{}", &sid[..8]))
         .spawn(move || {
-            pty_io_loop(pair.master, rx, &events_for_thread, &scrollback, &cwd_for_thread);
+            pty_io_loop(
+                pair.master,
+                rx,
+                &events_for_thread,
+                &scrollback,
+                &cwd_for_thread,
+            );
             // Reap the child so exited shells don't linger as zombies.
             let _ = child.lock().wait();
             let _ = events_for_thread.lock().send(PtyEvent::Disconnected {
                 reason: "shell process exited".into(),
                 resumable: false,
             });
-            app.state::<LocalPtyManager>().sessions.lock().remove(&sid_thread);
+            app.state::<LocalPtyManager>()
+                .sessions
+                .lock()
+                .remove(&sid_thread);
         })
     {
         // Spawn failed — remove the handle we just inserted so the session
@@ -383,13 +401,62 @@ pub fn local_pty_attach(
         });
     }
     if cols > 0 && rows > 0 {
-        let _ = h.tx.try_send(PtyCmd::Resize(cols, rows, cell_width, cell_height));
+        let _ =
+            h.tx.try_send(PtyCmd::Resize(cols, rows, cell_width, cell_height));
     }
     Ok(true)
 }
 
+/// The shell's current working directory, read from the operating system.
+///
+/// A shell only reports its directory (OSC 7) if it was configured to, and many are not, so the
+/// directory tracked from the output stream can be stale. Splitting a pane uses this instead so the
+/// copy starts where the user actually is. `None` if the session is gone or the platform has no way
+/// to ask (Windows).
 #[tauri::command]
-pub fn local_pty_write(session_id: String, data: String, mgr: State<'_, LocalPtyManager>) -> AppResult<()> {
+pub fn local_pty_cwd(
+    session_id: String,
+    mgr: State<'_, LocalPtyManager>,
+) -> AppResult<Option<String>> {
+    let pid = {
+        let sessions = mgr.sessions.lock();
+        match sessions.get(&session_id) {
+            Some(h) => h.child.lock().process_id(),
+            None => None,
+        }
+    };
+    Ok(pid.and_then(process_cwd))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix('n').map(str::to_owned))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+fn process_cwd(_pid: u32) -> Option<String> {
+    None
+}
+
+#[tauri::command]
+pub fn local_pty_write(
+    session_id: String,
+    data: String,
+    mgr: State<'_, LocalPtyManager>,
+) -> AppResult<()> {
     mgr.send(&session_id, PtyCmd::Write(data.into_bytes()))
 }
 
@@ -402,7 +469,10 @@ pub fn local_pty_resize(
     cell_height: Option<u32>,
     mgr: State<'_, LocalPtyManager>,
 ) -> AppResult<()> {
-    mgr.send(&session_id, PtyCmd::Resize(cols, rows, cell_width, cell_height))
+    mgr.send(
+        &session_id,
+        PtyCmd::Resize(cols, rows, cell_width, cell_height),
+    )
 }
 
 #[tauri::command]
@@ -430,7 +500,9 @@ pub fn read_file_base64(path: String) -> Result<String, String> {
         .map_err(|e| format!("Access denied by filesystem guardrails: {e}"))?;
     let meta = std::fs::metadata(&canonical).map_err(|e| format!("Cannot access path: {e}"))?;
     if !meta.is_file() {
-        return Err("Path is not a regular file (special devices and directories are blocked)".into());
+        return Err(
+            "Path is not a regular file (special devices and directories are blocked)".into(),
+        );
     }
     if meta.len() > MAX_INLINE_IMAGE_BYTES {
         return Err(format!(
@@ -513,7 +585,9 @@ fn pty_io_loop(
                         sb.drain(0..excess);
                     }
                 }
-                let _ = events.lock().send(PtyEvent::Output { b64: B64.encode(chunk) });
+                let _ = events.lock().send(PtyEvent::Output {
+                    b64: B64.encode(chunk),
+                });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(10));

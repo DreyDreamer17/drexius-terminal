@@ -1462,6 +1462,16 @@ export const bridge = {
     return '';
   },
 
+  /** The local shell's real working directory as the OS reports it (null if unknown, or in the browser sandbox). */
+  async localPtyCwd(sessionId: string): Promise<string | null> {
+    if (!isTauri) return null;
+    try {
+      return (await invoke<string | null>('local_pty_cwd', { sessionId })) ?? null;
+    } catch {
+      return null;
+    }
+  },
+
   async closeLocalPty(sessionId: string): Promise<void> {
     sessionWriteQueues.delete(sessionId);
     if (isTauri) {
