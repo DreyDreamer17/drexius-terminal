@@ -22,7 +22,8 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* https:;",
+      "dangerousDisableAssetCspModification": ["style-src"],
       "freezePrototype": false
     }
   },
