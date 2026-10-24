@@ -112,6 +112,9 @@ drexiusterminal/
 * **AI keys/proxy credentials (desktop):** `ai_configs_list` masks stored credentials and the
   AI relay injects them in Rust; when the user adds a key or proxy, its input necessarily passes
   through the WebView. Browser demo mode keeps credentials client-side (not a security boundary).
+* **Content Security Policy (CSP):** The desktop WebView enforces a strict CSP in production release builds. Two deliberate policy directives are required for terminal functionality and must not be removed:
+  - `script-src 'self' 'wasm-unsafe-eval'`: Allows WebAssembly compilation. `@xterm/addon-image` uses an internal WebAssembly decoder for inline terminal graphics (SIXEL, iTerm2, and Kitty graphics from tools like `fastfetch`). Omitting this causes WebKit/Blink engines to throw a synchronous `CompileError`, crashing the xterm escape parser and freezing terminal output.
+  - `dangerousDisableAssetCspModification: ["style-src"]`: Prevents Tauri from automatically injecting static SHA-256 hashes into the `style-src` header. Under W3C CSP Level 2/3 rules, any hash or nonce forces the browser to ignore `'unsafe-inline'`. Because `xterm.js` dynamically mutates inline `<style>` elements for font metrics and cursor blinking, disabling hash injection on `style-src` is necessary to keep `'unsafe-inline'` functional and avoid stylesheet refusals.
 * The desktop CSP's `connect-src` permits `https:` to **any** HTTPS host plus localhost/IPC;
   it is not a provider allowlist. The Rust AI relay checks configured origins before attaching
   pooled credentials, but do not treat the CSP as an exfiltration defense.

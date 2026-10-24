@@ -157,6 +157,10 @@ the CSP is not a complete boundary either. The desktop `connect-src` permits `ht
 relay's own origin checks are what actually prevent credentialed requests to an
 unexpected host.
 
+Additionally, two deliberate CSP configurations in `src-tauri/tauri.conf.json` are essential for terminal operation and must not be removed:
+- **`script-src 'self' 'wasm-unsafe-eval'`**: Enables WebAssembly compilation. `@xterm/addon-image` compiles a WebAssembly module on-the-fly to decode terminal graphics (SIXEL, iTerm2, and Kitty escape sequences from commands like `fastfetch`). Removing this causes WebKit/Blink to throw an unhandled `CompileError`, halting the xterm escape sequence parser mid-stream and freezing terminal output.
+- **`dangerousDisableAssetCspModification: ["style-src"]`**: Tells Tauri not to inject automatic SHA-256 hashes for inline stylesheets. In W3C CSP Level 2/3, if a hash or nonce is present, browsers automatically ignore `'unsafe-inline'`. Because `xterm.js` dynamically creates and mutates inline `<style>` nodes for cursor blinking, font metrics, and cell dimensions, disabling Tauri's asset modification on `style-src` preserves `'unsafe-inline'` and prevents thousands of stylesheet refusal errors.
+
 ### The browser preview is a demo, not a security boundary
 
 When you run `npm run dev` without Tauri, the app runs against a JavaScript sandbox:
