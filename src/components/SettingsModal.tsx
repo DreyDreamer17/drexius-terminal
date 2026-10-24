@@ -2419,7 +2419,7 @@ export function SettingsModal({
           {mobile && (
             <div className="pt-4 pb-6 text-center select-none">
               <span className="text-[11px] text-slate-500 font-mono tracking-wide">
-                Drexius Terminal v0.1.0
+                Drexius Terminal v0.2.0
               </span>
             </div>
           )}
@@ -2429,7 +2429,7 @@ export function SettingsModal({
         {!mobile && (
           <div className="border-t border-white/10 px-4 sm:px-6 py-3 bg-white/[0.02] flex items-center justify-between">
             <div className="text-[11px] text-slate-500 font-mono">
-              Drexius Terminal v0.1.0
+              Drexius Terminal v0.2.0
             </div>
 
             <button

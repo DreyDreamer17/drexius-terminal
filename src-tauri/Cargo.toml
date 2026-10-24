@@ -1,6 +1,6 @@
 [package]
 name = "drexius-terminal"
-version = "0.1.0"
+version = "0.2.0"
 description = "DrexiusTerminal — secure, local-first SSH client with local AI"
 authors = ["DrexiusTerminal Contributors"]
 license = "GPL-3.0-only"
