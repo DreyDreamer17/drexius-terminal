@@ -1,8 +1,9 @@
-import { useId } from 'react';
+import { memo, useId, useMemo } from 'react';
 import { markMarkup, networkDots, networkPaths, wordmarkMarkup } from '../lib/artwork';
 
-export function NetworkMark({ className = '', animated = false }: { className?: string; animated?: boolean }) {
+export const NetworkMark = memo(function NetworkMark({ className = '', animated = false }: { className?: string; animated?: boolean }) {
   const id = `mark-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
+  const html = useMemo(() => markMarkup(id), [id]);
   return (
     <svg
       className={`network-mark ${animated ? 'is-animated' : ''} ${className}`}
@@ -10,25 +11,26 @@ export function NetworkMark({ className = '', animated = false }: { className?: 
       fill="none"
       role="img"
       aria-label="DREXIUS connected hexagon symbol"
-      dangerouslySetInnerHTML={{ __html: markMarkup(id) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
-}
+});
 
-export function Wordmark({ className = '' }: { className?: string }) {
+export const Wordmark = memo(function Wordmark({ className = '' }: { className?: string }) {
   const id = `word-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
+  const html = useMemo(() => wordmarkMarkup(id), [id]);
   return (
     <svg
       className={`wordmark ${className}`}
       viewBox="0 0 466 64"
       role="img"
       aria-label="DREXIUS"
-      dangerouslySetInnerHTML={{ __html: wordmarkMarkup(id) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
-}
+});
 
-export function NetworkBackdrop() {
+export const NetworkBackdrop = memo(function NetworkBackdrop() {
   return (
     <svg className="network-backdrop" viewBox="0 0 400 860" preserveAspectRatio="none" aria-hidden="true">
       <g fill="none" stroke="currentColor" strokeWidth="0.6">
@@ -39,7 +41,7 @@ export function NetworkBackdrop() {
       ))}
     </svg>
   );
-}
+});
 
 export function SmallBrandMark() {
   return (
