@@ -1,7 +1,7 @@
 import { useMobile, useMobileViewport } from './hooks/useMobile';
 import drexiusLogo from './assets/drexius-logo.png';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
-import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX } from './lib/mobileTerminal';
+import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, clampTerminalFontSize } from './lib/mobileTerminal';
 import { MobileSheet, WorkspaceAccessContext } from './components/MobileSheet';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -129,7 +129,9 @@ import {
   saveUiPreferences,
   loadShortcuts,
   saveShortcuts,
-  matchesShortcut,
+  bindingMatches,
+  normalizeCombo,
+  DEFAULT_TERMINAL_FONT_SIZE,
   POPULAR_TERMINAL_FONTS,
   type UiPreferences,
   type ShortcutBinding,
@@ -580,7 +582,21 @@ export default function App() {
     window.addEventListener('mouseup', onMouseUp);
   }, []);
   const [themeId, setThemeId] = useState(() => localStorage.getItem('drx.theme') ?? 'drexius');
-  const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('drx.font') ?? 13));
+  const [fontSize, setFontSize] = useState(() => {
+    const stored = Number(localStorage.getItem('drx.font'));
+    return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_TERMINAL_FONT_SIZE;
+  });
+  // Mirror for the capture-phase keyboard handler, whose listener is not re-registered per zoom step.
+  const fontSizeRef = useRef(fontSize);
+  fontSizeRef.current = fontSize;
+  // Brief on-screen readout while the font size changes from the keyboard (mirrors the pinch HUD).
+  const [fontZoomHud, setFontZoomHud] = useState<number | null>(null);
+  const fontZoomHudTimer = useRef<number | null>(null);
+  const showFontZoomHud = useCallback((size: number) => {
+    setFontZoomHud(size);
+    if (fontZoomHudTimer.current !== null) window.clearTimeout(fontZoomHudTimer.current);
+    fontZoomHudTimer.current = window.setTimeout(() => setFontZoomHud(null), 900);
+  }, []);
   const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('drx.lineHeight') ?? 1.0));
   const [showThemes, setShowThemes] = useState(false);
   const [showSync, setShowSync] = useState(false);
@@ -1510,7 +1526,7 @@ export default function App() {
 
       // ── When settings modal is open, don't execute background workspace shortcuts ──
       if (showSettings) {
-        if (matchesShortcut(e, shortcuts.open_settings?.keys || 'Ctrl+,')) {
+        if (bindingMatches(e, shortcuts.open_settings, 'Ctrl+,')) {
           e.preventDefault();
           e.stopPropagation();
           setShowSettings(false);
@@ -1528,25 +1544,25 @@ export default function App() {
       if (isInput) return;
 
       // ── Directional Split Swap / Move (Alt+Shift+Arrow) ──
-      if (matchesShortcut(e, shortcuts.swap_split_left?.keys || 'Alt+Shift+ArrowLeft')) {
+      if (bindingMatches(e, shortcuts.swap_split_left, 'Alt+Shift+ArrowLeft')) {
         e.preventDefault();
         e.stopPropagation();
         swapSplitDirection('left');
         return;
       }
-      if (matchesShortcut(e, shortcuts.swap_split_right?.keys || 'Alt+Shift+ArrowRight')) {
+      if (bindingMatches(e, shortcuts.swap_split_right, 'Alt+Shift+ArrowRight')) {
         e.preventDefault();
         e.stopPropagation();
         swapSplitDirection('right');
         return;
       }
-      if (matchesShortcut(e, shortcuts.swap_split_up?.keys || 'Alt+Shift+ArrowUp')) {
+      if (bindingMatches(e, shortcuts.swap_split_up, 'Alt+Shift+ArrowUp')) {
         e.preventDefault();
         e.stopPropagation();
         swapSplitDirection('up');
         return;
       }
-      if (matchesShortcut(e, shortcuts.swap_split_down?.keys || 'Alt+Shift+ArrowDown')) {
+      if (bindingMatches(e, shortcuts.swap_split_down, 'Alt+Shift+ArrowDown')) {
         e.preventDefault();
         e.stopPropagation();
         swapSplitDirection('down');
@@ -1554,25 +1570,25 @@ export default function App() {
       }
 
       // ── Directional Split Navigation ──
-      if (matchesShortcut(e, shortcuts.focus_split_left?.keys || 'Alt+ArrowLeft')) {
+      if (bindingMatches(e, shortcuts.focus_split_left, 'Alt+ArrowLeft')) {
         e.preventDefault();
         e.stopPropagation();
         navigateSplitDirection('left');
         return;
       }
-      if (matchesShortcut(e, shortcuts.focus_split_right?.keys || 'Alt+ArrowRight')) {
+      if (bindingMatches(e, shortcuts.focus_split_right, 'Alt+ArrowRight')) {
         e.preventDefault();
         e.stopPropagation();
         navigateSplitDirection('right');
         return;
       }
-      if (matchesShortcut(e, shortcuts.focus_split_up?.keys || 'Alt+ArrowUp')) {
+      if (bindingMatches(e, shortcuts.focus_split_up, 'Alt+ArrowUp')) {
         e.preventDefault();
         e.stopPropagation();
         navigateSplitDirection('up');
         return;
       }
-      if (matchesShortcut(e, shortcuts.focus_split_down?.keys || 'Alt+ArrowDown')) {
+      if (bindingMatches(e, shortcuts.focus_split_down, 'Alt+ArrowDown')) {
         e.preventDefault();
         e.stopPropagation();
         navigateSplitDirection('down');
@@ -1580,7 +1596,7 @@ export default function App() {
       }
 
       // ── Open Settings (Ctrl/Cmd + ,) ──
-      if (matchesShortcut(e, shortcuts.open_settings?.keys || 'Ctrl+,')) {
+      if (bindingMatches(e, shortcuts.open_settings, 'Ctrl+,')) {
         e.preventDefault();
         e.stopPropagation();
         setShowSettings((v) => !v);
@@ -1588,7 +1604,7 @@ export default function App() {
       }
 
       // ── Close Active Split Pane (Ctrl+Shift+W) ──
-      if (matchesShortcut(e, shortcuts.close_pane?.keys || 'Ctrl+Shift+W')) {
+      if (bindingMatches(e, shortcuts.close_pane, 'Ctrl+Shift+W')) {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1598,7 +1614,7 @@ export default function App() {
       }
 
       // ── Toggle Maximize / Zoom Active Split Pane (Ctrl+Shift+M) ──
-      if (matchesShortcut(e, shortcuts.maximize_pane?.keys || 'Ctrl+Shift+M')) {
+      if (bindingMatches(e, shortcuts.maximize_pane, 'Ctrl+Shift+M')) {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1608,7 +1624,7 @@ export default function App() {
       }
 
       // ── Next / Previous Split Pane (Ctrl+] / Ctrl+[) ──
-      if (matchesShortcut(e, shortcuts.next_pane?.keys || 'Ctrl+]')) {
+      if (bindingMatches(e, shortcuts.next_pane, 'Ctrl+]')) {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1616,7 +1632,7 @@ export default function App() {
           return;
         }
       }
-      if (matchesShortcut(e, shortcuts.prev_pane?.keys || 'Ctrl+[')) {
+      if (bindingMatches(e, shortcuts.prev_pane, 'Ctrl+[')) {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1626,7 +1642,7 @@ export default function App() {
       }
 
       // ── New Local Terminal (Ctrl+T) ──
-      if (matchesShortcut(e, shortcuts.new_terminal?.keys || 'Ctrl+T')) {
+      if (bindingMatches(e, shortcuts.new_terminal, 'Ctrl+T')) {
         if (!inTerminal) {
           e.preventDefault();
           e.stopPropagation();
@@ -1636,7 +1652,7 @@ export default function App() {
       }
 
       // ── Quick Connect / Palette (Ctrl+K) ──
-      if (matchesShortcut(e, shortcuts.open_quick?.keys || 'Ctrl+K') || (e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) {
+      if (bindingMatches(e, shortcuts.open_quick, 'Ctrl+K') || (e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) {
         if (!inTerminal || e.shiftKey) {
           e.preventDefault();
           e.stopPropagation();
@@ -1646,7 +1662,7 @@ export default function App() {
       }
 
       // ── Cluster Broadcast (Ctrl+Shift+I) ──
-      if (matchesShortcut(e, shortcuts.toggle_broadcast?.keys || 'Ctrl+Shift+I')) {
+      if (bindingMatches(e, shortcuts.toggle_broadcast, 'Ctrl+Shift+I')) {
         e.preventDefault();
         e.stopPropagation();
         setBroadcast((b) => {
@@ -1666,7 +1682,7 @@ export default function App() {
         ['split_up', 'Alt+Shift+E', 'up'],
       ];
       for (const [id, fallback, direction] of instantSplits) {
-        if (matchesShortcut(e, shortcuts[id]?.keys || fallback) && activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 0) {
+        if (bindingMatches(e, shortcuts[id], fallback) && activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 0) {
           e.preventDefault();
           e.stopPropagation();
           splitPaneInDirection(direction);
@@ -1675,7 +1691,7 @@ export default function App() {
       }
 
       // ── Split with a different host (opens the menu) ──
-      if (matchesShortcut(e, shortcuts.split_menu?.keys || 'Ctrl+Shift+O')) {
+      if (bindingMatches(e, shortcuts.split_menu, 'Ctrl+Shift+O')) {
         e.preventDefault();
         e.stopPropagation();
         setSplitMenu((prev) => (prev?.tab === 'split' ? null : { tab: 'split', direction: 'right', pref: 'vertical', left: 400, top: 45 }));
@@ -1683,7 +1699,7 @@ export default function App() {
       }
 
       // ── Equalize all splits in the tab (Ctrl+Shift+N) ──
-      if (matchesShortcut(e, shortcuts.equalize_splits?.keys || 'Ctrl+Shift+N')) {
+      if (bindingMatches(e, shortcuts.equalize_splits, 'Ctrl+Shift+N')) {
         if (activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1693,7 +1709,7 @@ export default function App() {
       }
 
       // ── Open Layout & Presets Menu (Ctrl+Shift+L) ──
-      if (matchesShortcut(e, shortcuts.open_layout_menu?.keys || 'Ctrl+Shift+L')) {
+      if (bindingMatches(e, shortcuts.open_layout_menu, 'Ctrl+Shift+L')) {
         e.preventDefault();
         e.stopPropagation();
         setSplitMenu((prev) => (prev?.tab === 'presets' ? null : { tab: 'presets', direction: 'right', pref: 'vertical', left: 460, top: 45 }));
@@ -1701,7 +1717,7 @@ export default function App() {
       }
 
       // ── Save Layout Preset (Ctrl+Shift+S) ──
-      if (matchesShortcut(e, shortcuts.save_layout_preset?.keys || 'Ctrl+Shift+S')) {
+      if (bindingMatches(e, shortcuts.save_layout_preset, 'Ctrl+Shift+S')) {
         if (activeTab && activeTab.panes.length > 1) {
           e.preventDefault();
           e.stopPropagation();
@@ -1712,7 +1728,7 @@ export default function App() {
       }
 
       // ── Toggle AI Assistant (Ctrl+Shift+A) ──
-      if (matchesShortcut(e, shortcuts.toggle_ai?.keys || 'Ctrl+Shift+A')) {
+      if (bindingMatches(e, shortcuts.toggle_ai, 'Ctrl+Shift+A')) {
         e.preventDefault();
         e.stopPropagation();
         setShowAI((v) => !v);
@@ -1720,7 +1736,7 @@ export default function App() {
       }
 
       // ── Open SFTP Browser (Ctrl+Shift+F) ──
-      if (matchesShortcut(e, shortcuts.open_sftp?.keys || 'Ctrl+Shift+F')) {
+      if (bindingMatches(e, shortcuts.open_sftp, 'Ctrl+Shift+F')) {
         e.preventDefault();
         e.stopPropagation();
         openSftpTab();
@@ -1728,7 +1744,7 @@ export default function App() {
       }
 
       // ── Toggle Zen Mode (Ctrl+Shift+Z) ──
-      if (matchesShortcut(e, shortcuts.toggle_zen?.keys || 'Ctrl+Shift+Z')) {
+      if (bindingMatches(e, shortcuts.toggle_zen, 'Ctrl+Shift+Z')) {
         e.preventDefault();
         e.stopPropagation();
         setZen((v) => !v);
@@ -1736,7 +1752,7 @@ export default function App() {
       }
 
       // ── Command History search (Ctrl+Shift+R) ──
-      if (matchesShortcut(e, shortcuts.command_history?.keys || 'Ctrl+Shift+R')) {
+      if (bindingMatches(e, shortcuts.command_history, 'Ctrl+Shift+R')) {
         const live = activePaneId ? registry.get(activePaneId) : undefined;
         if (live?.openHistory) {
           e.preventDefault();
@@ -1747,7 +1763,7 @@ export default function App() {
       }
 
       // ── Toggle Sidebar Rail (Ctrl+Shift+B) ──
-      if (matchesShortcut(e, shortcuts.toggle_rail?.keys || 'Ctrl+Shift+B')) {
+      if (bindingMatches(e, shortcuts.toggle_rail, 'Ctrl+Shift+B')) {
         e.preventDefault();
         e.stopPropagation();
         setShowRail((v) => !v);
@@ -1769,6 +1785,39 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         setShowStatusBar((v) => !v);
+        return;
+      }
+
+      // ── On-the-fly terminal font size (Ctrl/Cmd+=, Ctrl/Cmd+-, Ctrl/Cmd+0) ──
+      // Not shell control characters, so plain-Ctrl is safe to intercept. Ctrl++ (the shifted
+      // '+' on most layouts) is the same action as Ctrl+=, but only while the binding still uses
+      // its default — a user who rebound zoom-in keeps exactly what they configured.
+      const zoomInAtDefault =
+        normalizeCombo(shortcuts.font_zoom_in?.keys ?? 'Ctrl+=') === normalizeCombo('Ctrl+=');
+      if (
+        bindingMatches(e, shortcuts.font_zoom_in, 'Ctrl+=') ||
+        (zoomInAtDefault && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === '=' || e.key === '+'))
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        const next = clampTerminalFontSize(fontSizeRef.current + 1);
+        setFontSize(next);
+        showFontZoomHud(next);
+        return;
+      }
+      if (bindingMatches(e, shortcuts.font_zoom_out, 'Ctrl+-')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const next = clampTerminalFontSize(fontSizeRef.current - 1);
+        setFontSize(next);
+        showFontZoomHud(next);
+        return;
+      }
+      if (bindingMatches(e, shortcuts.font_zoom_reset, 'Ctrl+0')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setFontSize(DEFAULT_TERMINAL_FONT_SIZE);
+        showFontZoomHud(DEFAULT_TERMINAL_FONT_SIZE);
         return;
       }
     };
@@ -1800,6 +1849,7 @@ export default function App() {
     terminalContext,
     activePaneId,
     activeTab,
+    showFontZoomHud,
   ]);
 
   // ── Hosts / snippets CRUD ──
@@ -4643,6 +4693,18 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {fontZoomHud !== null && (
+        <div
+          className="nx-zoom-hud"
+          role="status"
+          aria-live="polite"
+          style={{ '--nx-accent': theme?.accent ?? '#22d3ee' } as React.CSSProperties}
+        >
+          <span className="nx-zoom-hud-glyph">Aa</span>
+          <span className="nx-zoom-hud-size">{fontZoomHud}</span>
+          <span className="nx-zoom-hud-unit">px</span>
         </div>
       )}
       {toastMsg && <div role="status" className="nx-toast nx-rise fixed bottom-10 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/10 bg-[#121826]/95 px-4 py-2 text-xs text-slate-200 shadow-2xl backdrop-blur">{toastMsg}</div>}

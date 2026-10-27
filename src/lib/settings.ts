@@ -401,7 +401,44 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     keys: 'Ctrl+Shift+R',
     description: 'Search previously executed commands across sessions',
   },
+  font_zoom_in: {
+    id: 'font_zoom_in',
+    label: 'Increase Terminal Font Size',
+    category: 'Terminal Actions',
+    // Ctrl++ (the shifted '+' on most layouts) is accepted as the same action.
+    keys: 'Ctrl+=',
+    description: 'Grow the terminal font by one step (also Ctrl+Scroll Wheel up)',
+  },
+  font_zoom_out: {
+    id: 'font_zoom_out',
+    label: 'Decrease Terminal Font Size',
+    category: 'Terminal Actions',
+    keys: 'Ctrl+-',
+    description: 'Shrink the terminal font by one step (also Ctrl+Scroll Wheel down)',
+  },
+  font_zoom_reset: {
+    id: 'font_zoom_reset',
+    label: 'Reset Terminal Font Size',
+    category: 'Terminal Actions',
+    keys: 'Ctrl+0',
+    description: 'Restore the terminal font to its default size',
+  },
 };
+
+/**
+ * Canonical marker for an explicitly unbound shortcut. An empty `keys` string means
+ * "the user deliberately removed this binding" — it must never match an event and must
+ * survive a reload. This is distinct from a missing/legacy entry, which falls back to the
+ * default in `loadShortcuts`.
+ */
+export const UNBOUND_SHORTCUT = '';
+
+export function isShortcutUnbound(binding: ShortcutBinding | undefined): boolean {
+  return !binding?.keys;
+}
+
+/** Font size used on first run and by the "Reset Terminal Font Size" shortcut. */
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 
 const PREFS_STORAGE_KEY = 'drx.settings.preferences';
 const SHORTCUTS_STORAGE_KEY = 'drx.settings.shortcuts';
@@ -432,8 +469,14 @@ export function loadShortcuts(): Record<string, ShortcutBinding> {
     for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
       // Only the key combination is user data; labels and descriptions always come from the
       // current defaults so wording fixes reach users who customised a shortcut.
-      const saved = parsed?.[id]?.keys;
-      result[id] = typeof saved === 'string' && saved ? { ...def, keys: saved } : { ...def };
+      // Presence (not truthiness) decides: an explicit empty string is a deliberate unbind and
+      // must round-trip, while a missing/legacy entry keeps its current default.
+      const savedEntry = parsed?.[id];
+      if (savedEntry && typeof savedEntry === 'object' && typeof savedEntry.keys === 'string') {
+        result[id] = { ...def, keys: savedEntry.keys };
+      } else {
+        result[id] = { ...def };
+      }
     }
     return result;
   } catch {
@@ -530,12 +573,73 @@ export function findShortcutConflict(
 ): string | null {
   const wanted = normalizeCombo(combo);
   for (const other of Object.values(shortcuts)) {
-    if (other.id !== id && normalizeCombo(other.keys) === wanted) return other.label;
+    // Unbound shortcuts hold no combination and therefore cannot clash.
+    if (other.id !== id && other.keys && normalizeCombo(other.keys) === wanted) return other.label;
   }
   for (const [reserved, label] of Object.entries(RESERVED_SHORTCUTS)) {
     if (normalizeCombo(reserved) === wanted) return `${label} (built-in)`;
   }
   return null;
+}
+
+/**
+ * Dispatch helper: match a keyboard event against a possibly-customised binding without the
+ * old `keys || fallback` footgun. An explicitly unbound binding (empty `keys`) never matches,
+ * even though it is falsy; a missing binding object falls back to its documented default.
+ */
+export function bindingMatches(
+  e: KeyboardEvent,
+  binding: ShortcutBinding | undefined,
+  fallback: string
+): boolean {
+  const keys = binding?.keys;
+  if (keys === undefined) return matchesShortcut(e, fallback);
+  if (keys === UNBOUND_SHORTCUT) return false;
+  return matchesShortcut(e, keys);
+}
+
+export interface ShortcutOverrideResult {
+  shortcuts: Record<string, ShortcutBinding>;
+  /** Id of the binding that lost the combination, or null when nothing was displaced. */
+  displacedId: string | null;
+  /** Label of that displaced binding (for a confirmation toast), or null. */
+  displacedLabel: string | null;
+}
+
+/**
+ * Assign `combo` to `targetId`, unbinding whatever rebindable shortcut previously held it.
+ *
+ * Built-in (reserved) combinations are not handled here — the recorder refuses those via
+ * `findShortcutConflict` because they cannot be moved through this data model. The operation
+ * is pure and returns a fresh record so callers can persist it through `saveShortcuts`.
+ */
+export function applyShortcutOverride(
+  shortcuts: Record<string, ShortcutBinding>,
+  targetId: string,
+  combo: string
+): ShortcutOverrideResult {
+  const wanted = normalizeCombo(combo);
+  const next: Record<string, ShortcutBinding> = {};
+  let displacedId: string | null = null;
+  let displacedLabel: string | null = null;
+
+  for (const [id, binding] of Object.entries(shortcuts)) {
+    if (id === targetId) {
+      next[id] = { ...binding, keys: combo };
+    } else if (binding.keys && normalizeCombo(binding.keys) === wanted) {
+      displacedId = id;
+      displacedLabel = binding.label;
+      next[id] = { ...binding, keys: UNBOUND_SHORTCUT };
+    } else {
+      next[id] = { ...binding };
+    }
+  }
+
+  if (!next[targetId] && DEFAULT_SHORTCUTS[targetId]) {
+    next[targetId] = { ...DEFAULT_SHORTCUTS[targetId], keys: combo };
+  }
+
+  return { shortcuts: next, displacedId, displacedLabel };
 }
 
 /**

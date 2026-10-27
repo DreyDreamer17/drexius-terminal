@@ -1313,6 +1313,9 @@ export const TerminalPane = memo(function TerminalPane({
     }
   }, [active, mobile]);
 
+  // Timer for the Ctrl/Cmd+wheel zoom HUD (shared with the pinch readout).
+  const wheelHudTimer = useRef<number | null>(null);
+
   // Mount xterm once
   useEffect(() => {
     const term = new Terminal({
@@ -1390,6 +1393,28 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     term.open(elRef.current!);
+
+    // Ctrl/Cmd+Scroll wheel zooms the terminal font (VS Code / Windows Terminal convention).
+    // xterm invokes this from its own non-passive wheel listener, so preventDefault here really
+    // suppresses browser/WebView page zoom; returning false also stops xterm's own scroll.
+    // Plain wheel events (no modifier) return true and scroll the terminal as normal.
+    term.attachCustomWheelEventHandler((e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return true;
+      e.preventDefault();
+      if (!onFontSizeChangeRef.current) return false;
+      const step = e.deltaY < 0 ? 1 : -1;
+      const next = Math.max(TERMINAL_FONT_MIN, Math.min(TERMINAL_FONT_MAX, fontSizeRef.current + step));
+      if (next !== fontSizeRef.current) {
+        onFontSizeChangeRef.current(next);
+        setZoomHud({ size: next, leaving: false });
+        if (wheelHudTimer.current !== null) window.clearTimeout(wheelHudTimer.current);
+        wheelHudTimer.current = window.setTimeout(() => {
+          setZoomHud((h) => (h ? { ...h, leaving: true } : h));
+          wheelHudTimer.current = window.setTimeout(() => setZoomHud(null), 260);
+        }, 750);
+      }
+      return false;
+    });
 
     // Prefer the hardware-accelerated WebGL renderer for gapless box/block drawing.
     // If WebGL2 is unavailable, or the context is lost later (common on phones when
@@ -1781,6 +1806,15 @@ export const TerminalPane = memo(function TerminalPane({
         return false;
       }
 
+      // Font-size zoom (default Ctrl/Cmd+=, Ctrl++ (shifted), Ctrl/Cmd+-, Ctrl/Cmd+0).
+      // Handled by the App-level shortcut handler; swallow here so xterm sends nothing to the
+      // shell. Mirrors the hardcoded default-combo convention of the workspace swallow list below.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && ['=', '+', '-', '0'].includes(e.key) && e.type === 'keydown') {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+
       // Prevent xterm from sending control sequences on workspace shift shortcuts
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;
@@ -2084,6 +2118,7 @@ export const TerminalPane = memo(function TerminalPane({
 
     return () => {
       genRef.current += 1;
+      if (wheelHudTimer.current !== null) window.clearTimeout(wheelHudTimer.current);
       document.removeEventListener('visibilitychange', handleVisibilityFit);
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener, true);
@@ -2860,7 +2895,7 @@ export const TerminalPane = memo(function TerminalPane({
             onClips={() => { setTouchMenu(null); setShowClipboard(true); }}
           />
         )}
-        {mobile && zoomHud && (
+        {zoomHud && (
           <div className={cn('nx-zoom-hud', zoomHud.leaving && 'nx-zoom-hud-out')} role="status" aria-live="polite"
             style={{ background: theme.xterm.background || '#0e131d', '--nx-accent': theme.accent || '#22d3ee' } as React.CSSProperties}>
             <span className="nx-zoom-hud-glyph">Aa</span>

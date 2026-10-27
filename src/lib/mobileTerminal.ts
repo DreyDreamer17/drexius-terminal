@@ -124,6 +124,12 @@ export const keyPaletteGroups = [
 export const TERMINAL_FONT_MIN = 4;
 export const TERMINAL_FONT_MAX = 22;
 
+/** Coerce an arbitrary font-size value into the supported whole-pixel range. */
+export function clampTerminalFontSize(size: number): number {
+  if (!Number.isFinite(size)) return TERMINAL_FONT_MIN;
+  return Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, Math.round(size)));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Smart Wrapped Line Progress Bar Rewind
 // ─────────────────────────────────────────────────────────────────────────────

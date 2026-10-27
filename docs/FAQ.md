@@ -249,8 +249,12 @@ between panes can be dragged.
 | `Ctrl+]` / `Ctrl+[` | Next / previous pane |
 | `Ctrl+Shift+N` | Equalize all splits |
 | `Ctrl+Shift+M` / `Ctrl+Shift+W` | Zoom / close the focused pane |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Increase / decrease / reset terminal font size (use `Cmd` on macOS; `Ctrl++` works too) |
+| `Ctrl`+scroll wheel | Zoom the terminal font in or out (`Cmd`+scroll on macOS) |
 
-Double-click a divider to split it evenly. Every shortcut can be rebound in Settings → Shortcuts.
+Double-click a divider to split it evenly. Every shortcut can be rebound in Settings →
+Shortcuts; assigning a combination already in use offers to override it, which unbinds the
+previous action (an unbound shortcut never fires and can be re-bound or reset to default).
 
 Broadcast input sends what you type to every pane at once — useful for a fleet, and worth
 being deliberate about.
