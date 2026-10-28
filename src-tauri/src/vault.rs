@@ -490,6 +490,119 @@ fn generate_recovery_code() -> (String, String) {
     (formatted, normalized)
 }
 
+#[cfg(target_os = "android")]
+fn android_keystore_encrypt(plaintext: &[u8]) -> AppResult<Vec<u8>> {
+    let ctx = ndk_context::android_context();
+    if ctx.vm().is_null() || ctx.context().is_null() {
+        return Err(AppError::Other("Android context unavailable".into()));
+    }
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) }
+        .map_err(|e| AppError::Other(format!("JavaVM error: {e}")))?;
+    let mut env = vm.attach_current_thread()
+        .map_err(|e| AppError::Other(format!("JNI attach error: {e}")))?;
+    let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+        jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+    });
+    let cls = crate::ssh::load_android_app_class(
+        &mut env,
+        &*app_ctx,
+        "dev.drexius.terminal.MainActivity",
+    ).ok_or_else(|| AppError::Other("Failed to load MainActivity class".into()))?;
+
+    let j_bytes = env.byte_array_from_slice(plaintext)
+        .map_err(|e| AppError::Other(format!("JNI byte array error: {e}")))?;
+
+    let res = env.call_static_method(
+        &cls,
+        "keystoreEncrypt",
+        "([B)[B",
+        &[(&j_bytes).into()],
+    ).map_err(|e| AppError::Other(format!("Keystore encrypt JNI call failed: {e}")))?;
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+        return Err(AppError::Other("Android Keystore encryption threw an exception".into()));
+    }
+
+    let res_obj = res.l().map_err(|e| AppError::Other(format!("JNI object error: {e}")))?;
+    if res_obj.as_raw().is_null() {
+        return Err(AppError::Other("Android Keystore encryption returned null".into()));
+    }
+    let res_arr = unsafe { jni::objects::JByteArray::from_raw(res_obj.into_raw()) };
+    let out = env.convert_byte_array(&res_arr)
+        .map_err(|e| AppError::Other(format!("JNI convert byte array error: {e}")))?;
+    Ok(out)
+}
+
+#[cfg(target_os = "android")]
+fn android_keystore_decrypt(payload: &[u8]) -> AppResult<Vec<u8>> {
+    let ctx = ndk_context::android_context();
+    if ctx.vm().is_null() || ctx.context().is_null() {
+        return Err(AppError::Other("Android context unavailable".into()));
+    }
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) }
+        .map_err(|e| AppError::Other(format!("JavaVM error: {e}")))?;
+    let mut env = vm.attach_current_thread()
+        .map_err(|e| AppError::Other(format!("JNI attach error: {e}")))?;
+    let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+        jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+    });
+    let cls = crate::ssh::load_android_app_class(
+        &mut env,
+        &*app_ctx,
+        "dev.drexius.terminal.MainActivity",
+    ).ok_or_else(|| AppError::Other("Failed to load MainActivity class".into()))?;
+
+    let j_bytes = env.byte_array_from_slice(payload)
+        .map_err(|e| AppError::Other(format!("JNI byte array error: {e}")))?;
+
+    let res = env.call_static_method(
+        &cls,
+        "keystoreDecrypt",
+        "([B)[B",
+        &[(&j_bytes).into()],
+    ).map_err(|e| AppError::Other(format!("Keystore decrypt JNI call failed: {e}")))?;
+
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+        return Err(AppError::Other("Android Keystore decryption threw an exception (biometric authentication required or expired)".into()));
+    }
+
+    let res_obj = res.l().map_err(|e| AppError::Other(format!("JNI object error: {e}")))?;
+    if res_obj.as_raw().is_null() {
+        return Err(AppError::Other("Android Keystore decryption failed. Confirm your screen lock or biometrics.".into()));
+    }
+    let res_arr = unsafe { jni::objects::JByteArray::from_raw(res_obj.into_raw()) };
+    let out = env.convert_byte_array(&res_arr)
+        .map_err(|e| AppError::Other(format!("JNI convert byte array error: {e}")))?;
+    Ok(out)
+}
+
+#[cfg(target_os = "android")]
+fn android_keystore_delete() -> AppResult<()> {
+    let ctx = ndk_context::android_context();
+    if !ctx.vm().is_null() && !ctx.context().is_null() {
+        if let Ok(vm) = unsafe { jni::JavaVM::from_raw(ctx.vm() as *mut jni::sys::JavaVM) } {
+            if let Ok(mut env) = vm.attach_current_thread() {
+                let app_ctx = std::mem::ManuallyDrop::new(unsafe {
+                    jni::objects::JObject::from_raw(ctx.context() as jni::sys::jobject)
+                });
+                if let Some(cls) = crate::ssh::load_android_app_class(
+                    &mut env,
+                    &*app_ctx,
+                    "dev.drexius.terminal.MainActivity",
+                ) {
+                    let _ = env.call_static_method(&cls, "keystoreDelete", "()Z", &[]);
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Vault {
     pub fn new(path: PathBuf) -> Self {
         Self { path, inner: Mutex::new(None) }
@@ -509,7 +622,7 @@ impl Vault {
     }
 
     #[cfg(target_os = "android")]
-    fn device_lock_key(&self) -> AppResult<[u8; 32]> {
+    fn legacy_device_lock_key(&self) -> AppResult<[u8; 32]> {
         let salt = std::fs::read(self.salt_path()).unwrap_or_else(|_| b"drexius-terminal-default-salt".to_vec());
         let mut ikm = Vec::new();
         ikm.extend_from_slice(b"drexius-device-lock-master-v1-");
@@ -525,17 +638,9 @@ impl Vault {
 
     #[cfg(target_os = "android")]
     pub fn save_device_lock(&self, master_password: &str) -> AppResult<()> {
-        let key_bytes = self.device_lock_key()?;
-        let cipher = XChaCha20Poly1305::new((&key_bytes).into());
-        let mut nonce_bytes = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = XNonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher
-            .encrypt(nonce, master_password.as_bytes())
-            .map_err(|e| AppError::Crypto(format!("Failed to encrypt device lock credential: {e}")))?;
-
-        let mut payload = nonce_bytes.to_vec();
-        payload.extend_from_slice(&ciphertext);
+        let encrypted = android_keystore_encrypt(master_password.as_bytes())?;
+        let mut payload = b"DRX_KS_V1".to_vec();
+        payload.extend_from_slice(&encrypted);
         let path = self.device_lock_path();
         write_atomic(&path, &payload)?;
         #[cfg(unix)]
@@ -553,22 +658,39 @@ impl Vault {
             return Err(AppError::Other("No device lock credential found on this device".into()));
         }
         let payload = std::fs::read(&path)?;
+        if payload.starts_with(b"DRX_KS_V1") {
+            let ks_payload = &payload[9..];
+            let plaintext = android_keystore_decrypt(ks_payload)?;
+            let pw_str = String::from_utf8(plaintext)
+                .map_err(|_| AppError::Other("Invalid device credential encoding".into()))?;
+            return Ok(Zeroizing::new(pw_str));
+        }
+
+        // Backward compatibility: decrypt legacy software HKDF payload and upgrade to Android Keystore
         if payload.len() <= 24 {
             return Err(AppError::Other("Corrupt device credential payload".into()));
         }
         let (nonce_bytes, ciphertext) = payload.split_at(24);
         let nonce = XNonce::from_slice(nonce_bytes);
-        let key_bytes = self.device_lock_key()?;
+        let key_bytes = self.legacy_device_lock_key()?;
         let cipher = XChaCha20Poly1305::new((&key_bytes).into());
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
-            .map_err(|e| AppError::Crypto(format!("Failed to decrypt device credential: {e}")))?;
+            .map_err(|e| AppError::Crypto(format!("Failed to decrypt legacy device credential: {e}")))?;
         let pw_str = String::from_utf8(plaintext)
             .map_err(|_| AppError::Other("Invalid device credential encoding".into()))?;
+
+        // Re-encrypt immediately into Android Keystore so future unlocks use hardware protection
+        let _ = self.save_device_lock(&pw_str);
+
         Ok(Zeroizing::new(pw_str))
     }
 
     pub fn delete_device_lock(&self) -> AppResult<()> {
+        #[cfg(target_os = "android")]
+        {
+            let _ = android_keystore_delete();
+        }
         let path = self.device_lock_path();
         if path.exists() {
             let _ = std::fs::remove_file(path);

@@ -13,8 +13,10 @@ const MAX_PAIRING_ATTEMPTS: u32 = 5;
 const PAIRING_TIMEOUT_SECS: u64 = 600;
 const MAX_PAIRING_CONNECTIONS: usize = 8;
 const PAIRING_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PAIRING_HANDSHAKE_BODY_SIZE: usize = 64 * 1024;
 const MAX_PAIRING_BODY_SIZE: usize = 50 * 1024 * 1024;
 const MAX_PAIRING_CIPHERTEXT_SIZE: usize = 50 * 1024 * 1024;
+const MAX_CONCURRENT_LARGE_PAIRING_PAYLOADS: usize = 2;
 const PAIRING_DISCOVERY_PORT: u16 = 48290;
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -806,6 +808,7 @@ pub async fn pairing_start_host(
     let host_port = port;
     let failed_attempts = Arc::new(AtomicU32::new(0));
     let permits = Arc::new(tokio::sync::Semaphore::new(MAX_PAIRING_CONNECTIONS));
+    let large_permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LARGE_PAIRING_PAYLOADS));
 
     // Background listener task with auto-expiry and rate limiting
     tokio::spawn(async move {
@@ -874,6 +877,7 @@ pub async fn pairing_start_host(
                             let s_dev = s_name.clone();
                             let exp_pin = expected_pin.clone();
                             let attempts_clone = failed_attempts.clone();
+                            let large_permits_clone = large_permits.clone();
                             let hs_gen = session_gen;
 
                             tokio::spawn(async move {
@@ -892,6 +896,7 @@ pub async fn pairing_start_host(
                                         &vault,
                                         &app_h,
                                         hs_gen,
+                                        &large_permits_clone,
                                     ),
                                 ).await {
                                     Ok(Err(e)) => log::warn!("Pairing connection error from {peer_addr}: {e}"),
@@ -932,14 +937,23 @@ async fn handle_incoming_pairing(
     vault: &Vault,
     app_handle: &AppHandle,
     session_gen: u64,
+    large_payload_permits: &Arc<tokio::sync::Semaphore>,
 ) -> AppResult<()> {
     let mut buf = vec![0u8; 65536];
     let mut n_total = 0;
     let mut scan_from = 0usize;
     let mut header_pos = None;
     let mut content_len = 0;
+    let mut needed = 65536;
+    let mut _large_permit = None;
 
-    while n_total < buf.len() {
+    while n_total < needed {
+        if n_total == buf.len() && n_total < needed {
+            let next_len = std::cmp::min(needed, (buf.len() + 65536).max(buf.len() * 2));
+            if next_len > buf.len() {
+                buf.resize(next_len, 0);
+            }
+        }
         let n = stream
             .read(&mut buf[n_total..])
             .await
@@ -991,26 +1005,42 @@ async fn handle_incoming_pairing(
                         let _ = stream.write_all(err_resp.as_bytes()).await;
                         return Err(AppError::Other(format!("Pairing payload exceeds maximum allowed size ({content_len} > {MAX_PAIRING_BODY_SIZE})")));
                     }
-                    let needed = pos + 4 + content_len;
+                    if content_len > MAX_PAIRING_HANDSHAKE_BODY_SIZE {
+                        match large_payload_permits.clone().try_acquire_owned() {
+                            Ok(p) => {
+                                _large_permit = Some(p);
+                            }
+                            Err(_) => {
+                                log::warn!("Rejecting large pairing payload ({content_len} bytes) from {peer_addr}: max concurrent large transfers reached");
+                                let err_resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many concurrent large vault transfers. Try again shortly.\"}";
+                                let _ = stream.write_all(err_resp.as_bytes()).await;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    needed = pos + 4 + content_len;
                     if needed > buf.len() {
-                        buf.resize(needed, 0);
+                        let next_len = std::cmp::min(needed, (buf.len() + 65536).max(buf.len() * 2));
+                        buf.resize(next_len, 0);
                     }
                 } else {
                     scan_from = n_total.saturating_sub(3);
                 }
             }
+    }
 
-        if let Some(pos) = header_pos {
-            let body_start = pos + 4;
-            if body_start + content_len > buf.len() {
-                let err_resp = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n";
-                let _ = stream.write_all(err_resp.as_bytes()).await;
-                return Err(AppError::Other("Pairing request body exceeds buffer size".into()));
-            }
-            if n_total - body_start >= content_len {
-                let body_slice = &buf[body_start..body_start + content_len];
-                let req: HandshakeRequest = serde_json::from_slice(body_slice)
-                    .map_err(|e| AppError::Other(format!("Invalid pairing request JSON: {e}")))?;
+    let pos = match header_pos {
+        Some(p) => p,
+        None => return Err(AppError::Other("Incomplete pairing HTTP headers".into())),
+    };
+
+    let body_start = pos + 4;
+    if n_total < body_start + content_len {
+        return Err(AppError::Other("Incomplete pairing request body".into()));
+    }
+    let body_slice = &buf[body_start..body_start + content_len];
+    let req: HandshakeRequest = serde_json::from_slice(body_slice)
+        .map_err(|e| AppError::Other(format!("Invalid pairing request JSON: {e}")))?;
 
                 if failed_attempts.load(Ordering::SeqCst) >= MAX_PAIRING_ATTEMPTS {
                     let err_resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Too many failed attempts. Pairing session locked.\"}";
@@ -1212,12 +1242,7 @@ async fn handle_incoming_pairing(
                     let _ = tx.send(());
                 }
 
-                return Ok(());
-            }
-        }
-    }
-
-    Ok(())
+                Ok(())
 }
 
 #[tauri::command]
@@ -1631,5 +1656,21 @@ mod tests {
 
         assert!(eq_valid);
         assert!(!eq_invalid);
+    }
+
+    #[test]
+    fn test_pairing_body_and_concurrency_limits() {
+        assert_eq!(super::MAX_PAIRING_HANDSHAKE_BODY_SIZE, 64 * 1024);
+        assert_eq!(super::MAX_PAIRING_BODY_SIZE, 50 * 1024 * 1024);
+        assert_eq!(super::MAX_CONCURRENT_LARGE_PAIRING_PAYLOADS, 2);
+
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(super::MAX_CONCURRENT_LARGE_PAIRING_PAYLOADS));
+        let p1 = sem.clone().try_acquire_owned();
+        let p2 = sem.clone().try_acquire_owned();
+        let p3 = sem.clone().try_acquire_owned();
+
+        assert!(p1.is_ok());
+        assert!(p2.is_ok());
+        assert!(p3.is_err(), "Third concurrent large transfer must be rejected");
     }
 }

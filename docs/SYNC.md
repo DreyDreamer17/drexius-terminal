@@ -196,7 +196,7 @@ relay before you pair.
   secret.
 - The pairing endpoints send **no CORS headers**, so a browser on the LAN cannot make a
   cross-origin request against the listener.
-- Limits: **5 attempts**, **600 seconds**, and a **64 KiB** body cap.
+- Limits: **5 attempts**, **600 seconds**, and a **64 KiB** body cap for standard authentication handshakes (extended up to **50 MiB** for two-way vault archive sync, protected by bounded incremental allocation and concurrency limits).
 
 ### 4.4 After pairing
 

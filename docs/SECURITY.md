@@ -210,6 +210,9 @@ requires an explicit "Remember in OS keychain" checkbox.
   explicitly passes `probeKeyring: true` — which only the Quick Unlock settings sheet does.
 - If the keychain is unavailable (headless Linux, sandboxed builds), the commands return an
   error and the UI falls back to password entry.
+- **Platform distinction (Desktop vs Android):**
+  - **Desktop (macOS, Windows, Linux):** Delegates directly to native platform keyrings (macOS Keychain with Touch ID, Windows Credential Manager, Linux Secret Service via DBus).
+  - **Android:** Quick unlock uses hardware-backed Android Keystore (`AndroidKeyStore`) with AES-256-GCM encryption. The cryptographic key is generated inside the hardware Keystore (`dev.drexius.terminal.vault_quick_unlock`), configured with biometric/device-credential authentication requirements (`setUserAuthenticationParameters` / `setInvalidatedByBiometricEnrollment`). Decryption requires a recent biometric/device unlock within a 60-second validity window. Legacy software-encrypted payloads (pre-Keystore) are automatically decrypted upon first successful unlock and seamlessly upgraded into the Android Keystore.
 
 ### 5.2 Generated key material
 

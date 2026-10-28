@@ -23,11 +23,129 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.Lifecycle
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.spec.GCMParameterSpec
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 
 class MainActivity : TauriActivity() {
   companion object {
     private const val STORAGE_PERMISSION_CODE = 1001
     private const val NOTIFICATION_PERMISSION_CODE = 1002
+    private const val KEYSTORE_ALIAS = "dev.drexius.terminal.vault_quick_unlock"
+    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+    private const val GCM_IV_LENGTH = 12
+    private const val GCM_TAG_LENGTH_BITS = 128
+
+    @JvmStatic
+    fun keystoreEncrypt(plaintext: ByteArray): ByteArray? {
+      return try {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (!keyStore.containsAlias(KEYSTORE_ALIAS)) {
+          val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+          val builder = KeyGenParameterSpec.Builder(
+            KEYSTORE_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+          )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setRandomizedEncryptionRequired(true)
+
+          try {
+            // First attempt to enforce user authentication on the hardware key
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+              builder.setUserAuthenticationParameters(
+                60,
+                KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
+              )
+            } else {
+              @Suppress("DEPRECATION")
+              builder.setUserAuthenticationValidityDurationSeconds(60)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+              builder.setInvalidatedByBiometricEnrollment(true)
+            }
+            keyGenerator.init(builder.build())
+            keyGenerator.generateKey()
+          } catch (authReqEx: Exception) {
+            // If device has no screen lock/biometrics configured, fall back to standard hardware Keystore
+            Log.w("DrexiusKeystore", "Device lock not enrolled; generating hardware key without auth requirement: ${authReqEx.message}")
+            val fallbackBuilder = KeyGenParameterSpec.Builder(
+              KEYSTORE_ALIAS,
+              KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+              .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+              .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+              .setKeySize(256)
+              .setRandomizedEncryptionRequired(true)
+            keyGenerator.init(fallbackBuilder.build())
+            keyGenerator.generateKey()
+          }
+        }
+
+        val secretKey = keyStore.getKey(KEYSTORE_ALIAS, null) ?: return null
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv ?: return null
+        val ciphertext = cipher.doFinal(plaintext)
+        val payload = ByteArray(iv.size + ciphertext.size)
+        System.arraycopy(iv, 0, payload, 0, iv.size)
+        System.arraycopy(ciphertext, 0, payload, iv.size, ciphertext.size)
+        payload
+      } catch (e: Exception) {
+        Log.e("DrexiusKeystore", "Failed to encrypt with Android Keystore: ${e.message}", e)
+        null
+      }
+    }
+
+    @JvmStatic
+    fun keystoreDecrypt(payload: ByteArray): ByteArray? {
+      return try {
+        if (payload.size <= GCM_IV_LENGTH) {
+          Log.e("DrexiusKeystore", "Invalid payload length: ${payload.size}")
+          return null
+        }
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        val secretKey = keyStore.getKey(KEYSTORE_ALIAS, null)
+        if (secretKey == null) {
+          Log.e("DrexiusKeystore", "Keystore alias $KEYSTORE_ALIAS not found")
+          return null
+        }
+        val iv = ByteArray(GCM_IV_LENGTH)
+        val ciphertext = ByteArray(payload.size - GCM_IV_LENGTH)
+        System.arraycopy(payload, 0, iv, 0, GCM_IV_LENGTH)
+        System.arraycopy(payload, GCM_IV_LENGTH, ciphertext, 0, ciphertext.size)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
+        cipher.doFinal(ciphertext)
+      } catch (e: UserNotAuthenticatedException) {
+        Log.w("DrexiusKeystore", "Keystore decrypt requires user authentication: ${e.message}")
+        null
+      } catch (e: Exception) {
+        Log.e("DrexiusKeystore", "Failed to decrypt with Android Keystore: ${e.message}", e)
+        null
+      }
+    }
+
+    @JvmStatic
+    fun keystoreDelete(): Boolean {
+      return try {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (keyStore.containsAlias(KEYSTORE_ALIAS)) {
+          keyStore.deleteEntry(KEYSTORE_ALIAS)
+        }
+        true
+      } catch (e: Exception) {
+        Log.e("DrexiusKeystore", "Failed to delete from Android Keystore: ${e.message}", e)
+        false
+      }
+    }
 
     @Volatile
     var isActivityVisible: Boolean = false
