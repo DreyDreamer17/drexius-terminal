@@ -56,6 +56,9 @@ pub struct ConnectRequest {
     /// Restore the last snapshotted cwd after login.
     #[serde(default)]
     pub resume: bool,
+    /// Initial working directory to start the session in.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -746,13 +749,45 @@ pub fn ssh_connect(
         let _ = vault.set_host_os(&host.id, os_id);
     }
 
+    let target_cwd = req
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "~")
+        .map(str::to_owned)
+        .or_else(|| {
+            if req.resume {
+                snaps
+                    .get(&host.id)
+                    .or_else(|| vault.load_snapshot(&host.id).ok().flatten())
+                    .map(|s| s.cwd)
+                    .filter(|cwd| !cwd.is_empty() && cwd != "~" && !cwd.starts_with("/home/") && cwd != "/root")
+            } else {
+                None
+            }
+        });
+
     let initial_size = (req.cols, req.rows);
     let mut channel = sess.channel_session()?;
     let px_w = req.cols.saturating_mul(9);
     let px_h = req.rows.saturating_mul(18);
     channel.request_pty("xterm-256color", None, Some((req.cols, req.rows, px_w, px_h)))?;
     channel.handle_extended_data(ExtendedData::Merge)?; // stderr → same stream
-    channel.shell()?;
+
+    let is_windows = os.as_deref() == Some("windows");
+    let mut started_via_exec = false;
+    if let Some(ref cwd) = target_cwd {
+        if !is_windows {
+            let quoted = cd_path_quote(cwd);
+            let start_cmd = format!("cd {quoted} 2>/dev/null; exec ${{SHELL:-/bin/sh}} -l");
+            if channel.exec(&start_cmd).is_ok() {
+                started_via_exec = true;
+            }
+        }
+    }
+    if !started_via_exec {
+        channel.shell()?;
+    }
     // CRITICAL: Disable libssh2's user-space keepalive_send (`keepalive.c:74`).
     // In libssh2, `libssh2_keepalive_send` passes a stack-allocated `keepalive_data[]` buffer
     // to `_libssh2_transport_send`. If the non-blocking socket returns EAGAIN, libssh2 saves
@@ -768,8 +803,8 @@ pub fn ssh_connect(
     let (tx, rx) = mpsc::sync_channel::<Cmd>(256);
     let stop = Arc::new(AtomicBool::new(false));
 
-    let mut initial_cwd = String::from("~");
-    if req.resume {
+    let mut initial_cwd = target_cwd.clone().unwrap_or_else(|| String::from("~"));
+    if !started_via_exec && req.resume {
         if let Some(snap) = snaps.get(&host.id).or_else(|| vault.load_snapshot(&host.id).ok().flatten()) {
             initial_cwd = snap.cwd.clone();
             // Only cd if the snapshotted directory is not home

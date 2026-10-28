@@ -235,7 +235,15 @@ pub fn local_pty_spawn(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
+        .and_then(|s| {
+            if s == "~" {
+                dirs::home_dir()
+            } else if let Some(rest) = s.strip_prefix("~/") {
+                dirs::home_dir().map(|h| h.join(rest))
+            } else {
+                Some(std::path::PathBuf::from(s))
+            }
+        })
         .filter(|p| p.is_dir());
 
     let work_dir = if cfg!(target_os = "android") {

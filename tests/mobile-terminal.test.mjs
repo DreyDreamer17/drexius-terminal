@@ -263,6 +263,14 @@ test('SmartTerminalWriter never rewinds or clears during paste, arrow navigation
   writer.write('\r  Download:  99.99 Mbps');
   assert.deepEqual(written, ['\x1b[2A\r\x1b[J', '  Download:  99.99 Mbps']);
 
+  // 5. Colored shell prompt after Enter (like cd navigation) must preserve trailing space and never erase line
+  written.length = 0;
+  writer.notifyUserInput('\r');
+  const coloredPrompt = '\r\x1b[01;32mstephen@dreycore\x1b[00m:\x1b[01;34m~/MY PROJECTS\x1b[00m$ ';
+  writer.write(coloredPrompt);
+  assert.equal(written.join('').endsWith('$ '), true);
+  assert.equal(written.join('').includes('\x1b[K'), false);
+
   writer.dispose();
 });
 

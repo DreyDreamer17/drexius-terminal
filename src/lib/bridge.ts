@@ -889,7 +889,7 @@ export const bridge = {
   },
 
   // ── SSH ──
-  async connect(hostId: string, cols: number, rows: number, resume: boolean, onEvent: (e: SessionEvent) => void): Promise<string> {
+  async connect(hostId: string, cols: number, rows: number, resume: boolean, onEvent: (e: SessionEvent) => void, cwd?: string): Promise<string> {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
@@ -901,7 +901,7 @@ export const bridge = {
           case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
-      return invoke<string>('ssh_connect', { req: { hostId, cols, rows, resume }, onEvent: channel });
+      return invoke<string>('ssh_connect', { req: { hostId, cols, rows, resume, cwd }, onEvent: channel });
     }
 
     // Sandbox

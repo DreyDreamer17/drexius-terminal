@@ -147,13 +147,131 @@ const MAX_RESUME_ATTEMPTS = 6;
  * shells never need the `cd`: they are spawned in that directory instead.
  */
 function startupInput(initialCwd: string | undefined, startupCommand: string | null | undefined): string | null {
-  const cd =
-    initialCwd && initialCwd.startsWith('/') && !/[\u0000-\u001f\u007f]/.test(initialCwd)
-      ? ` cd -- '${initialCwd.replace(/'/g, `'\\''`)}'`
-      : '';
+  let cd = '';
+  if (initialCwd && !/[\u0000-\u001f\u007f]/.test(initialCwd)) {
+    if (initialCwd.startsWith('/')) {
+      cd = ` cd -- '${initialCwd.replace(/'/g, `'\\''`)}'`;
+    } else if (initialCwd.startsWith('~/') && initialCwd.length > 2) {
+      cd = ` cd -- ~/'${initialCwd.slice(2).replace(/'/g, `'\\''`)}'`;
+    }
+  }
   const startup = (startupCommand ?? '').trim();
   const lines = [cd, startup].filter(Boolean);
   return lines.length ? lines.join('\n') + '\n' : null;
+}
+
+/**
+ * Extracts a working directory path from a terminal window title (OSC 0 / OSC 2).
+ * Handles Unix shells (bash, zsh on Ubuntu/Debian/macOS/etc.) and Windows PowerShell/cmd titles.
+ */
+function extractPathFromTitle(title: string): string | null {
+  if (!title) return null;
+  const t = title.trim();
+  // Strip trailing shell/process name if present, e.g. "user@host: ~/foo - bash" or "... - cmd.exe"
+  const stripped = t.replace(/\s+[-—]\s+\w+(?:\.exe)?$/, '').trim();
+
+  // 1. PowerShell title: "PS C:\Users\..." or "PS C:\Users\...>"
+  const psMatch = stripped.match(/^PS\s+([a-zA-Z]:[/\\][^\r\n>]*)(?:>)?$/i);
+  if (psMatch && psMatch[1]) {
+    const candidate = psMatch[1].trim();
+    if (!candidate.includes('\0') && candidate.length <= 4096) return candidate;
+  }
+
+  // 2. Direct Windows path: "C:\Users\..." or "D:/Source/..."
+  if (/^[a-zA-Z]:[/\\]/.test(stripped)) {
+    if (!stripped.includes('\0') && !/[\r\n]/.test(stripped) && stripped.length <= 4096) {
+      return stripped;
+    }
+  }
+
+  // 3. user@host: <path> or host: <path> (excluding Windows drive letters)
+  const colonMatch = stripped.match(/^(?:[^@:\s]+@[^:\s]+|[^:\s]{2,}):\s*([~/\\].*)$/);
+  if (colonMatch && colonMatch[1]) {
+    const candidate = colonMatch[1].trim();
+    if (candidate && !candidate.includes('\0') && !/[\r\n]/.test(candidate) && candidate.length <= 4096) {
+      return candidate;
+    }
+  }
+
+  // 4. Direct Unix path: ~/foo or /foo/bar
+  if (/^[~/\\].*$/.test(stripped)) {
+    if (!stripped.includes('\0') && !/[\r\n]/.test(stripped) && stripped.length <= 4096) {
+      return stripped;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves provisional directory changes from user input like `cd /var/log`, `cd ..`, `cd ~/docs`, `cd C:\foo`.
+ */
+function resolvePathChange(current: string, arg?: string): string | null {
+  if (!arg || !arg.trim()) return '~';
+  let target = arg.trim();
+  // Strip trailing chained commands like &&, ;, or ||
+  const chainIdx = target.search(/[;&|]/);
+  if (chainIdx !== -1) {
+    target = target.slice(0, chainIdx).trim();
+  }
+  // Strip enclosing quotes if present
+  if ((target.startsWith('"') && target.endsWith('"')) || (target.startsWith("'") && target.endsWith("'"))) {
+    target = target.slice(1, -1).trim();
+  }
+  if (!target || target === '~') return '~';
+  if (target === '-') return null; // Previous directory can't be safely resolved without shell history
+  if (target.startsWith('~/')) return target;
+
+  // Windows absolute path: e.g. C:\... or C:/...
+  if (/^[a-zA-Z]:[/\\]/.test(target)) {
+    return target.replace(/\//g, '\\');
+  }
+
+  if (target.startsWith('/')) {
+    const parts = target.split('/').filter(Boolean);
+    const stack: string[] = [];
+    for (const p of parts) {
+      if (p === '.') continue;
+      if (p === '..') stack.pop();
+      else stack.push(p);
+    }
+    return '/' + stack.join('/');
+  }
+
+  // Relative path against current directory
+  const base = (!current || current === '~') ? '~' : current;
+
+  // If base is a Windows drive path:
+  if (/^[a-zA-Z]:[/\\]/.test(base)) {
+    const drive = base.slice(0, 2);
+    const parts = base.slice(2).split(/[/\\]/).filter(Boolean);
+    const addParts = target.split(/[/\\]/).filter(Boolean);
+    for (const p of addParts) {
+      if (p === '.') continue;
+      if (p === '..') {
+        if (parts.length > 0) parts.pop();
+      } else {
+        parts.push(p);
+      }
+    }
+    return drive + '\\' + parts.join('\\');
+  }
+
+  const isTilde = base.startsWith('~');
+  const baseParts = (isTilde ? base.slice(1) : base).split('/').filter(Boolean);
+  const addParts = target.split('/').filter(Boolean);
+  for (const p of addParts) {
+    if (p === '.') continue;
+    if (p === '..') {
+      if (baseParts.length > 0) baseParts.pop();
+    } else {
+      baseParts.push(p);
+    }
+  }
+  if (isTilde) {
+    return baseParts.length > 0 ? `~/${baseParts.join('/')}` : '~';
+  }
+  return '/' + baseParts.join('/');
 }
 
 interface Props {
@@ -171,6 +289,8 @@ interface Props {
   ghostSuggestions?: boolean;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
+  /** Invoked whenever the terminal working directory is resolved or updated. */
+  onCwdChange?: (cwd: string) => void;
   lineHeight?: number;
   active: boolean;
   showHeader: boolean;
@@ -258,6 +378,7 @@ export const TerminalPane = memo(function TerminalPane({
   toast = () => {},
   mobileBar,
   drawerInset = 0,
+  onCwdChange,
 }: Props) {
   const elRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -305,9 +426,12 @@ export const TerminalPane = memo(function TerminalPane({
   const multilineBufferRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<PaneStatus>('connecting');
-  const [cwd, setCwd] = useState('~');
+  const [cwd, setCwd] = useState(pane.initialCwd || '~');
   const cwdRef = useRef(cwd);
   cwdRef.current = cwd;
+  const onCwdChangeRef = useRef(onCwdChange);
+  onCwdChangeRef.current = onCwdChange;
+  const localCwdTimerRef = useRef<number | null>(null);
   const [fingerprint, setFingerprint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -507,6 +631,48 @@ export const TerminalPane = memo(function TerminalPane({
     updateRef.current = update;
     onChangeRef.current = onChange;
   }, [onData, update, onChange]);
+
+  const applyCwd = useCallback(
+    (newCwd: string) => {
+      if (!newCwd) return;
+      const clean = newCwd.trim();
+      if (!clean || clean === cwdRef.current || clean.includes('\0') || /[\r\n]/.test(clean)) return;
+      cwdRef.current = clean;
+      setCwd(clean);
+      updateRef.current({ cwd: clean });
+      onCwdChangeRef.current?.(clean);
+      if (sessionRef.current && !isLocal) {
+        bridge.recordSnapshot(host.id, sessionRef.current, { cwd: clean }).catch(() => {});
+      }
+    },
+    [host.id, isLocal]
+  );
+
+  const syncLocalCwd = useCallback(async () => {
+    if (!isLocal || !sessionRef.current) return;
+    try {
+      const realCwd = await bridge.localPtyCwd(sessionRef.current);
+      if (realCwd) {
+        applyCwd(realCwd);
+      }
+    } catch {
+      // Ignore errors when session terminates
+    }
+  }, [isLocal, applyCwd]);
+
+  // Synchronize local PTY CWD whenever the pane is focused or activated
+  useEffect(() => {
+    if (active && isLocal && sessionRef.current) {
+      syncLocalCwd();
+    }
+  }, [active, isLocal, syncLocalCwd]);
+
+  // Periodic polling for local shells: ensures CWD stays in sync even if shell prompts don't emit output
+  useEffect(() => {
+    if (!isLocal || hidden) return;
+    const interval = window.setInterval(syncLocalCwd, 2000);
+    return () => window.clearInterval(interval);
+  }, [isLocal, hidden, syncLocalCwd]);
 
   const scheduleResize = useCallback((cols: number, rows: number) => {
     if (cols < 10 || rows < 3 || hiddenRef.current) return;
@@ -947,15 +1113,19 @@ export const TerminalPane = memo(function TerminalPane({
                 const found = portDetectorRef.current.feed(ev.data);
                 if (found.length > 0) handleDetectedPorts(found);
               }
+              if (localCwdTimerRef.current !== null) {
+                window.clearTimeout(localCwdTimerRef.current);
+              }
+              localCwdTimerRef.current = window.setTimeout(syncLocalCwd, 300);
               break;
             case 'cwd':
-              setCwd(ev.path);
-              update({ cwd: ev.path });
+              applyCwd(ev.path);
               break;
             case 'connected':
               if (!suppressLocalBanner) {
                 term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
               }
+              window.setTimeout(syncLocalCwd, 100);
               break;
             case 'disconnected':
               sessionRef.current = null;
@@ -984,6 +1154,7 @@ export const TerminalPane = memo(function TerminalPane({
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingLocalSid });
+            window.setTimeout(syncLocalCwd, 100);
             return;
           }
           try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
@@ -1005,6 +1176,7 @@ export const TerminalPane = memo(function TerminalPane({
           retryRef.current = 0;
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
+          window.setTimeout(syncLocalCwd, 100);
           if (term.cols && term.rows) {
             bridge.resizeLocalPty(sid, term.cols, term.rows, cw, ch);
           }
@@ -1043,9 +1215,7 @@ export const TerminalPane = memo(function TerminalPane({
               }
               break;
             case 'cwd':
-              setCwd(ev.path);
-              update({ cwd: ev.path });
-              if (sessionRef.current) bridge.recordSnapshot(host.id, sessionRef.current, { cwd: ev.path });
+              applyCwd(ev.path);
               break;
             case 'connected': {
               if (!suppressConnectBanner) {
@@ -1116,7 +1286,7 @@ export const TerminalPane = memo(function TerminalPane({
             host.port
           }\x1b[90m via ${host.keychainId ? 'keychain identity' : host.authMethod === 'key' ? 'public key' : host.authMethod}…\x1b[0m\r\n`
         );
-        const sid = await bridge.connect(host.id, initCols, initRows, resume, onSshEvent);
+        const sid = await bridge.connect(host.id, initCols, initRows, resume, onSshEvent, pane.initialCwd);
         if (dead()) {
           bridge.disconnect(sid);
           return;
@@ -1131,7 +1301,7 @@ export const TerminalPane = memo(function TerminalPane({
           lastSentSize.current = { cols: term.cols, rows: term.rows };
           bridge.resize(sid, term.cols, term.rows);
         }
-        const startup = startupInput(pane.initialCwd, pane.startupCommand || host.startupCommand);
+        const startup = startupInput(undefined, pane.startupCommand || host.startupCommand);
         if (startup) {
           setTimeout(() => {
             if (sessionRef.current === sid) {
@@ -1730,14 +1900,21 @@ export const TerminalPane = memo(function TerminalPane({
         try {
           const p = decodeURI(match[1]);
           if (!p.includes('\0') && !/[\r\n]/.test(p)) {
-            setCwd(p);
-            updateRef.current({ cwd: p });
+            applyCwd(p);
           }
         } catch {
           // Ignore malformed terminal-controlled OSC-7 escapes
         }
       }
       return true;
+    });
+
+    // Window Title (OSC 0 / OSC 2) — common shells report working directory in window title
+    const dTitle = term.onTitleChange((title) => {
+      const p = extractPathFromTitle(title);
+      if (p) {
+        applyCwd(p);
+      }
     });
 
     // Preload recent command history for instant autosuggestions
@@ -1959,6 +2136,19 @@ export const TerminalPane = memo(function TerminalPane({
             : lineCmd;
           multilineBufferRef.current = [];
 
+          if (isLocal) {
+            window.setTimeout(syncLocalCwd, 150);
+            window.setTimeout(syncLocalCwd, 600);
+          } else if (cmd) {
+            const cdMatch = cmd.match(/^cd(?:\s+(.*))?$/);
+            if (cdMatch) {
+              const nextPath = resolvePathChange(cwdRef.current, cdMatch[1]);
+              if (nextPath) {
+                applyCwd(nextPath);
+              }
+            }
+          }
+
           // Lines typed at a password prompt are secrets: skip them everywhere, including in-memory history.
           const typedSecret = !!cmd && isPasswordPromptActive();
           if (cmd && !typedSecret) {
@@ -2045,7 +2235,7 @@ export const TerminalPane = memo(function TerminalPane({
       hostId: host.id,
       sessionId: null,
       status: 'connecting',
-      cwd: '~',
+      cwd: pane.initialCwd || '~',
       lastCommand: null,
       term,
       send: (d) => {
@@ -2139,6 +2329,11 @@ export const TerminalPane = memo(function TerminalPane({
       dScroll.dispose();
       dBuffer.dispose();
       dBinary.dispose();
+      dTitle.dispose();
+      if (localCwdTimerRef.current !== null) {
+        window.clearTimeout(localCwdTimerRef.current);
+        localCwdTimerRef.current = null;
+      }
       // Only close serial ports on component unmount; SSH and local PTY sessions
       // stay alive in the Rust backend across WebView/layout remounts and are
       // explicitly closed when the user closes the pane/tab or locks the vault.

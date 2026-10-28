@@ -163,6 +163,16 @@ function visibleLength(text: string): number {
 }
 
 /**
+ * Strips ANSI escape sequences and OSC escape sequences from a string.
+ */
+export function stripAnsi(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b(?:\[[0-9;?]*[ -/]*[@-~]|[\(\)][A-Za-z0-9]|M|7|8|[A-Za-z0-9=<>])/g, '');
+}
+
+/**
  * Replaces trailing padding spaces on standalone-`\r` progress lines with `\x1b[K`
  * (Erase in Line) so CLI tools that pad lines to 70-80 columns with spaces do not
  * needlessly wrap onto a blank second row on narrow mobile screens.
@@ -171,9 +181,9 @@ function replaceTrailingSpacesWithEraseLine(part: string): string {
   if (!part || isCursorNavigationAfterCr(part) || isShellPromptLine(part)) return part;
   if (!part.includes('\n')) {
     if (/^[ ]+$/.test(part)) return '\x1b[K';
-    return part.replace(/(?<=\S)[ ]+$/, '\x1b[K');
+    return part.replace(/(?<=\S)[ ]{2,}$/, '\x1b[K');
   }
-  return part.replace(/^([^\r\n]*?\S)[ ]+(\r?\n)/, '$1\x1b[K$2');
+  return part.replace(/^([^\r\n]*?\S)[ ]{2,}(\r?\n)/, '$1\x1b[K$2');
 }
 
 /**
@@ -184,20 +194,24 @@ function replaceTrailingSpacesWithEraseLine(part: string): string {
  */
 export function isShellPromptLine(text: string): boolean {
   if (!text) return false;
+  const clean = stripAnsi(text).trimStart();
+  if (!clean) return false;
   // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
-  if (/^(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^$#%>]*[$#%>]\s/.test(text)) return true;
+  if (/^(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^$#%>]*[$#%>](?:\s|$)/.test(clean)) return true;
   // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
-  if (/^(?:\([^)]+\)\s*)?\[[^\]]+\]\s*[$#%>]\s/.test(text)) return true;
+  if (/^(?:\([^)]+\)\s*)?\[[^\]]+\]\s*[$#%>](?:\s|$)/.test(clean)) return true;
   // 3. Shell name or path prompt: bash-5.2$, sh-5.1#, ~/dir $, /etc #
-  if (/^(?:\([^)]+\)\s*)?(?:(?:ba|z|da|k|c|tc|fi)?sh(?:-[0-9.]+)?|~|\/[a-zA-Z0-9_.\-/]*)[^$#%\r\n]{0,40}[$#%]\s/.test(text)) return true;
+  if (/^(?:\([^)]+\)\s*)?(?:(?:ba|z|da|k|c|tc|fi)?sh(?:-[0-9.]+)?|~|\/[a-zA-Z0-9_.\-/]*)[^$#%\r\n]{0,60}[$#%](?:\s|$)/.test(clean)) return true;
   // 4. PowerShell / Windows cmd prompt: PS C:\Users> or C:\Users>
-  if (/^(?:PS\s+)?[A-Za-z]:\\[^>]*>\s*/.test(text)) return true;
+  if (/^(?:PS\s+)?[A-Za-z]:\\[^>]*>\s*/.test(clean)) return true;
   // 5. Multi-line box-drawing prompt (Kali, Arch, Starship): ┌── / └─❯
-  if (/^[┌└╭╰─│]/.test(text)) return true;
+  if (/^[┌└╭╰─│]/.test(clean)) return true;
   // 6. Modern prompt glyphs: ❯, ➜, λ, »
-  if (/^.{0,64}[❯➜λ»]\s/.test(text)) return true;
+  if (/^.{0,64}[❯➜λ»](?:\s|$)/.test(clean)) return true;
   // 7. Bare prompt or secondary continuation prompt (PS2): "$ ", "# ", "% ", "> "
-  if (/^[$#%>]\s/.test(text)) return true;
+  if (/^[$#%>]\s/.test(clean)) return true;
+  // 8. General prompt ending with prompt sigil and whitespace (excluding percentages like 89%)
+  if (!/\d+%/.test(clean) && /(?:^|[\s)\]:~])[$#%>]\s+$/.test(clean)) return true;
   return false;
 }
 
@@ -356,9 +370,9 @@ export class SmartTerminalWriter {
       return;
     }
 
-    // Replace trailing padding spaces immediately before a standalone \r with \x1b[K
-    if (chunk.includes('\r')) {
-      chunk = chunk.replace(/(?<=\S)[ ]+(?=\r(?!\n))/g, '\x1b[K');
+    // Replace trailing padding spaces (>= 2 spaces) on non-prompt lines immediately before a standalone \r with \x1b[K
+    if (chunk.includes('\r') && !isShellPromptLine(chunk)) {
+      chunk = chunk.replace(/(?<=\S)[ ]{2,}(?=\r(?!\n))/g, '\x1b[K');
     }
 
     while (chunk.endsWith('\r')) {

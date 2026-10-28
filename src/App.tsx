@@ -1049,7 +1049,7 @@ export default function App() {
         hostId: h.id,
         isLocal: h.id === LOCAL_HOST.id,
         ...(clone?.customShell ? { customShell: clone.customShell } : {}),
-        ...(cwd && cwd.startsWith('/') && !atRemoteHome ? { initialCwd: cwd } : {}),
+        ...(cwd && (cwd.startsWith('/') || cwd.startsWith('~/')) && !atRemoteHome ? { initialCwd: cwd } : {}),
       };
       const anchorId = source && activeTab.panes.some((p) => p.id === source.id) ? source.id : activeTab.activePaneId;
 
@@ -1059,7 +1059,12 @@ export default function App() {
           const current = tabTree(t);
           const anchor = current ? (hasLeaf(current, anchorId) ? anchorId : lastLeafId(current)) : null;
           const tree = current && anchor ? splitLeaf(current, anchor, newPane.id, direction) : leaf(newPane.id);
-          const panes = [...t.panes, newPane];
+          const updatedPanes = t.panes.map((p) =>
+            clone && p.id === clone.id && cwd && !atRemoteHome && p.initialCwd !== cwd
+              ? { ...p, initialCwd: cwd }
+              : p
+          );
+          const panes = [...updatedPanes, newPane];
           return {
             ...t,
             panes,
@@ -3408,6 +3413,23 @@ export default function App() {
                           onFocus={() => focusPane(t.id, p.id)}
                           onClose={() => closePane(t.id, p.id)}
                           onChange={bump}
+                          onCwdChange={(newCwd) => {
+                            setTabs((ts) => {
+                              const tab = ts.find((tab) => tab.id === t.id);
+                              const targetPane = tab?.panes.find((pane) => pane.id === p.id);
+                              if (!targetPane || targetPane.initialCwd === newCwd) return ts;
+                              return ts.map((tab) =>
+                                tab.id !== t.id
+                                  ? tab
+                                  : {
+                                      ...tab,
+                                      panes: tab.panes.map((pane) =>
+                                        pane.id === p.id ? { ...pane, initialCwd: newCwd } : pane
+                                      ),
+                                    }
+                              );
+                            });
+                          }}
                           onData={(d) => handlePaneData(t.id, p.id, d)}
                           toast={toast}
                           mobileBar={mobile ? {
