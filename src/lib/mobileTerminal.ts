@@ -251,6 +251,8 @@ export class SmartTerminalWriter {
   public kittyProcessor = new KittyGraphicsProcessor();
   private pendingCr = false;
   private decoder: TextDecoder | null = null;
+  private alternateScreen = false;
+  private modeSequenceTail = '';
   private editingPrompt = false;
   private suppressRewindUntil = 0;
   private inFlightWrappedRows: number | null = null;
@@ -297,8 +299,36 @@ export class SmartTerminalWriter {
     }
   }
 
+  /**
+   * Track DEC alternate-screen mode switches before xterm parses the chunk. PTY reads
+   * are arbitrary byte slices, so keep a short tail to recognize a CSI sequence split
+   * across two writes. Rewriting carriage returns inside a full-screen TUI changes its
+   * cursor semantics and can leave visual artifacts behind.
+   */
+  private updateAlternateScreenMode(chunk: string): boolean {
+    const combined = this.modeSequenceTail + chunk;
+    const modeChanges = /\x1b\[\?([0-9;]+)([hl])/g;
+    let match: RegExpExecArray | null;
+    let sawAlternateSwitch = false;
+    while ((match = modeChanges.exec(combined)) !== null) {
+      const modes = match[1].split(';').map(Number);
+      if (modes.some((mode) => mode === 47 || mode === 1047 || mode === 1049)) {
+        this.alternateScreen = match[2] === 'h';
+        sawAlternateSwitch = true;
+      }
+    }
+    // Retain only an unfinished private-mode CSI prefix, not completed commands;
+    // otherwise a recent enter/exit sequence would be replayed as a fresh switch
+    // on every following PTY chunk while it remained in the rolling tail.
+    this.modeSequenceTail = combined.match(/\x1b\[\?[0-9;]*$/)?.[0].slice(-64) ?? '';
+    return sawAlternateSwitch;
+  }
+
   write(data: string | Uint8Array) {
-    let chunk = typeof data === 'string' ? data : (this.decoder ??= new TextDecoder()).decode(data);
+    // Keep incomplete UTF-8 sequences between PTY reads. SSH/local-PTY reads do not
+    // align to character boundaries; decoding each byte chunk independently silently
+    // replaces split Unicode TUI glyphs (Braille, box drawing, emoji) with U+FFFD.
+    let chunk = typeof data === 'string' ? data : (this.decoder ??= new TextDecoder()).decode(data, { stream: true });
     if (!chunk) return;
 
     // Filter and convert Kitty graphics protocol escape codes before terminal processing
@@ -308,6 +338,17 @@ export class SmartTerminalWriter {
     if (this.pendingCr) {
       this.pendingCr = false;
       chunk = '\r' + chunk;
+    }
+
+    const switchedAlternateScreen = this.updateAlternateScreenMode(chunk);
+    const activeBufferIsAlternate = this.term.buffer.active.type === 'alternate';
+    if (this.alternateScreen || activeBufferIsAlternate || switchedAlternateScreen) {
+      // This writer's wrapped-progress-bar workaround is only safe in the normal
+      // scrollback buffer. Full-screen TUIs own cursor addressing and CR behavior.
+      this.inFlightWrappedRows = null;
+      this.inFlightCol = 0;
+      this.term.write(chunk);
+      return;
     }
 
     if (this.editingPrompt || Date.now() < this.suppressRewindUntil) {
@@ -414,6 +455,9 @@ export class SmartTerminalWriter {
   dispose() {
     this.pendingCr = false;
     this.inFlightWrappedRows = null;
+    this.alternateScreen = false;
+    this.modeSequenceTail = '';
+    this.decoder = null;
     this.kittyProcessor.reset();
   }
 }

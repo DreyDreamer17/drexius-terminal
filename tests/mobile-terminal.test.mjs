@@ -167,6 +167,56 @@ test('SmartTerminalWriter rewinds cursor and clears on standalone CR for wrapped
   writer.dispose();
 });
 
+test('SmartTerminalWriter preserves UTF-8 characters split across PTY chunks', () => {
+  const written = [];
+  const mockTerm = {
+    written,
+    cols: 80,
+    write(d) { written.push(d); },
+    buffer: { active: { type: 'normal', cursorX: 0, cursorY: 0, baseY: 0, length: 1, getLine: () => undefined } },
+  };
+  const writer = new SmartTerminalWriter(mockTerm);
+  const glyphs = '⠿界🎵';
+  const bytes = new TextEncoder().encode(glyphs);
+
+  // Feed one byte at a time so every multibyte sequence crosses PTY read boundaries.
+  for (const byte of bytes) writer.write(Uint8Array.of(byte));
+  assert.equal(written.join(''), glyphs);
+  writer.dispose();
+});
+
+test('SmartTerminalWriter leaves alternate-screen TUI output and cursor controls untouched', () => {
+  const written = [];
+  const mockTerm = {
+    written,
+    cols: 12,
+    write(d) { written.push(d); },
+    buffer: { active: { type: 'normal', cursorX: 0, cursorY: 0, baseY: 0, length: 1, getLine: () => undefined } },
+  };
+  const writer = new SmartTerminalWriter(mockTerm);
+
+  // The mode switch is split across PTY reads; preserve both pieces and don't run
+  // the progress-bar CR rewrite on the redraw that completes the switch.
+  writer.write('\x1b[?104');
+  writer.write('9h\r\x1b[2;1H⠿');
+  assert.deepEqual(written, ['\x1b[?104', '9h\r\x1b[2;1H⠿']);
+
+  // Keep passing through even when a later read has no mode-switch sequence.
+  written.length = 0;
+  writer.write('visualizer\rnext frame');
+  assert.deepEqual(written, ['visualizer\rnext frame']);
+
+  // An exit restores normal-buffer progress-bar rewriting.
+  written.length = 0;
+  const exit = '\x1b[?1049l';
+  writer.write(exit);
+  assert.deepEqual(written, [exit]);
+  written.length = 0;
+  writer.write('normal output\rnext');
+  assert.deepEqual(written, ['normal output', '\r', 'next']);
+  writer.dispose();
+});
+
 test('SmartTerminalWriter never rewinds or clears during paste, arrow navigation, or Readline redraws', () => {
   const written = [];
   const mockTerm = {
