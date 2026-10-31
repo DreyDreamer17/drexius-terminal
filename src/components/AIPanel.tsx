@@ -648,7 +648,8 @@ export function AIPanel({
   }, []);
 
   const probeHostOpencode = useCallback(async (force = false) => {
-    const p = activePaneId ? registry.get(activePaneId) : undefined;
+    const p = (activePaneId ? registry.get(activePaneId) : undefined)
+      || registry.all().find((pane) => pane.hostId && pane.hostId !== '__local__' && !pane.hostId.startsWith('local') && !pane.hostId.startsWith('serial_'));
     const sid = p?.sessionId ?? null;
     const hid = p?.hostId ?? null;
     setProbingHostOpencode(true);
@@ -668,7 +669,7 @@ export function AIPanel({
     } finally {
       setProbingHostOpencode(false);
     }
-  }, [activePaneId]);
+  }, [activePaneId, opencodeInstalled]);
 
   const installOnRemoteHost = () => {
     const p = activePaneId ? registry.get(activePaneId) : undefined;
@@ -785,7 +786,7 @@ export function AIPanel({
   }, [mobile]);
 
   // Probe provider health and model availability
-  const probe = async (cfgToProbe?: AiProviderConfig) => {
+  const probe = async (cfgToProbe?: AiProviderConfig, isUserAction = false) => {
     const rawCfg = cfgToProbe || activeConfig;
     if (!rawCfg) return;
     const effectiveCfg = getEffectiveConfig(rawCfg);
@@ -795,38 +796,58 @@ export function AIPanel({
         const status = await bridge.detectOpencode();
         setOpencodeInstalled(status.installed);
 
-        // Also check if remote host has OpenCode installed
-        const p = activePaneId ? registry.get(activePaneId) : undefined;
+        // Also check if remote host has OpenCode installed (from active pane or any connected pane)
+        const p = (activePaneId ? registry.get(activePaneId) : undefined)
+          || registry.all().find((pane) => pane.hostId && pane.hostId !== '__local__' && !pane.hostId.startsWith('local') && !pane.hostId.startsWith('serial_'));
+        
         let remoteAvailable = false;
+        let remoteModels: string[] = [];
+        let hostLabel = '';
         if (p?.hostId && p.hostId !== '__local__' && !p.hostId.startsWith('local') && !p.hostId.startsWith('serial_')) {
           try {
-            const hStatus = await bridge.detectOpencodeSession(p.sessionId, p.hostId);
+            const hStatus = await bridge.detectOpencodeSession(p.sessionId, p.hostId, isUserAction);
             setHostOpencodeStatus(hStatus);
             remoteAvailable = hStatus.isRemote && hStatus.installed;
+            hostLabel = hStatus.hostLabel || 'Remote Host';
+            if (hStatus.models && hStatus.models.length > 0) {
+              remoteModels = hStatus.models;
+            }
           } catch {}
         }
 
         if (!status.installed && !remoteAvailable) {
           setOnline(false);
+          if (isUserAction) {
+            toast('OpenCode CLI not detected locally or on remote host');
+          }
           return;
         }
         setOnline(true);
-        if (status.models && status.models.length > 0) {
+        const resolvedModels = (remoteAvailable && remoteModels.length > 0)
+          ? remoteModels
+          : (status.models && status.models.length > 0 ? status.models : []);
+
+        if (resolvedModels.length > 0) {
           const latest = configsRef.current.find((c) => c.providerId === rawCfg.providerId) ?? rawCfg;
-          const nextModel = latest.selectedModel && status.models.includes(latest.selectedModel)
+          const nextModel = latest.selectedModel && resolvedModels.includes(latest.selectedModel)
             ? latest.selectedModel
-            : status.models[0];
+            : resolvedModels[0];
           const unchanged =
             nextModel === latest.selectedModel &&
-            JSON.stringify(status.models) === JSON.stringify(latest.modelsCache ?? []);
+            JSON.stringify(resolvedModels) === JSON.stringify(latest.modelsCache ?? []);
           if (!unchanged) {
             saveConfig({
               ...latest,
-              modelsCache: status.models,
+              modelsCache: resolvedModels,
               selectedModel: nextModel,
               updatedAt: Math.floor(Date.now() / 1000),
             });
           }
+          if (isUserAction) {
+            toast(`Fetched ${resolvedModels.length} models from OpenCode (${remoteAvailable ? hostLabel : 'Local'})`);
+          }
+        } else if (isUserAction) {
+          toast('OpenCode is active, but returned no models from `opencode models`');
         }
         return;
       }
@@ -850,13 +871,21 @@ export function AIPanel({
             updatedAt: Math.floor(Date.now() / 1000),
           });
         }
+        if (isUserAction) {
+          toast(`Fetched ${liveModels.length} models for ${effectiveCfg.name}`);
+        }
+      } else if (isUserAction) {
+        toast(`No models returned for ${effectiveCfg.name}`);
       }
-    } catch {
+    } catch (err: unknown) {
       // If cloud provider has no keys, mark as needing keys
       if (rawCfg.providerId !== 'ollama' && rawCfg.providerId !== 'opencode' && rawCfg.apiKeys.length === 0) {
         setOnline(null);
       } else {
         setOnline(false);
+      }
+      if (isUserAction) {
+        toast(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`);
       }
     } finally {
       setProbing(false);
@@ -1341,36 +1370,52 @@ export function AIPanel({
 
   return (
     <div
-      className="flex h-full flex-col text-slate-100"
+      className="flex h-full flex-col text-slate-100 min-w-0 max-w-full overflow-hidden"
       style={{ background: theme?.xterm?.background ?? '#0a0d14' }}
     >
       {/* ── Header ── */}
-      <div className="flex items-center justify-between border-b border-white/5 px-3.5 py-2.5 bg-transparent">
-        <div className="flex items-center gap-2 min-w-0">
-          <Sparkles className="h-4 w-4 text-cyan-400 shrink-0" />
-          <span className="truncate text-xs font-semibold text-slate-200">
-            {msgs.length > 0
-              ? msgs[0].content.slice(0, 28) + (msgs[0].content.length > 28 ? '…' : '')
-              : 'AI Assistant'}
-          </span>
+      <div className="flex items-center justify-between border-b border-white/5 px-3 py-2 sm:px-3.5 sm:py-2.5 bg-transparent shrink-0 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1 mr-2">
+          <div className="h-6 w-6 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shrink-0">
+            <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="truncate text-xs font-semibold text-slate-200">
+                {msgs.length > 0
+                  ? msgs[0].content.slice(0, 24) + (msgs[0].content.length > 24 ? '…' : '')
+                  : 'AI Assistant'}
+              </span>
+              {activeConfig.providerId === 'opencode' && (
+                <span className="hidden sm:inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  Free
+                </span>
+              )}
+            </div>
+            {mobile && (
+              <span className="block truncate text-[10px] text-slate-400 font-mono">
+                {(activeConfig.selectedModel || activeConfig.name).replace(/^opencode\//, '')}
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1 text-slate-400">
+        <div className="flex items-center gap-0.5 sm:gap-1 text-slate-400 shrink-0">
           <button
             onClick={startNewChat}
-            className="p-1.5 hover:text-white rounded hover:bg-white/5 transition"
+            className="p-1.5 sm:p-2 hover:text-white rounded-lg hover:bg-white/5 transition"
             title="New Chat (Clear thread)"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
           
           <div className="relative" ref={historyRef}>
             <button
               onClick={() => setShowHistory(!showHistory)}
-              className={cn("p-1.5 hover:text-white rounded hover:bg-white/5 transition relative", showHistory && "text-white bg-white/10")}
+              className={cn("p-1.5 sm:p-2 hover:text-white rounded-lg hover:bg-white/5 transition relative", showHistory && "text-white bg-white/10")}
               title="Saved Chat Sessions"
             >
-              <History className="w-3.5 h-3.5" />
+              <History className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               {hostSessionCount > 0 && (
                 <span className="absolute top-1 right-1 flex h-1.5 w-1.5 rounded-full bg-cyan-400" />
               )}
@@ -1490,19 +1535,19 @@ export function AIPanel({
 
           <button
             onClick={() => setShowCfg(!showCfg)}
-            className={cn("p-1.5 hover:text-white rounded hover:bg-white/5 transition", showCfg && "text-cyan-400 bg-white/10")}
+            className={cn("p-1.5 sm:p-2 hover:text-white rounded-lg hover:bg-white/5 transition", showCfg && "text-cyan-400 bg-white/10")}
             title="AI Routing, Keys & Proxy Settings"
           >
-            <MoreHorizontal className="w-3.5 h-3.5" />
+            <MoreHorizontal className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
           {onClose && (
             <button
               onClick={onClose}
-              className="p-1.5 hover:text-white rounded hover:bg-white/5 transition"
+              className="p-1.5 sm:p-2 hover:text-white rounded-lg hover:bg-white/5 transition"
               title="Close AI Panel"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
           )}
         </div>
@@ -1564,7 +1609,7 @@ export function AIPanel({
               <label className="text-[10px] uppercase tracking-wider text-slate-400">Selected Model</label>
               <button
                 type="button"
-                onClick={() => probe(activeConfig)}
+                onClick={() => probe(activeConfig, true)}
                 disabled={probing}
                 className="flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 cursor-pointer"
                 title="Refresh models from provider"
@@ -2203,7 +2248,7 @@ export function AIPanel({
       )}
 
       {/* ── Messages Stream ── */}
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
         {!msgs.length && (
           <div className="flex flex-col items-center pt-6 text-center">
             <div className="relative">
@@ -2267,18 +2312,18 @@ export function AIPanel({
           <div
             key={m.id || `msg-${i}`}
             className={cn(
-              'group relative text-[12.5px] leading-relaxed',
+              'group relative text-[12.5px] leading-relaxed min-w-0 max-w-full',
               m.role === 'user'
-                ? 'ml-6 rounded-xl rounded-tr-sm bg-cyan-400/10 px-3.5 py-2.5 text-cyan-50 ring-1 ring-cyan-400/20'
+                ? 'flex justify-end'
                 : 'text-slate-300'
             )}
           >
             {m.role === 'assistant' ? (
               m.content ? (
-                <div>
+                <div className="min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
                   <Rich text={m.content} activePaneId={activePaneId} toast={toast} />
                   <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
-                    {m.modelUsed && <span>model: {m.modelUsed}</span>}
+                    {m.modelUsed && <span className="break-all">model: {m.modelUsed}</span>}
                     {m.keyUsed && (
                       <span className="flex items-center gap-1 text-emerald-400/80">
                         <Key className="h-2.5 w-2.5" /> {m.keyUsed} ({activeConfig.balanceStrategy})
@@ -2306,38 +2351,87 @@ export function AIPanel({
                 <span className="italic text-slate-500">*(No response received)*</span>
               )
             ) : (
-              m.content
+              <div className="max-w-[90%] sm:max-w-[82%] rounded-2xl rounded-tr-sm bg-cyan-400/10 px-3.5 py-2.5 text-cyan-50 ring-1 ring-cyan-400/20 text-[12.5px] select-text break-words [overflow-wrap:anywhere] whitespace-pre-wrap min-w-0 shadow-sm">
+                {m.content}
+              </div>
             )}
           </div>
         ))}
       </div>
 
       {msgs.length > 0 && (
-        <div className="flex gap-1 overflow-x-auto px-3 pb-2">
+        <div className="flex gap-1.5 overflow-x-auto px-3 pb-2 scrollbar-none shrink-0 min-w-0">
           {quick.map((q) => (
             <button
               key={q.label}
               onClick={q.run}
-              className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[10.5px] text-slate-400 hover:border-fuchsia-400/30 hover:text-fuchsia-200"
+              className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] text-slate-400 hover:border-fuchsia-400/30 hover:text-fuchsia-200 transition active:scale-95 cursor-pointer"
             >
-              <q.icon className="h-3 w-3" />
-              {q.label}
+              <q.icon className="h-3 w-3 text-fuchsia-300" />
+              <span>{q.label}</span>
             </button>
           ))}
         </div>
       )}
 
       {/* ── Chat Input ── */}
-      <div className="p-4 pt-0">
-        <div className="flex items-center gap-2 mb-2 px-1">
-          <div className="flex items-center gap-1 rounded bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
-            <TermIcon className="h-3 w-3" />
-            {pane ? `${pane.cwd}` : 'No active session'}
+      <div className="p-2.5 sm:p-4 pt-0 shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2 px-1 text-[10px]">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <div className="flex items-center gap-1 rounded bg-white/5 px-2 py-0.5 text-slate-400 min-w-0 max-w-[140px] sm:max-w-xs" title={pane?.cwd || 'No active session'}>
+              <TermIcon className="h-3 w-3 shrink-0" />
+              <span className="truncate">{pane ? `${pane.cwd}` : 'No active session'}</span>
+            </div>
+            {scrubSecrets && (
+              <div className="flex items-center gap-1 rounded bg-cyan-500/10 px-2 py-0.5 text-cyan-400 shrink-0">
+                <ShieldCheck className="h-3 w-3" />
+                Scrubbed
+              </div>
+            )}
           </div>
-          {scrubSecrets && (
-            <div className="flex items-center gap-1 rounded bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-400">
-              <ShieldCheck className="h-3 w-3" />
-              Scrubbed
+
+          {activeConfig.providerId === 'opencode' && (
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={toggleOpencodeAutonomous}
+                title={opencodeAutonomous
+                  ? `Autonomous: OpenCode can edit/write files and run commands on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
+                  : 'Read-only: OpenCode can inspect files and run safe read-only commands, but cannot edit files or run mutating commands'}
+                className={cn(
+                  'rounded px-1.5 py-0.5 font-semibold transition cursor-pointer',
+                  opencodeAutonomous ? 'bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40' : 'text-slate-400 bg-white/5 hover:bg-white/10'
+                )}
+              >
+                {opencodeAutonomous ? 'Autonomous' : 'Read-only'}
+              </button>
+
+              {hostOpencodeStatus?.isRemote ? (
+                hostOpencodeStatus.installed ? (
+                  <span
+                    className="flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 font-semibold text-emerald-300"
+                    title={`Running natively on remote host: ${hostOpencodeStatus.hostLabel}`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
+                    <span className="truncate max-w-[80px] sm:max-w-[120px]">{hostOpencodeStatus.hostLabel}</span>
+                  </span>
+                ) : (
+                  <span
+                    className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 font-semibold text-amber-300"
+                    title={`OpenCode not on ${hostOpencodeStatus.hostLabel} (falls back to local)`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
+                    <span>Fallback</span>
+                  </span>
+                )
+              ) : (
+                <span
+                  className="flex items-center gap-1 rounded bg-white/5 border border-white/10 px-1.5 py-0.5 font-semibold text-slate-300"
+                  title="Running on local machine"
+                >
+                  <span>Local</span>
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -2386,58 +2480,14 @@ export function AIPanel({
             className="w-full resize-none bg-transparent px-2 py-2 text-[13px] text-slate-200 placeholder:text-slate-500 focus:outline-none overflow-hidden min-h-[44px] max-h-[200px]"
           />
           
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-y-1.5 gap-x-1 px-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-1 min-w-0 flex-1">
-              {activeConfig.providerId === 'opencode' && (
-                <>
-                  <button
-                    type="button"
-                    onClick={toggleOpencodeAutonomous}
-                    title={opencodeAutonomous
-                      ? `Autonomous: OpenCode can edit/write files and run commands on ${hostOpencodeStatus?.isRemote ? hostOpencodeStatus.hostLabel : 'local machine'}`
-                      : 'Read-only: OpenCode can inspect files and run safe read-only commands, but cannot edit files or run mutating commands'}
-                    className={cn(
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold transition cursor-pointer',
-                      opencodeAutonomous ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:bg-white/5'
-                    )}
-                  >
-                    {opencodeAutonomous ? 'Autonomous' : 'Read-only'}
-                  </button>
-
-                  {hostOpencodeStatus?.isRemote ? (
-                    hostOpencodeStatus.installed ? (
-                      <span
-                        className="flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 shrink-0 min-w-0"
-                        title={`Running natively on remote host: ${hostOpencodeStatus.hostLabel}`}
-                      >
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0 animate-pulse" />
-                        <span className="truncate max-w-[70px] sm:max-w-[110px]">{hostOpencodeStatus.hostLabel}</span>
-                      </span>
-                    ) : (
-                      <span
-                        className="flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 shrink-0"
-                        title={`OpenCode not on ${hostOpencodeStatus.hostLabel} (falls back to local)`}
-                      >
-                        <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
-                        <span>Fallback</span>
-                      </span>
-                    )
-                  ) : (
-                    <span
-                      className="flex items-center gap-1 rounded bg-white/5 border border-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-slate-300 shrink-0"
-                      title="Running on local machine"
-                    >
-                      <span>Local</span>
-                    </span>
-                  )}
-                </>
-              )}
+          <div className="mt-2 flex items-center justify-between gap-1 px-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
               {/* Attach Context Button (+) */}
               <div className="relative shrink-0" ref={attachMenuRef}>
                 <button
                   type="button"
                   onClick={() => setShowAttachMenu(!showAttachMenu)}
-                  className={cn("p-1.5 text-slate-400 hover:text-white rounded hover:bg-white/5 transition shrink-0 cursor-pointer", showAttachMenu && "text-white bg-white/10")}
+                  className={cn("p-1.5 sm:p-2 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition shrink-0 cursor-pointer", showAttachMenu && "text-white bg-white/10")}
                   title="Attach Context to Prompt"
                 >
                   <Plus className="h-4 w-4" />
@@ -2518,13 +2568,13 @@ export function AIPanel({
                     setShowModelDropdown((prev) => !prev);
                   }}
                   className={cn(
-                    "flex items-center gap-1 rounded-full bg-white/5 hover:bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-300 transition cursor-pointer max-w-full min-w-0 shrink",
+                    "flex items-center gap-1.5 rounded-full bg-white/5 hover:bg-white/10 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition cursor-pointer max-w-full min-w-0 shrink",
                     showModelDropdown && "bg-white/10 ring-1 ring-white/20"
                   )}
                   title="Click to switch Provider or Model"
                 >
                   <Sparkles className="h-3 w-3 text-cyan-400 shrink-0" />
-                  <span className="truncate block min-w-0 max-w-[85px] sm:max-w-[160px] md:max-w-[240px]">
+                  <span className="truncate block min-w-0 max-w-[130px] sm:max-w-[200px] md:max-w-[260px]">
                     {(activeConfig.selectedModel || activeConfig.name).replace(/^opencode\//, '')}
                   </span>
                   <ChevronDown className={cn("h-3 w-3 text-slate-500 transition-transform shrink-0", showModelDropdown && "rotate-180")} />
@@ -2593,7 +2643,7 @@ export function AIPanel({
                         )}
                       </div>
                       <button
-                        onClick={() => probe(activeConfig)}
+                        onClick={() => probe(activeConfig, true)}
                         disabled={probing}
                         className="flex items-center gap-1 text-[10px] text-cyan-400 hover:text-cyan-300 disabled:opacity-50 cursor-pointer"
                         title="Fetch live models from provider endpoint"
@@ -2703,7 +2753,7 @@ export function AIPanel({
                 type="button"
                 onClick={toggleListening}
                 className={cn(
-                  "p-1.5 rounded transition shrink-0 cursor-pointer",
+                  "p-1.5 sm:p-2 rounded-lg transition shrink-0 cursor-pointer",
                   listening
                     ? "bg-rose-500/20 text-rose-400 animate-pulse ring-1 ring-rose-500/40"
                     : "text-slate-400 hover:text-white hover:bg-white/5"
@@ -2717,7 +2767,7 @@ export function AIPanel({
                 <button
                   onClick={() => abortRef.current?.abort()}
                   title="Stop generation"
-                  className="grid h-7 w-7 place-items-center rounded-full bg-slate-200 text-black hover:bg-white transition shrink-0 cursor-pointer"
+                  className="grid h-7 w-7 sm:h-8 sm:w-8 place-items-center rounded-full bg-slate-200 text-black hover:bg-white transition shrink-0 cursor-pointer"
                 >
                   <Square className="h-3 w-3" />
                 </button>
@@ -2726,7 +2776,7 @@ export function AIPanel({
                   onClick={() => ask(input)}
                   disabled={!input.trim()}
                   title="Send prompt"
-                  className="grid h-7 w-7 place-items-center rounded-full bg-white text-black transition hover:bg-slate-200 disabled:opacity-20 shrink-0 cursor-pointer"
+                  className="grid h-7 w-7 sm:h-8 sm:w-8 place-items-center rounded-full bg-white text-black transition hover:bg-slate-200 disabled:opacity-20 shrink-0 cursor-pointer"
                 >
                   <ArrowUp className="h-4 w-4" />
                 </button>
@@ -2756,7 +2806,7 @@ export function AIPanel({
                 </span>
                 <button
                   type="button"
-                  onClick={() => probe(activeConfig)}
+                  onClick={() => probe(activeConfig, true)}
                   disabled={probing}
                   className="flex items-center gap-1 text-xs text-cyan-400 active:text-cyan-300 disabled:opacity-50 py-1 px-2 rounded-lg bg-white/5 cursor-pointer"
                   title="Fetch live models from provider endpoint"
@@ -2917,7 +2967,7 @@ function renderInline(text: string): React.ReactNode {
 
     if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
       return (
-        <code key={idx} className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px] text-cyan-200 border border-white/5">
+        <code key={idx} className="rounded bg-white/10 px-1 py-0.5 font-mono text-[11px] text-cyan-200 border border-white/5 break-words [overflow-wrap:anywhere]">
           {part.slice(1, -1)}
         </code>
       );
@@ -2954,13 +3004,13 @@ function renderInline(text: string): React.ReactNode {
             href={rawUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition"
+            className="text-cyan-400 hover:text-cyan-300 underline underline-offset-2 transition break-all"
           >
             {linkMatch[1]}
           </a>
         );
       }
-      return <span key={idx} className="text-slate-300">{linkMatch[1]}</span>;
+      return <span key={idx} className="text-slate-300 break-words [overflow-wrap:anywhere]">{linkMatch[1]}</span>;
     }
 
     return part;
@@ -3112,7 +3162,7 @@ function renderMarkdownText(text: string): React.ReactNode {
         i++;
       }
       elements.push(
-        <blockquote key={`quote-${i}`} className="border-l-2 border-cyan-500/60 bg-cyan-500/5 px-3 py-1.5 my-1.5 rounded-r text-slate-300 italic text-xs">
+        <blockquote key={`quote-${i}`} className="border-l-2 border-cyan-500/60 bg-cyan-500/5 px-3 py-1.5 my-1.5 rounded-r text-slate-300 italic text-xs break-words [overflow-wrap:anywhere] min-w-0 max-w-full">
           {quoteLines.map((ql, qli) => (
             <div key={qli}>{renderInline(ql)}</div>
           ))}
@@ -3129,7 +3179,7 @@ function renderMarkdownText(text: string): React.ReactNode {
         i++;
       }
       elements.push(
-        <ul key={`ul-${i}`} className="my-1.5 ml-4 list-disc space-y-1 text-xs text-slate-300">
+        <ul key={`ul-${i}`} className="my-1.5 ml-4 list-disc space-y-1 text-xs text-slate-300 break-words [overflow-wrap:anywhere]">
           {items.map((it, iti) => (
             <li key={iti} className="leading-relaxed">
               {renderInline(it)}
@@ -3148,7 +3198,7 @@ function renderMarkdownText(text: string): React.ReactNode {
         i++;
       }
       elements.push(
-        <ol key={`ol-${i}`} className="my-1.5 ml-4 list-decimal space-y-1 text-xs text-slate-300">
+        <ol key={`ol-${i}`} className="my-1.5 ml-4 list-decimal space-y-1 text-xs text-slate-300 break-words [overflow-wrap:anywhere]">
           {items.map((it, iti) => (
             <li key={iti} className="leading-relaxed">
               {renderInline(it)}
@@ -3178,7 +3228,7 @@ function renderMarkdownText(text: string): React.ReactNode {
 
     if (pLines.length > 0) {
       elements.push(
-        <div key={`p-${i}`} className="my-1 text-xs text-slate-300 leading-relaxed">
+        <div key={`p-${i}`} className="my-1 text-xs text-slate-300 leading-relaxed break-words [overflow-wrap:anywhere]">
           {pLines.map((pl, pli) => (
             <React.Fragment key={pli}>
               {renderInline(pl)}
@@ -3224,7 +3274,7 @@ function ThinkingBlock({
   const nonEmptyLines = lines.filter((l) => l.trim().length > 0);
 
   return (
-    <div className="my-1">
+    <div className="my-1 min-w-0 max-w-full">
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
@@ -3240,7 +3290,7 @@ function ThinkingBlock({
         />
       </button>
       {expanded && nonEmptyLines.length > 0 && (
-        <div className="mt-1 pl-3 border-l-2 border-slate-700/60 text-slate-400 text-xs leading-relaxed space-y-1 select-text">
+        <div className="mt-1 pl-3 border-l-2 border-slate-700/60 text-slate-400 text-xs leading-relaxed space-y-1 select-text break-words [overflow-wrap:anywhere] min-w-0 max-w-full">
           {lines.map((ql, qli) => (
             <div key={qli}>{ql ? renderInline(ql) : <br />}</div>
           ))}
@@ -3464,7 +3514,7 @@ function Rich({
 }) {
   const parts = text.split(/```(?:\w+)?\n?([\s\S]*?)(?:```|$)/g);
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 min-w-0 max-w-full">
       {parts.map((p, i) => {
         if (i % 2 === 1) {
           const trimmed = p.trim();
@@ -3551,7 +3601,7 @@ function CodeBlock({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-lg border',
+        'overflow-hidden rounded-lg border min-w-0 max-w-full',
         risk.level === 'danger'
           ? 'border-rose-500/30'
           : risk.level === 'caution'
@@ -3559,7 +3609,7 @@ function CodeBlock({
           : 'border-white/10'
       )}
     >
-      <pre className="overflow-x-auto bg-black/50 px-3 py-2 font-mono text-[11px] text-emerald-200">{cleanCode}</pre>
+      <pre className="overflow-x-auto bg-black/50 px-3 py-2 font-mono text-[11px] text-emerald-200 scrollbar-thin">{cleanCode}</pre>
       <div className="flex items-center gap-1 border-t border-white/5 bg-black/30 px-2 py-1">
         <span
           className={cn(

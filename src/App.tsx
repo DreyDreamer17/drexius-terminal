@@ -3524,12 +3524,12 @@ export default function App() {
       <aside
         ref={aiDrawerOpen ? (drawer.ref as React.RefObject<HTMLElement>) : undefined}
         style={aiDrawerOpen ? { ...drawer.style, background: drawerBg } : { width: `${aiWidth}px` }}
-        className={cn("nx-mobile-ai shrink-0 border-l border-white/5 bg-transparent flex flex-col relative", !aiVisible && "hidden", aiDrawerOpen && drawer.className)}
+        className={cn("nx-mobile-ai shrink-0 border-l border-white/5 bg-transparent flex flex-col relative min-w-0 max-w-full overflow-hidden", !aiVisible && "hidden", aiDrawerOpen && drawer.className)}
         aria-label={aiDrawerOpen ? 'AI Assistant drawer' : 'AI Assistant'}
       >
         {aiDrawerOpen && <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-40 opacity-25" style={{ background: `radial-gradient(ellipse at top, ${AI_TINT} 0%, transparent 70%)` }} />}
         {aiDrawerOpen && <DrawerGrip label="Drag to resize or dismiss the assistant" detent={drawer.detent} {...drawer.gripProps} />}
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col min-w-0 max-w-full overflow-hidden">
           {workspaceReady && <AIPanel
             activePaneId={activePaneId}
             toast={toast}

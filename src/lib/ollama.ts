@@ -70,24 +70,18 @@ export const KNOWN_PROVIDERS: ProviderSpec[] = [
     name: 'OpenCode (Free Models)',
     type: 'opencode',
     defaultBaseUrl: 'local',
-    defaultModel: 'opencode/nemotron-3-ultra-free',
+    defaultModel: 'opencode/nemotron-3.5-lightning-free',
     supportsKeyPool: false,
     docUrl: 'https://opencode.ai',
     popularModels: [
-      'opencode/big-pickle',
-      'opencode/mimo-v2.6-flash-free',
+      'opencode/nemotron-3.5-lightning-free',
+      'opencode/nemotron-3.5-super-vl-free',
       'opencode/deepseek-v4.1-flash-free',
       'opencode/glm-5.3-flash-free',
-      'opencode/nemotron-3-ultra-free',
-      'opencode/nemotron-3.5-lightning-free',
-      'opencode/ling-3.1-flash-free',
-      'opencode/ling-3.0-flash-fin-free',
+      'opencode/mimo-v2.6-flash-free',
       'opencode/beam-free',
-      'opencode/exo-free',
-      'opencode/longcat-2.5-preview-free',
-      'opencode/muse-spark-1.3-contributor-free',
-      'opencode/space-bunny-free',
-      'opencode/step-5-preview-free',
+      'opencode/flint-40b-free',
+      'opencode/big-pickle',
     ],
   },
   {
@@ -526,20 +520,14 @@ export async function listModelsForProvider(config: AiProviderConfig, specificKe
     return config.modelsCache && config.modelsCache.length > 0
       ? config.modelsCache
       : providerSpec?.popularModels ?? [
-          'opencode/big-pickle',
-          'opencode/mimo-v2.6-flash-free',
+          'opencode/nemotron-3.5-lightning-free',
+          'opencode/nemotron-3.5-super-vl-free',
           'opencode/deepseek-v4.1-flash-free',
           'opencode/glm-5.3-flash-free',
-          'opencode/nemotron-3-ultra-free',
-          'opencode/nemotron-3.5-lightning-free',
-          'opencode/ling-3.1-flash-free',
-          'opencode/ling-3.0-flash-fin-free',
+          'opencode/mimo-v2.6-flash-free',
           'opencode/beam-free',
-          'opencode/exo-free',
-          'opencode/longcat-2.5-preview-free',
-          'opencode/muse-spark-1.3-contributor-free',
-          'opencode/space-bunny-free',
-          'opencode/step-5-preview-free',
+          'opencode/flint-40b-free',
+          'opencode/big-pickle',
         ];
   }
 
@@ -977,7 +965,7 @@ async function streamOpencodeRunner(
   hostId?: string | null
 ): Promise<void> {
   const prompt = formatMessagesForOpencode(messages);
-  const model = config.selectedModel || 'opencode/nemotron-3-ultra-free';
+  const model = config.selectedModel || 'opencode/nemotron-3.5-lightning-free';
   await bridge.streamOpencode(
     {
       prompt,

@@ -427,6 +427,7 @@ export interface OpencodeHostStatus {
   hostLabel?: string | null;
   installed: boolean;
   binaryPath?: string | null;
+  models?: string[];
 }
 
 export type CloudProviderId = 'hetzner' | 'digitalocean' | 'proxmox';

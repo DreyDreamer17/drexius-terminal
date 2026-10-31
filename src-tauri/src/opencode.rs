@@ -24,10 +24,11 @@ pub struct OpencodeHostStatus {
     pub host_label: Option<String>,
     pub installed: bool,
     pub binary_path: Option<String>,
+    pub models: Vec<String>,
 }
 
 #[allow(clippy::type_complexity)]
-static REMOTE_PROBE_CACHE: OnceLock<Mutex<HashMap<String, (bool, Option<String>, Instant)>>> = OnceLock::new();
+static REMOTE_PROBE_CACHE: OnceLock<Mutex<HashMap<String, (bool, Option<String>, Vec<String>, Instant)>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -45,20 +46,14 @@ fn cancel_channels() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
 /// Fallback list of curated high-quality free models provided by OpenCode.
 pub fn default_free_models() -> Vec<String> {
     vec![
-        "opencode/big-pickle".to_string(),
-        "opencode/mimo-v2.6-flash-free".to_string(),
+        "opencode/nemotron-3.5-lightning-free".to_string(),
+        "opencode/nemotron-3.5-super-vl-free".to_string(),
         "opencode/deepseek-v4.1-flash-free".to_string(),
         "opencode/glm-5.3-flash-free".to_string(),
-        "opencode/nemotron-3-ultra-free".to_string(),
-        "opencode/nemotron-3.5-lightning-free".to_string(),
-        "opencode/ling-3.1-flash-free".to_string(),
-        "opencode/ling-3.0-flash-fin-free".to_string(),
+        "opencode/mimo-v2.6-flash-free".to_string(),
         "opencode/beam-free".to_string(),
-        "opencode/exo-free".to_string(),
-        "opencode/longcat-2.5-preview-free".to_string(),
-        "opencode/muse-spark-1.3-contributor-free".to_string(),
-        "opencode/space-bunny-free".to_string(),
-        "opencode/step-5-preview-free".to_string(),
+        "opencode/flint-40b-free".to_string(),
+        "opencode/big-pickle".to_string(),
     ]
 }
 
@@ -180,22 +175,22 @@ pub async fn opencode_detect() -> Result<OpencodeStatus, String> {
     })
 }
 
-/// Probe whether OpenCode is installed on a remote host via SSH.
-pub async fn detect_remote_opencode(host_id: &str, vault: &Vault) -> Result<Option<String>, String> {
-    if let Some((installed, path, ts)) = REMOTE_PROBE_CACHE
+/// Probe whether OpenCode is installed on a remote host via SSH and query its models.
+pub async fn detect_remote_opencode(host_id: &str, vault: &Vault) -> Result<(Option<String>, Vec<String>), String> {
+    if let Some((installed, path, models, ts)) = REMOTE_PROBE_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .get(host_id)
     {
         if ts.elapsed() < Duration::from_secs(60) {
-            return Ok(if *installed { path.clone() } else { None });
+            return Ok((if *installed { path.clone() } else { None }, models.clone()));
         }
     }
 
     let (host, secret) = vault.host_with_secret(host_id).map_err(|e| e.to_string())?;
     let (sess, _) = crate::ssh::open_authenticated(&host, &secret, vault)
         .map_err(|e| format!("Failed to reach host: {}", e))?;
-    sess.set_timeout(3500);
+    sess.set_timeout(4000);
     let mut ch = sess
         .channel_session()
         .map_err(|e| format!("Failed to open channel: {}", e))?;
@@ -214,12 +209,51 @@ pub async fn detect_remote_opencode(host_id: &str, vault: &Vault) -> Result<Opti
 
     let installed = result.is_some();
     let path = result.clone();
+    let mut models = Vec::new();
+
+    if let Some(ref bp) = result {
+        if let Ok(mut mod_ch) = sess.channel_session() {
+            let cmd = format!("export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \"{}\" models 2>/dev/null", bp);
+            if mod_ch.exec(&cmd).is_ok() {
+                let mut mod_out = String::new();
+                let _ = mod_ch.read_to_string(&mut mod_out);
+                let _ = mod_ch.wait_close();
+                let mut free_models = Vec::new();
+                let mut other_models = Vec::new();
+                for line in mod_out.lines() {
+                    let m_trimmed = line.trim();
+                    if m_trimmed.is_empty()
+                        || m_trimmed.starts_with('#')
+                        || m_trimmed.starts_with('┌')
+                        || m_trimmed.starts_with('│')
+                        || m_trimmed.starts_with('└')
+                        || m_trimmed.starts_with('●')
+                    {
+                        continue;
+                    }
+                    if is_free_model(m_trimmed) {
+                        if !free_models.contains(&m_trimmed.to_string()) {
+                            free_models.push(m_trimmed.to_string());
+                        }
+                    } else if !other_models.contains(&m_trimmed.to_string()) {
+                        other_models.push(m_trimmed.to_string());
+                    }
+                }
+                if free_models.is_empty() {
+                    free_models = default_free_models();
+                }
+                models = free_models;
+                models.extend(other_models);
+            }
+        }
+    }
+
     REMOTE_PROBE_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .insert(host_id.to_string(), (installed, path, Instant::now()));
+        .insert(host_id.to_string(), (installed, path.clone(), models.clone(), Instant::now()));
 
-    Ok(result)
+    Ok((result, models))
 }
 
 /// Invalidate cached probe status for a host (e.g. after user runs installation script).
@@ -251,7 +285,7 @@ pub async fn opencode_detect_session(
             let force_refresh = force.unwrap_or(false);
             if force_refresh {
                 invalidate_remote_probe_cache(&hid);
-            } else if let Some((installed, path, ts)) = REMOTE_PROBE_CACHE
+            } else if let Some((installed, path, models, ts)) = REMOTE_PROBE_CACHE
                 .get_or_init(|| Mutex::new(HashMap::new()))
                 .lock()
                 .get(&hid)
@@ -263,11 +297,12 @@ pub async fn opencode_detect_session(
                         host_label: Some(host_label),
                         installed: *installed,
                         binary_path: path.clone(),
+                        models: models.clone(),
                     });
                 }
             }
 
-            let detected = detect_remote_opencode(&hid, &vault).await?;
+            let (detected, models) = detect_remote_opencode(&hid, &vault).await?;
             let installed = detected.is_some();
             return Ok(OpencodeHostStatus {
                 is_remote: true,
@@ -275,18 +310,25 @@ pub async fn opencode_detect_session(
                 host_label: Some(host_label),
                 installed,
                 binary_path: detected,
+                models,
             });
         }
     }
 
     let local_bin = find_opencode_binary();
     let installed = local_bin.is_some();
+    let local_models = if installed {
+        opencode_detect().await.ok().map(|s| s.models).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     Ok(OpencodeHostStatus {
         is_remote: false,
         host_id: None,
         host_label: None,
         installed,
         binary_path: local_bin.map(|p| p.to_string_lossy().into_owned()),
+        models: local_models,
     })
 }
 
@@ -1378,7 +1420,7 @@ pub async fn opencode_stream(
 
     if let Some(ref hid) = target_host_id {
         // Check if remote OpenCode is installed on that host
-        if let Ok(Some(_remote_bin)) = detect_remote_opencode(hid, &vault).await {
+        if let Ok((Some(_remote_bin), _)) = detect_remote_opencode(hid, &vault).await {
             let (host, secret) = vault.host_with_secret(hid).map_err(|e| e.to_string())?;
             return opencode_stream_remote(
                 host,
