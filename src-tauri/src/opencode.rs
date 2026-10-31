@@ -45,14 +45,17 @@ fn cancel_channels() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
 /// Fallback list of curated high-quality free models provided by OpenCode.
 pub fn default_free_models() -> Vec<String> {
     vec![
+        "opencode/big-pickle".to_string(),
+        "opencode/mimo-v2.6-flash-free".to_string(),
+        "opencode/deepseek-v4.1-flash-free".to_string(),
+        "opencode/glm-5.3-flash-free".to_string(),
         "opencode/nemotron-3-ultra-free".to_string(),
         "opencode/nemotron-3.5-lightning-free".to_string(),
         "opencode/ling-3.1-flash-free".to_string(),
         "opencode/ling-3.0-flash-fin-free".to_string(),
-        "opencode/big-pickle".to_string(),
+        "opencode/beam-free".to_string(),
         "opencode/exo-free".to_string(),
         "opencode/longcat-2.5-preview-free".to_string(),
-        "opencode/mimo-v2.6-flash-free".to_string(),
         "opencode/muse-spark-1.3-contributor-free".to_string(),
         "opencode/space-bunny-free".to_string(),
         "opencode/step-5-preview-free".to_string(),
@@ -891,6 +894,18 @@ impl OpenCodeStreamState {
             return err.clone();
         }
         if !self.raw_error_lines.is_empty() {
+            let errs: Vec<&str> = self
+                .raw_error_lines
+                .iter()
+                .filter(|l| {
+                    let s = l.to_lowercase();
+                    s.contains("error") || s.contains("unrecognized") || s.contains("unknown") || s.contains("failed")
+                })
+                .map(String::as_str)
+                .collect();
+            if !errs.is_empty() {
+                return errs.join("\n");
+            }
             return self.raw_error_lines.join("\n");
         }
         fallback.to_string()
@@ -907,7 +922,7 @@ impl OpenCodeStreamState {
             return Ok(true);
         }
         let Ok(parsed) = serde_json::from_str::<OpencodeJsonLine>(trimmed) else {
-            if self.raw_error_lines.len() < 10 {
+            if self.raw_error_lines.len() < 40 {
                 self.raw_error_lines.push(trimmed.to_string());
             }
             return Ok(true);
@@ -1068,7 +1083,7 @@ async fn opencode_stream_remote(
         "export PATH=\"$HOME/.opencode/bin:$HOME/.local/bin:$PATH\"; \
          {cd_prefix}\
          BIN=$(command -v opencode 2>/dev/null || (test -x \"$HOME/.opencode/bin/opencode\" && echo \"$HOME/.opencode/bin/opencode\") || echo \"opencode\"); \
-         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking --pure -m {} --dir \"$PWD\" 2>&1",
+         OPENCODE_CONFIG_CONTENT={} \"$BIN\" run --format json --thinking -m {} 2>&1",
         crate::ssh::shell_quote(&perm_json),
         crate::ssh::shell_quote(&model),
     );
@@ -1210,13 +1225,10 @@ async fn opencode_stream_local(
     cmd.arg("run")
         .arg("--format")
         .arg("json")
-        .arg("--thinking")
-        .arg("--pure");
+        .arg("--thinking");
     cmd.arg("-m")
         .arg(&model)
         .env("OPENCODE_CONFIG_CONTENT", &perm_json)
-        .arg("--dir")
-        .arg(&workspace)
         .current_dir(&workspace);
 
     cmd.stdin(std::process::Stdio::piped())
