@@ -1243,6 +1243,54 @@ export function SettingsModal({
                     </div>
                   </div>
 
+                  {/* Copy on Select */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-300">
+                      Copy on Select
+                    </label>
+                    <div
+                      onClick={() => updatePref('copyOnSelect', !uiPrefs.copyOnSelect)}
+                      className={cn(
+                        'flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer transition select-none',
+                        uiPrefs.copyOnSelect ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-xs font-medium text-white">Copy on select</span>
+                        <span className="text-[10px] text-slate-400">Auto-copy highlighted text to clipboard</span>
+                      </div>
+                      <ToggleSwitch
+                        checked={uiPrefs.copyOnSelect}
+                        onChange={(val) => updatePref('copyOnSelect', val)}
+                        accentColor={accentColor}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Right Click to Paste */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-300">
+                      Right Click Action
+                    </label>
+                    <div
+                      onClick={() => updatePref('rightClickPaste', !uiPrefs.rightClickPaste)}
+                      className={cn(
+                        'flex items-center justify-between rounded-lg border px-3 py-2.5 cursor-pointer transition select-none',
+                        uiPrefs.rightClickPaste ? 'border-white/15 bg-white/[0.04]' : 'border-white/5 bg-white/[0.015] opacity-75'
+                      )}
+                    >
+                      <div className="flex flex-col min-w-0 pr-2">
+                        <span className="text-xs font-medium text-white">Right click to paste</span>
+                        <span className="text-[10px] text-slate-400">Paste clipboard instead of context menu</span>
+                      </div>
+                      <ToggleSwitch
+                        checked={uiPrefs.rightClickPaste}
+                        onChange={(val) => updatePref('rightClickPaste', val)}
+                        accentColor={accentColor}
+                      />
+                    </div>
+                  </div>
+
                   {/* Inline Ghost Autosuggestions */}
                   <div className="space-y-1.5 sm:col-span-2">
                     <label className="text-xs font-medium text-slate-300">

@@ -152,6 +152,8 @@ export interface UiPreferences {
   confirmClosePane: boolean;
   defaultLocalShell: string;
   ghostSuggestions: boolean;
+  copyOnSelect: boolean;
+  rightClickPaste: boolean;
 
   // Font & Typography Configuration
   fontFamily: string;
@@ -183,6 +185,8 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   confirmClosePane: true,
   defaultLocalShell: '',
   ghostSuggestions: true,
+  copyOnSelect: false,
+  rightClickPaste: false,
   fontFamily: 'JetBrains Mono',
   customFontFamily: '',
   fontWeight: '400',

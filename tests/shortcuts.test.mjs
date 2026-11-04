@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   DEFAULT_SHORTCUTS,
+  DEFAULT_UI_PREFERENCES,
   RESERVED_SHORTCUTS,
   UNBOUND_SHORTCUT,
   applyShortcutOverride,
@@ -9,9 +10,11 @@ import {
   findShortcutConflict,
   isShortcutUnbound,
   loadShortcuts,
+  loadUiPreferences,
   matchesShortcut,
   normalizeCombo,
   saveShortcuts,
+  saveUiPreferences,
 } from '../src/lib/settings.ts';
 import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, clampTerminalFontSize } from '../src/lib/mobileTerminal.ts';
 
@@ -159,4 +162,25 @@ test('matchesShortcut understands the new combinations', () => {
   assert.ok(matchesShortcut(ev({ key: 'D', code: 'KeyD', altKey: true, shiftKey: true }), 'Alt+Shift+D'));
   assert.ok(!matchesShortcut(ev({ key: 'D', code: 'KeyD', ctrlKey: true, altKey: true, shiftKey: true }), 'Ctrl+Shift+D'));
   assert.ok(matchesShortcut(ev({ key: 'N', code: 'KeyN', metaKey: true, shiftKey: true }), 'Ctrl+Shift+N'), 'Cmd counts as Ctrl');
+});
+
+test('default UI preferences include copyOnSelect and rightClickPaste', () => {
+  assert.equal(typeof DEFAULT_UI_PREFERENCES.copyOnSelect, 'boolean');
+  assert.equal(typeof DEFAULT_UI_PREFERENCES.rightClickPaste, 'boolean');
+  assert.equal(DEFAULT_UI_PREFERENCES.copyOnSelect, false);
+  assert.equal(DEFAULT_UI_PREFERENCES.rightClickPaste, false);
+});
+
+test('loadUiPreferences and saveUiPreferences round-trip copyOnSelect and rightClickPaste', () => {
+  localStorage.clear();
+  const initial = loadUiPreferences();
+  assert.equal(initial.copyOnSelect, false);
+  assert.equal(initial.rightClickPaste, false);
+
+  saveUiPreferences({ ...initial, copyOnSelect: true, rightClickPaste: true });
+  const updated = loadUiPreferences();
+  assert.equal(updated.copyOnSelect, true);
+  assert.equal(updated.rightClickPaste, true);
+
+  localStorage.clear();
 });

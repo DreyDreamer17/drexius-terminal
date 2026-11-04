@@ -3391,6 +3391,8 @@ export default function App() {
                           cursorBlink={uiPrefs.cursorBlink}
                           scrollback={uiPrefs.scrollback}
                           ghostSuggestions={uiPrefs.ghostSuggestions}
+                          copyOnSelect={uiPrefs.copyOnSelect}
+                          rightClickPaste={uiPrefs.rightClickPaste}
                           active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
                           mobileHidden={t.activePaneId !== p.id}
                           hidden={isPaneHidden}
@@ -3681,9 +3683,25 @@ export default function App() {
               onChange={e => setLineHeight(Number(e.target.value))} />
           </label>
         </div>
-        <h2 className="nx-section-label">Terminal input</h2>
+        <h2 className="nx-section-label">Terminal input & clipboard</h2>
         <label className="nx-settings-row rounded-xl border border-white/10"><input type="checkbox" checked={broadcast} onChange={e => setBroadcast(e.target.checked)} /> Broadcast to all panes in this tab</label>
         {broadcast && <p className="mt-2 text-xs text-amber-300">Input also reaches hidden sessions in the same split tab.</p>}
+        <label className="nx-settings-row rounded-xl border border-white/10">
+          <input
+            type="checkbox"
+            checked={uiPrefs.copyOnSelect}
+            onChange={(e) => handleUpdateUiPrefs({ ...uiPrefs, copyOnSelect: e.target.checked })}
+          />
+          <span>Copy on select</span>
+        </label>
+        <label className="nx-settings-row rounded-xl border border-white/10">
+          <input
+            type="checkbox"
+            checked={uiPrefs.rightClickPaste}
+            onChange={(e) => handleUpdateUiPrefs({ ...uiPrefs, rightClickPaste: e.target.checked })}
+          />
+          <span>Right click to paste</span>
+        </label>
       </section>}
       {mobile && settingsPicker === 'autolock' && <MobileSheet title="Auto-lock" kicker="Security" subtitle="Lock the vault after a period of inactivity" icon={Timer} theme={theme} onClose={() => setSettingsPicker(null)}>
         <div className="nx-settings-group" role="radiogroup" aria-label="Auto-lock timeout">

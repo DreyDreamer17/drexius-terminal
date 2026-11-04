@@ -39,6 +39,8 @@ import {
   ArrowLeftRight,
   ExternalLink,
   Copy,
+  CheckSquare,
+  Eraser,
   Square,
   Zap,
   Maximize2,
@@ -287,6 +289,8 @@ interface Props {
   cursorBlink?: boolean;
   scrollback?: number;
   ghostSuggestions?: boolean;
+  copyOnSelect?: boolean;
+  rightClickPaste?: boolean;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
   /** Invoked whenever the terminal working directory is resolved or updated. */
@@ -356,6 +360,8 @@ export const TerminalPane = memo(function TerminalPane({
   cursorBlink = true,
   scrollback = 10000,
   ghostSuggestions = true,
+  copyOnSelect = false,
+  rightClickPaste = false,
   onFontSizeChange,
   lineHeight = 1.0,
   active,
@@ -400,6 +406,22 @@ export const TerminalPane = memo(function TerminalPane({
   const resizeScheduled = useRef(false);
   const hiddenRef = useRef(hidden);
   hiddenRef.current = hidden;
+  const copyOnSelectRef = useRef(copyOnSelect);
+  copyOnSelectRef.current = copyOnSelect;
+  const rightClickPasteRef = useRef(rightClickPaste);
+  rightClickPasteRef.current = rightClickPaste;
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [contextMenu]);
 
   const refreshTerminal = useCallback(() => {
     if (hiddenRef.current) return;
@@ -1000,14 +1022,20 @@ export const TerminalPane = memo(function TerminalPane({
 
   const handlePasteClipboard = useCallback(
     (text: string) => {
-      const sid = sessionRef.current;
-      if (sid && text) {
+      const term = termRef.current;
+      if (term && text) {
         smartWriterRef.current?.notifyUserInput(text, true);
-        if (isSerial) bridge.writeSerial(sid, text);
-        else if (isLocal) bridge.writeLocalPty(sid, text);
-        else bridge.write(sid, text);
-        termRef.current?.focus();
-        scheduleResync();
+        term.paste(text);
+        term.focus();
+      } else {
+        const sid = sessionRef.current;
+        if (sid && text) {
+          smartWriterRef.current?.notifyUserInput(text, true);
+          if (isSerial) bridge.writeSerial(sid, text);
+          else if (isLocal) bridge.writeLocalPty(sid, text);
+          else bridge.write(sid, text);
+          scheduleResync();
+        }
       }
     },
     [isSerial, isLocal, scheduleResync]
@@ -1935,7 +1963,10 @@ export const TerminalPane = memo(function TerminalPane({
     // Track cursor and viewport changes to update ghost text alignment
     const dCursor = term.onCursorMove(updateGhostPos);
     const dRender = term.onRender(updateGhostPos);
-    const dScroll = term.onScroll(updateGhostPos);
+    const dScroll = term.onScroll(() => {
+      updateGhostPos();
+      setContextMenu(null);
+    });
     const dBuffer = term.buffer.onBufferChange((buf) => {
       const isAlt = buf.type === 'alternate';
       setIsAlternateBuffer(isAlt);
@@ -2085,9 +2116,7 @@ export const TerminalPane = memo(function TerminalPane({
         modifiersRef.current = { ctrl: false, alt: false };
         setModifiers(modifiersRef.current);
       }
-      if (!data.startsWith('\x1b')) {
-        smartWriterRef.current?.notifyUserInput(data);
-      }
+      smartWriterRef.current?.notifyUserInput(data, data.startsWith('\x1b[200~'));
       const sid = sessionRef.current;
       if (!sid) return;
       if (isSerial) {
@@ -2184,7 +2213,7 @@ export const TerminalPane = memo(function TerminalPane({
           scheduleResync();
         } else if (ch === '\x7f' || ch === '\x08') {
           lineRef.current = lineRef.current.slice(0, -1);
-          updateSuggestion(lineRef.current);
+          if (data.length === 1) updateSuggestion(lineRef.current);
         } else if (ch === '\x03' || ch === '\x15' || ch === '\x0c') {
           multilineBufferRef.current = [];
           lineRef.current = '';
@@ -2195,11 +2224,14 @@ export const TerminalPane = memo(function TerminalPane({
           const parts = lineRef.current.trimEnd().split(/\s+/);
           parts.pop();
           lineRef.current = parts.join(' ');
-          updateSuggestion(lineRef.current);
+          if (data.length === 1) updateSuggestion(lineRef.current);
         } else if (ch >= ' ') {
           lineRef.current += ch;
-          updateSuggestion(lineRef.current);
+          if (data.length === 1) updateSuggestion(lineRef.current);
         }
+      }
+      if (data.length > 1) {
+        updateSuggestion(lineRef.current);
       }
       onDataRef.current?.(data);
     });
@@ -2219,6 +2251,7 @@ export const TerminalPane = memo(function TerminalPane({
     // Copy on selection mouseup (Termius convenience & Clipboard history)
     // Copies once on mouse release to prevent thrashing clipboard & flooding DB on every drag event (fixes H8)
     const handleMouseUpCopy = () => {
+      if (!copyOnSelectRef.current) return;
       if (term.hasSelection()) {
         const sel = term.getSelection();
         if (sel && sel.trim().length > 0) {
@@ -2660,37 +2693,32 @@ export const TerminalPane = memo(function TerminalPane({
       onMouseLeave={(e) => e.currentTarget.classList.remove('nx-scroll-near')}
       onContextMenu={async (e) => {
         if (mobile) { e.preventDefault(); return; }
-        if (termRef.current?.hasSelection()) {
-          e.preventDefault();
-          const sel = termRef.current.getSelection();
-          if (sel) {
-            await bridge.writeClipboard(sel).catch(() => {});
-            bridge.addClipboardHistory(sel, 'Terminal Selection').catch(() => {});
-            termRef.current.clearSelection();
+        e.preventDefault();
+
+        if (rightClickPasteRef.current) {
+          if (termRef.current?.hasSelection() && !copyOnSelectRef.current) {
+            const sel = termRef.current.getSelection();
+            if (sel) {
+              await bridge.writeClipboard(sel).catch(() => {});
+              bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
+              termRef.current.clearSelection();
+            }
+            return;
+          }
+          try {
+            const text = await bridge.readClipboard();
+            if (text) {
+              handlePasteClipboard(text);
+              bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
+            }
+          } catch {
+            // clipboard permission not granted
           }
           return;
         }
-        e.preventDefault();
-        try {
-          const text = await bridge.readClipboard();
-          if (text) {
-            smartWriterRef.current?.notifyUserInput(text, true);
-            if (termRef.current) {
-              termRef.current.paste(text);
-            } else {
-              const sid = sessionRef.current;
-              if (sid) {
-                if (isSerial) bridge.writeSerial(sid, text);
-                else if (isLocal) bridge.writeLocalPty(sid, text);
-                else bridge.write(sid, text);
-                onData?.(text);
-              }
-            }
-            bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
-          }
-        } catch {
-          // clipboard permission not granted
-        }
+
+        // Context menu mode
+        setContextMenu({ x: e.clientX, y: e.clientY });
       }}
       className={cn(
         'flex min-h-0 min-w-0 flex-col overflow-hidden',
@@ -3433,6 +3461,180 @@ export const TerminalPane = memo(function TerminalPane({
           theme={theme}
         />
       )}
+
+      {/* Desktop Terminal Right-Click Context Menu */}
+      {!mobile && contextMenu && (() => {
+        const menuWidth = 208;
+        const menuHeight = onSplitPane ? 220 : 160;
+        const clampedX = typeof window !== 'undefined'
+          ? Math.max(8, Math.min(contextMenu.x, window.innerWidth - menuWidth - 8))
+          : contextMenu.x;
+        const clampedY = typeof window !== 'undefined'
+          ? Math.max(8, Math.min(contextMenu.y, window.innerHeight - menuHeight - 8))
+          : contextMenu.y;
+
+        const hasSelection = !!termRef.current?.hasSelection();
+        const isMac = typeof navigator !== 'undefined' && /Macintosh|Mac OS X/i.test(navigator.userAgent);
+
+        return (
+          <div
+            className="fixed inset-0 z-50 cursor-default"
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setContextMenu(null);
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{
+                left: clampedX,
+                top: clampedY,
+                width: menuWidth,
+                backgroundColor: '#0e131d',
+                boxShadow: `0 0 30px ${theme.accent || '#22d3ee'}15, 0 16px 36px rgba(0, 0, 0, 0.75)`,
+              }}
+              className="fixed rounded-xl border border-white/15 p-1.5 text-xs text-slate-200 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100 select-none shadow-2xl"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between gap-2 px-2.5 py-1 mb-1 border-b border-white/[0.08]">
+                <span className="font-semibold text-[10px] uppercase tracking-wider text-slate-400 truncate">
+                  {isLocal ? 'Local Terminal' : host.label}
+                </span>
+                <span className="text-[9px] font-mono rounded px-1.5 py-0.5 bg-white/[0.06] text-slate-400 shrink-0">
+                  PTY
+                </span>
+              </div>
+
+              {/* Copy */}
+              <button
+                type="button"
+                disabled={!hasSelection}
+                onClick={async () => {
+                  setContextMenu(null);
+                  const sel = termRef.current?.getSelection();
+                  if (sel && sel.trim().length > 0) {
+                    try {
+                      await bridge.writeClipboard(sel);
+                      toast('Copied to clipboard');
+                    } catch {
+                      toast('Clipboard access denied');
+                    }
+                    bridge.addClipboardHistory(sel, `Terminal (${isLocal ? 'Local' : host.label})`).catch(() => {});
+                    termRef.current?.clearSelection();
+                  }
+                  termRef.current?.focus();
+                }}
+                className={cn(
+                  'flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium transition cursor-pointer',
+                  hasSelection
+                    ? 'hover:bg-white/10 hover:text-white text-slate-200'
+                    : 'opacity-40 cursor-not-allowed text-slate-400'
+                )}
+              >
+                <Copy className="h-3.5 w-3.5 text-slate-400" />
+                <span>Copy</span>
+                <kbd className="ml-auto text-[10px] text-slate-500 font-mono">
+                  {isMac ? '⌘C' : 'Ctrl+Shift+C'}
+                </kbd>
+              </button>
+
+              {/* Paste */}
+              <button
+                type="button"
+                onClick={async () => {
+                  setContextMenu(null);
+                  try {
+                    const text = await bridge.readClipboard();
+                    if (text) {
+                      handlePasteClipboard(text);
+                      bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
+                    } else {
+                      toast('Clipboard is empty');
+                    }
+                  } catch {
+                    toast('Clipboard access denied');
+                  }
+                  termRef.current?.focus();
+                }}
+                className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+              >
+                <Clipboard className="h-3.5 w-3.5 text-slate-400" />
+                <span>Paste</span>
+                <kbd className="ml-auto text-[10px] text-slate-500 font-mono">
+                  {isMac ? '⌘V' : 'Ctrl+Shift+V'}
+                </kbd>
+              </button>
+
+              {/* Select All */}
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  termRef.current?.selectAll();
+                  termRef.current?.focus();
+                }}
+                className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+              >
+                <CheckSquare className="h-3.5 w-3.5 text-slate-400" />
+                <span>Select All</span>
+              </button>
+
+              {/* Separator */}
+              <div className="my-1 border-t border-white/[0.08]" />
+
+              {/* Clear Buffer */}
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  termRef.current?.clear();
+                  termRef.current?.focus();
+                }}
+                className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+              >
+                <Eraser className="h-3.5 w-3.5 text-slate-400" />
+                <span>Clear Buffer</span>
+                <kbd className="ml-auto text-[10px] text-slate-500 font-mono">
+                  {isMac ? '⌘K' : 'Ctrl+L'}
+                </kbd>
+              </button>
+
+              {/* Split Actions */}
+              {onSplitPane && (
+                <>
+                  <div className="my-1 border-t border-white/[0.08]" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onSplitPane('right');
+                    }}
+                    className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                  >
+                    <Columns2 className="h-3.5 w-3.5 text-slate-400" />
+                    <span>Split Right</span>
+                    <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+D</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onSplitPane('down');
+                    }}
+                    className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                  >
+                    <Rows2 className="h-3.5 w-3.5 text-slate-400" />
+                    <span>Split Down</span>
+                    <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+E</kbd>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 });
