@@ -9,6 +9,7 @@ mod local_pty;
 mod netbird;
 mod opencode;
 mod pairing;
+mod popout;
 mod serial;
 mod sftp;
 mod snapshot;
@@ -239,6 +240,11 @@ pub fn run() {
             docker::docker_list_containers,
             docker::docker_container_action,
             docker::docker_container_logs,
+            // pop-out terminal pane windows
+            popout::popout_open_window,
+            popout::popout_close_window,
+            popout::popout_get_bounds,
+            popout::popout_list_windows,
         ])
         .run(tauri::generate_context!())
         .expect("error while running DrexiusTerminal");

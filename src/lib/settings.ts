@@ -307,6 +307,13 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     keys: 'Ctrl+Shift+M',
     description: 'Zoom and expand the active pane to full size or restore split view',
   },
+  popout_pane: {
+    id: 'popout_pane',
+    label: 'Pop Out Active Pane',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+P',
+    description: 'Detach the focused terminal pane into a standalone OS window for multi-monitor setups',
+  },
   save_layout_preset: {
     id: 'save_layout_preset',
     label: 'Save Split Layout Preset',

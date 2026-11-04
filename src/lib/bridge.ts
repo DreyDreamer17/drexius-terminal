@@ -35,6 +35,7 @@ import type {
   PairingHostInfo,
   PairingJoinResult,
   ParsedSshHost,
+  PopoutWindowBounds,
   SerialOpenOptions,
   SerialPortInfo,
   SessionEvent,
@@ -2131,5 +2132,57 @@ export const bridge = {
         /* fallback failed */
       }
     }
+  },
+
+  // ── Pop-Out Terminal Windows (Multi-Monitor Workspaces) ──
+  async popoutOpenWindow(
+    paneId: string,
+    title: string,
+    urlQuery: string,
+    bounds?: PopoutWindowBounds
+  ): Promise<void> {
+    if (isTauri) {
+      return invoke('popout_open_window', {
+        paneId,
+        title,
+        urlQuery,
+        x: bounds?.x ?? null,
+        y: bounds?.y ?? null,
+        width: bounds?.width ?? null,
+        height: bounds?.height ?? null,
+      });
+    }
+    if (typeof window !== 'undefined') {
+      const q = urlQuery.startsWith('?') ? urlQuery : `?${urlQuery}`;
+      const w = bounds?.width ?? 920;
+      const h = bounds?.height ?? 620;
+      const x = bounds?.x ?? Math.max(0, (window.screenX || 0) + 60);
+      const y = bounds?.y ?? Math.max(0, (window.screenY || 0) + 60);
+      window.open(
+        `${window.location.origin}${window.location.pathname}${q}`,
+        `popout-${paneId}`,
+        `width=${w},height=${h},left=${x},top=${y},menubar=no,toolbar=no,location=no,status=no`
+      );
+    }
+  },
+
+  async popoutCloseWindow(paneId: string): Promise<void> {
+    if (isTauri) {
+      return invoke('popout_close_window', { paneId });
+    }
+  },
+
+  async popoutGetBounds(paneId: string): Promise<PopoutWindowBounds | null> {
+    if (isTauri) {
+      return invoke<PopoutWindowBounds | null>('popout_get_bounds', { paneId });
+    }
+    return null;
+  },
+
+  async popoutListWindows(): Promise<string[]> {
+    if (isTauri) {
+      return invoke<string[]>('popout_list_windows');
+    }
+    return [];
   },
 };

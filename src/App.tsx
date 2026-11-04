@@ -58,6 +58,7 @@ import {
   Layers,
   ArrowLeft,
   ArrowLeftRight,
+  ExternalLink,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -81,7 +82,7 @@ import {
   treeFromLayout,
 } from './lib/splitTree';
 import { THEMES, type DrexiusTheme } from './lib/themes';
-import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
+import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, PopoutPaneEntry, PopoutWindowBounds, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import {
   type LayoutPreset,
   type LayoutPresetPane,
@@ -255,11 +256,86 @@ function readPersistedWorkspace(): { tabs: Tab[]; activeTabId: string | null; mo
   }
 }
 
+const POPOUT_STORAGE_KEY = 'drx.workspace.popouts.v1';
+const POPOUT_ACTION_KEY = 'drx.popout.action.v1';
+
+function readPersistedPopouts(): PopoutPaneEntry[] {
+  try {
+    const raw = localStorage.getItem(POPOUT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as PopoutPaneEntry[]).map((entry) => {
+      try {
+        const latestSid = localStorage.getItem('drx.pane.sid.' + entry.pane.id);
+        if (latestSid) {
+          return { ...entry, pane: { ...entry.pane, sessionId: latestSid, resume: true } };
+        }
+      } catch {}
+      return entry;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function getPopoutWindowParams(): {
+  isPopout: boolean;
+  paneId: string;
+  hostId: string;
+  isLocal: boolean;
+  sessionId: string | null;
+  title: string;
+} {
+  if (typeof window === 'undefined') {
+    return { isPopout: false, paneId: '', hostId: '', isLocal: false, sessionId: null, title: '' };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const isPopout = params.get('popout') === '1';
+  const paneId = params.get('paneId') || '';
+  const hostId = params.get('hostId') || LOCAL_HOST.id;
+  const isLocal = params.get('isLocal') === '1' || hostId === LOCAL_HOST.id;
+  const sessionId = params.get('sessionId') || null;
+  const title = params.get('title') || (isLocal ? 'Local Terminal' : 'Remote Session');
+  return { isPopout: isPopout && !!paneId, paneId, hostId, isLocal, sessionId, title };
+}
+
 export default function App() {
   const mobile = useMobile();
   useMobileViewport();
   const isAndroid = useMemo(() => isAndroidPlatform(), []);
-  const persistedWorkspace = useMemo(() => readPersistedWorkspace(), []);
+  const popoutParams = useMemo(() => getPopoutWindowParams(), []);
+  const isPopoutWindow = popoutParams.isPopout;
+  const persistedWorkspace = useMemo(() => (popoutParams.isPopout ? null : readPersistedWorkspace()), [popoutParams.isPopout]);
+  const initialPopoutTab = useMemo<Tab | null>(() => {
+    if (!popoutParams.isPopout || !popoutParams.paneId) return null;
+    let paneObj: Pane = {
+      id: popoutParams.paneId,
+      hostId: popoutParams.hostId,
+      isLocal: popoutParams.isLocal,
+      sessionId: popoutParams.sessionId,
+      resume: true,
+    };
+    try {
+      const raw = localStorage.getItem('drx.popout.pane.' + popoutParams.paneId);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Pane;
+        const latestSid = localStorage.getItem('drx.pane.sid.' + popoutParams.paneId);
+        paneObj = {
+          ...parsed,
+          sessionId: latestSid || parsed.sessionId || popoutParams.sessionId,
+          resume: true,
+        };
+      }
+    } catch {}
+    return {
+      id: `popout_tab_${paneObj.id}`,
+      title: popoutParams.title || (paneObj.isLocal ? 'Local Terminal' : 'Remote Session'),
+      panes: [paneObj],
+      tree: leaf(paneObj.id),
+      activePaneId: paneObj.id,
+    };
+  }, [popoutParams]);
   const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
   // Phone settings pickers (auto-lock, theme, font, quick unlock, direct launch, recovery key, storage permissions)
   const [settingsPicker, setSettingsPicker] = useState<'autolock' | 'theme' | 'font' | 'quickunlock' | 'directlaunch' | 'recovery_key' | 'storage_perms' | null>(null);
@@ -312,7 +388,7 @@ export default function App() {
   }, [settingsPicker]);
 
   const [sessionSheet, setSessionSheet] = useState(false);
-  const [showSplash, setShowSplash] = useState(true);
+  const [showSplash, setShowSplash] = useState(() => !popoutParams.isPopout);
 
   const [unlocked, setUnlocked] = useState(false);
   // The vault can be unlocked while this UI is not. Android recreates the
@@ -382,8 +458,12 @@ export default function App() {
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [keychain, setKeychain] = useState<KeychainItem[]>([]);
   const [tunnels, setTunnels] = useState<TunnelConfig[]>([]);
-  const [tabs, setTabs] = useState<Tab[]>(() => persistedWorkspace?.tabs ?? []);
-  const [activeTabId, setActiveTabId] = useState<string | null>(() => persistedWorkspace?.activeTabId ?? null);
+  const [tabs, setTabs] = useState<Tab[]>(() =>
+    initialPopoutTab ? [initialPopoutTab] : (persistedWorkspace?.tabs ?? [])
+  );
+  const [activeTabId, setActiveTabId] = useState<string | null>(() =>
+    initialPopoutTab ? initialPopoutTab.id : (persistedWorkspace?.activeTabId ?? null)
+  );
   const [panel, setPanel] = useState<'hosts' | 'snippets' | 'keychain' | 'tunnels' | 'logs' | 'known_hosts' | null>(() => {
     if (persistedWorkspace?.mobilePage === 'hosts') return 'hosts';
     return null;
@@ -403,6 +483,10 @@ export default function App() {
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
   const [dropTargetPaneId, setDropTargetPaneId] = useState<string | null>(null);
+  const [poppedOutPanes, setPoppedOutPanes] = useState<PopoutPaneEntry[]>(() =>
+    popoutParams.isPopout ? [] : readPersistedPopouts()
+  );
+  const [showPopoutMenu, setShowPopoutMenu] = useState(false);
   const [recentHostIds, setRecentHostIds] = useState<string[]>(() => loadRecentHostIds());
 
   const markHostRecent = useCallback((hostId: string) => {
@@ -419,14 +503,21 @@ export default function App() {
   // Persist workspace tabs, activeTabId, and mobilePage so WebView reloads or
   // Android Activity recreations restore the exact open terminal tabs.
   useEffect(() => {
-    if (!unlocked) return;
+    if (!unlocked || isPopoutWindow) return;
     try {
       localStorage.setItem(
         WORKSPACE_STORAGE_KEY,
         JSON.stringify({ tabs, activeTabId, mobilePage })
       );
     } catch {}
-  }, [unlocked, tabs, activeTabId, mobilePage]);
+  }, [unlocked, isPopoutWindow, tabs, activeTabId, mobilePage]);
+
+  useEffect(() => {
+    if (!unlocked || isPopoutWindow) return;
+    try {
+      localStorage.setItem(POPOUT_STORAGE_KEY, JSON.stringify(poppedOutPanes));
+    } catch {}
+  }, [unlocked, isPopoutWindow, poppedOutPanes]);
 
   // Reconcile open tabs with live Rust SSH sessions once on startup/unlock
   // (e.g. if WebView reloaded while Rust kept sessions alive via SessionForegroundService).
@@ -435,7 +526,7 @@ export default function App() {
   // would cause the new sessionId to be mistaken for an unattached session and spawn a duplicate tab.
   const reconciledSessionsRef = useRef(false);
   useEffect(() => {
-    if (!unlocked) {
+    if (!unlocked || isPopoutWindow) {
       reconciledSessionsRef.current = false;
       return;
     }
@@ -448,6 +539,14 @@ export default function App() {
         let changed = false;
         const claimedSessionIds = new Set<string>();
         const claimedPaneIds = new Set<string>();
+        for (const popEntry of poppedOutPanes) {
+          claimedPaneIds.add(popEntry.pane.id);
+          const popSid =
+            (() => {
+              try { return localStorage.getItem('drx.pane.sid.' + popEntry.pane.id); } catch { return null; }
+            })() || popEntry.pane.sessionId;
+          if (popSid) claimedSessionIds.add(popSid);
+        }
         const nextTabs = prevTabs.map((tab) => {
           if (tab.kind === 'sftp') return tab;
           let tabChanged = false;
@@ -606,8 +705,8 @@ export default function App() {
   const [quickFilter, setQuickFilter] = useState('');
   const [quickPos, setQuickPos] = useState<{ top: number; left: number }>({ top: 40, left: 200 });
   const quickBtnRef = useRef<HTMLButtonElement>(null);
-  const [zen, setZen] = useState(() => localStorage.getItem('drx.zen') === '1');
-  const [showRail, setShowRail] = useState(() => localStorage.getItem('drx.rail') === '1');
+  const [zen, setZen] = useState(() => !popoutParams.isPopout && localStorage.getItem('drx.zen') === '1');
+  const [showRail, setShowRail] = useState(() => !popoutParams.isPopout && localStorage.getItem('drx.rail') === '1');
   const [showStatusBar, setShowStatusBar] = useState(() => localStorage.getItem('drx.status') === '1');
   const [broadcast, setBroadcast] = useState(false);
   const [showTerminalTools, setShowTerminalTools] = useState(() => localStorage.getItem('drx.terminalTools') === '1');
@@ -725,10 +824,10 @@ export default function App() {
   useEffect(() => { localStorage.setItem('drx.theme', themeId); }, [themeId]);
   useEffect(() => { localStorage.setItem('drx.font', String(fontSize)); }, [fontSize]);
   useEffect(() => { localStorage.setItem('drx.lineHeight', String(lineHeight)); }, [lineHeight]);
-  useEffect(() => { localStorage.setItem('drx.zen', zen ? '1' : '0'); }, [zen]);
+  useEffect(() => { if (!isPopoutWindow) localStorage.setItem('drx.zen', zen ? '1' : '0'); }, [zen, isPopoutWindow]);
 
-  useEffect(() => { localStorage.setItem('drx.rail', showRail ? '1' : '0'); }, [showRail]);
-  useEffect(() => { localStorage.setItem('drx.status', showStatusBar ? '1' : '0'); }, [showStatusBar]);
+  useEffect(() => { if (!isPopoutWindow) localStorage.setItem('drx.rail', showRail ? '1' : '0'); }, [showRail, isPopoutWindow]);
+  useEffect(() => { if (!isPopoutWindow) localStorage.setItem('drx.status', showStatusBar ? '1' : '0'); }, [showStatusBar, isPopoutWindow]);
   useEffect(() => { localStorage.setItem('drx.vault.active', activeVaultId); }, [activeVaultId]);
 
   const refresh = useCallback(async () => {
@@ -739,6 +838,48 @@ export default function App() {
       bridge.listTunnels(),
       bridge.listVaults(),
     ]);
+    const corrupted = h.filter(
+      (host) => host.port === 0 || (host.hostname === 'localhost' && host.username === 'local')
+    );
+    if (corrupted.length > 0) {
+      const [logs, knownHosts] = await Promise.all([
+        bridge.listLogs(500).catch(() => []),
+        bridge.listKnownHosts().catch(() => []),
+      ]);
+      for (const bad of corrupted) {
+        const matchingLog = logs.find(
+          (l) =>
+            (l.hostId === bad.id || l.hostLabel.toLowerCase() === bad.label.toLowerCase()) &&
+            l.hostname &&
+            l.hostname !== 'localhost' &&
+            l.username !== 'local'
+        );
+        if (matchingLog) {
+          const kh = knownHosts.find((x) => x.host === matchingLog.hostname && x.port > 0);
+          const restoredPort = kh?.port ?? 22;
+          let restoredKeychainId = bad.keychainId ?? null;
+          let restoredAuth: Host['authMethod'] = bad.hasSecret ? 'password' : 'key';
+          if (!bad.hasSecret && k.length > 0) {
+            const matchedKc = k.find((item) => item.username === matchingLog.username) ?? k[0];
+            if (matchedKc) {
+              restoredKeychainId = matchedKc.id;
+              restoredAuth = matchedKc.authMethod;
+            }
+          }
+          const repairedHost: Host = {
+            ...bad,
+            hostname: matchingLog.hostname,
+            port: restoredPort,
+            username: matchingLog.username || 'root',
+            authMethod: restoredAuth,
+            keychainId: restoredKeychainId,
+          };
+          await bridge.saveHost(repairedHost).catch(() => {});
+          const idx = h.findIndex((x) => x.id === bad.id);
+          if (idx !== -1) h[idx] = repairedHost;
+        }
+      }
+    }
     setHosts((prev) => (JSON.stringify(prev) === JSON.stringify(h) ? prev : h));
     setSnippets((prev) => (JSON.stringify(prev) === JSON.stringify(s) ? prev : s));
     setKeychain((prev) => (JSON.stringify(prev) === JSON.stringify(k) ? prev : k));
@@ -1132,10 +1273,31 @@ export default function App() {
 
   const resetSplit = useCallback((tabId: string, splitId: string) => resizeSplit(tabId, splitId, 0.5), [resizeSplit]);
 
+  const openPopoutOsWindow = useCallback(async (entry: PopoutPaneEntry) => {
+    try {
+      localStorage.setItem('drx.popout.pane.' + entry.pane.id, JSON.stringify(entry.pane));
+    } catch {}
+    const query = `popout=1&paneId=${encodeURIComponent(entry.pane.id)}&hostId=${encodeURIComponent(
+      entry.pane.hostId
+    )}&isLocal=${entry.pane.isLocal ? '1' : '0'}&sessionId=${encodeURIComponent(
+      entry.pane.sessionId || ''
+    )}&title=${encodeURIComponent(entry.title)}`;
+    try {
+      await bridge.popoutOpenWindow(
+        entry.pane.id,
+        `${entry.title} — DrexiusTerminal`,
+        query,
+        entry.bounds
+      );
+    } catch (err) {
+      toast(`Failed to open pop-out window: ${String(err)}`);
+    }
+  }, [toast]);
+
   const applyLayoutPreset = useCallback(
     (preset: LayoutPreset) => {
       const currentHost = activePane ? hostMap.get(activePane.hostId) : LOCAL_HOST;
-      const newPanes: Pane[] = preset.panes.map((pp: LayoutPresetPane) => {
+      const resolvePresetPane = (pp: LayoutPresetPane): Pane => {
         let hostId = pp.hostId;
         let isLocal = pp.isLocal;
         if (hostId === '__current__') {
@@ -1151,34 +1313,76 @@ export default function App() {
           hostId,
           isLocal: isLocal ?? (hostId === LOCAL_HOST.id),
         };
-      });
-      if (newPanes.length === 0) return;
-
-      const ids = newPanes.map((p) => p.id);
-      const tree = (preset.tree ? fromPresetTree(preset.tree, ids) : null) ?? treeFromLayout(preset.layout, ids);
-      const tab: Tab = {
-        id: uid(),
-        title: preset.name,
-        color: theme.accent,
-        panes: newPanes,
-        tree,
-        activePaneId: ids[0],
       };
 
-      setTabs((ts) => [...ts, tab]);
-      setActiveTabId(tab.id);
+      const newPanes: Pane[] = preset.panes.map(resolvePresetPane);
+      if (newPanes.length === 0 && (!preset.popoutPanes || preset.popoutPanes.length === 0)) return;
+
+      const tabId = uid();
+      if (newPanes.length > 0) {
+        const ids = newPanes.map((p) => p.id);
+        const tree = (preset.tree ? fromPresetTree(preset.tree, ids) : null) ?? treeFromLayout(preset.layout, ids);
+        const tab: Tab = {
+          id: tabId,
+          title: preset.name,
+          color: theme.accent,
+          panes: newPanes,
+          tree,
+          activePaneId: ids[0],
+        };
+
+        setTabs((ts) => [...ts, tab]);
+        setActiveTabId(tab.id);
+      }
+
+      if (preset.popoutPanes && preset.popoutPanes.length > 0) {
+        const createdPopouts: PopoutPaneEntry[] = preset.popoutPanes.map((pp) => {
+          const pane = resolvePresetPane(pp);
+          const h = hostMap.get(pane.hostId);
+          const title = h?.label || pp.hostLabel || pp.label || (pane.isLocal ? 'Local Terminal' : 'Remote Session');
+          return {
+            pane,
+            originTabId: tabId,
+            title,
+            bounds: pp.popoutBounds,
+          };
+        });
+        setPoppedOutPanes((prev) => [...prev, ...createdPopouts]);
+        createdPopouts.forEach((entry) => {
+          void openPopoutOsWindow(entry);
+        });
+      }
+
       setNewConnNonce((n) => n + 1);
-      toast(`Loaded preset: ${preset.name} (${newPanes.length} panes)`);
+      const popCount = preset.popoutPanes?.length ?? 0;
+      toast(
+        popCount > 0
+          ? `Loaded preset: ${preset.name} (${newPanes.length} panes + ${popCount} popped out)`
+          : `Loaded preset: ${preset.name} (${newPanes.length} panes)`
+      );
     },
-    [activePane, hostMap, theme, toast]
+    [activePane, hostMap, theme, toast, openPopoutOsWindow]
   );
 
-  const handleSavePreset = () => {
-    if (!activeTab || activeTab.panes.length < 2) return;
+  const handleSavePreset = async () => {
+    if (!activeTab || (activeTab.panes.length < 2 && poppedOutPanes.length === 0)) return;
     const tree = tabTree(activeTab);
     if (!tree) return;
     const name = presetNameInput.trim() || `Workspace ${userPresets.length + 1}`;
-    const newPreset = createUserPreset(name, tree, activeTab.panes, hostMap);
+    const entriesWithBounds: PopoutPaneEntry[] = await Promise.all(
+      poppedOutPanes.map(async (entry) => {
+        try {
+          const liveBounds = await bridge.popoutGetBounds(entry.pane.id);
+          return liveBounds ? { ...entry, bounds: liveBounds } : entry;
+        } catch {
+          return entry;
+        }
+      })
+    );
+    if (entriesWithBounds.length > 0) {
+      setPoppedOutPanes(entriesWithBounds);
+    }
+    const newPreset = createUserPreset(name, tree, activeTab.panes, hostMap, entriesWithBounds);
     const updated = [newPreset, ...userPresets];
     setUserPresets(updated);
     saveUserLayoutPresets(updated);
@@ -1336,6 +1540,332 @@ export default function App() {
       }).filter((t) => t.kind === 'sftp' || t.panes.length);
     });
   }, [hostMap, cleanupPaneSession]);
+
+  const popOutPane = useCallback(
+    (tabId?: string, targetPaneId?: string, initialBounds?: PopoutWindowBounds) => {
+      if (mobile || isPopoutWindow) return;
+      const tId = tabId ?? activeTab?.id;
+      if (!tId) return;
+      const targetTab = tabs.find((t) => t.id === tId);
+      if (!targetTab || targetTab.kind === 'sftp' || targetTab.panes.length === 0) return;
+      const pId = targetPaneId ?? targetTab.activePaneId;
+      const targetPane = targetTab.panes.find((p) => p.id === pId) ?? targetTab.panes[0];
+      if (!targetPane) return;
+
+      const reg = registry.get(targetPane.id);
+      const storageSid = (() => {
+        try { return localStorage.getItem('drx.pane.sid.' + targetPane.id); } catch { return null; }
+      })();
+      const sid = reg?.sessionId || storageSid || targetPane.sessionId || null;
+      if (sid) {
+        try { localStorage.setItem('drx.pane.sid.' + targetPane.id, sid); } catch {}
+      }
+
+      const detachedPane: Pane = {
+        ...targetPane,
+        sessionId: sid,
+        initialCwd: reg?.cwd || targetPane.initialCwd,
+        resume: true,
+      };
+      const h = hostMap.get(detachedPane.hostId);
+      const title = h?.label || (detachedPane.isLocal ? 'Local Terminal' : 'Remote Session');
+      const entry: PopoutPaneEntry = {
+        pane: detachedPane,
+        originTabId: targetTab.id,
+        title,
+        bounds: initialBounds,
+      };
+
+      setMaximizedPaneId((prev) => (prev === targetPane.id ? null : prev));
+      setTabs((ts) =>
+        ts
+          .map((t) => {
+            if (t.id !== targetTab.id) return t;
+            const panes = t.panes.filter((p) => p.id !== targetPane.id);
+            const before = tabTree(t);
+            const removed = before && hasLeaf(before, targetPane.id) ? removeLeaf(before, targetPane.id) : null;
+            const tree = ensureTree(removed ? removed.tree : before, panes.map((p) => p.id), t.layout) ?? undefined;
+            const heir =
+              removed?.focus && panes.some((p) => p.id === removed.focus)
+                ? removed.focus
+                : panes[0]?.id ?? '';
+            return {
+              ...t,
+              panes,
+              tree,
+              layout: undefined,
+              activePaneId: t.activePaneId === targetPane.id ? heir : t.activePaneId,
+              title:
+                panes.length > 1
+                  ? `${t.title.split(' +')[0]} +${panes.length - 1}`
+                  : hostMap.get(panes[0]?.hostId ?? '')?.label ?? t.title,
+            };
+          })
+          .filter((t) => t.kind === 'sftp' || t.panes.length > 0)
+      );
+
+      setPoppedOutPanes((prev) => [...prev.filter((x) => x.pane.id !== detachedPane.id), entry]);
+      void openPopoutOsWindow(entry);
+      toast(`Popped out ${title} to standalone window`);
+    },
+    [mobile, isPopoutWindow, activeTab, tabs, hostMap, openPopoutOsWindow, toast]
+  );
+
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const popoutActionSentRef = useRef(false);
+
+  const collectPopoutPanes = useCallback((sourceTabs: Tab[]): Pane[] => {
+    const collected: Pane[] = [];
+    for (const t of sourceTabs) {
+      if (t.kind === 'sftp') continue;
+      for (const p of t.panes) {
+        const reg = registry.get(p.id);
+        const storageSid = (() => {
+          try { return localStorage.getItem('drx.pane.sid.' + p.id); } catch { return null; }
+        })();
+        const sid = reg?.sessionId || storageSid || p.sessionId || null;
+        if (sid) {
+          try { localStorage.setItem('drx.pane.sid.' + p.id, sid); } catch {}
+        }
+        collected.push({
+          ...p,
+          sessionId: sid,
+          initialCwd: reg?.cwd || p.initialCwd,
+          resume: true,
+        });
+      }
+    }
+    return collected;
+  }, []);
+
+  useEffect(() => {
+    if (!isPopoutWindow || !popoutParams.paneId) return;
+    const currentPanes = collectPopoutPanes(tabs);
+    if (currentPanes.length > 0) {
+      try {
+        localStorage.setItem('drx.popout.panes.' + popoutParams.paneId, JSON.stringify(currentPanes));
+      } catch {}
+    }
+  }, [isPopoutWindow, popoutParams.paneId, tabs, collectPopoutPanes]);
+
+  const sendPopoutAction = useCallback(
+    (action: 'dock' | 'close') => {
+      if (!isPopoutWindow || !popoutParams.paneId || popoutActionSentRef.current) return;
+      popoutActionSentRef.current = true;
+      const currentPanes = collectPopoutPanes(tabsRef.current);
+      if (action === 'close') {
+        for (const p of currentPanes) {
+          cleanupPaneSession(p);
+        }
+      }
+      try {
+        localStorage.setItem(
+          POPOUT_ACTION_KEY,
+          JSON.stringify({
+            action,
+            paneId: popoutParams.paneId,
+            panes: currentPanes,
+            ts: Date.now(),
+          })
+        );
+      } catch {}
+      bridge.popoutCloseWindow(popoutParams.paneId).catch(() => {});
+      try { window.close(); } catch {}
+    },
+    [isPopoutWindow, popoutParams.paneId, collectPopoutPanes, cleanupPaneSession]
+  );
+
+  // If the user closes all tabs/panes inside a popped-out window, close the OS pop-out window
+  useEffect(() => {
+    if (!isPopoutWindow || !workspaceReady) return;
+    if (tabs.length === 0) {
+      sendPopoutAction('close');
+    }
+  }, [isPopoutWindow, workspaceReady, tabs.length, sendPopoutAction]);
+
+  const dockBackPane = useCallback(
+    (paneId: string, returnedPanes?: Pane[]) => {
+      if (isPopoutWindow) return;
+      const existingEntry = poppedOutPanes.find((x) => x.pane.id === paneId);
+      const storedMultiRaw = (() => {
+        try { return localStorage.getItem('drx.popout.panes.' + paneId); } catch { return null; }
+      })();
+      const storedPaneRaw = (() => {
+        try { return localStorage.getItem('drx.popout.pane.' + paneId); } catch { return null; }
+      })();
+      let candidatePanes: Pane[] = [];
+      if (Array.isArray(returnedPanes) && returnedPanes.length > 0) {
+        candidatePanes = returnedPanes;
+      } else if (storedMultiRaw) {
+        try {
+          const parsed = JSON.parse(storedMultiRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) candidatePanes = parsed as Pane[];
+        } catch {}
+      }
+      if (candidatePanes.length === 0) {
+        let singlePane: Pane | null = existingEntry?.pane ?? null;
+        if (!singlePane && storedPaneRaw) {
+          try { singlePane = JSON.parse(storedPaneRaw) as Pane; } catch {}
+        }
+        if (singlePane) candidatePanes = [singlePane];
+      }
+      try {
+        localStorage.removeItem('drx.popout.pane.' + paneId);
+        localStorage.removeItem('drx.popout.panes.' + paneId);
+      } catch {}
+      setPoppedOutPanes((prev) => prev.filter((x) => x.pane.id !== paneId));
+      bridge.popoutCloseWindow(paneId).catch(() => {});
+
+      if (candidatePanes.length === 0) return;
+      const restoredPanes: Pane[] = candidatePanes.map((p) => {
+        const latestSid =
+          (() => {
+            try { return localStorage.getItem('drx.pane.sid.' + p.id); } catch { return null; }
+          })() ||
+          p.sessionId ||
+          null;
+        return {
+          ...p,
+          sessionId: latestSid,
+          resume: true,
+        };
+      });
+      const primaryPane = restoredPanes[0];
+      const h = hostMap.get(primaryPane.hostId) ?? LOCAL_HOST;
+      const title = existingEntry?.title || h.label || 'Terminal';
+      const targetOriginId = existingEntry?.originTabId;
+
+      setTabs((ts) => {
+        const existingPaneIds = new Set(ts.flatMap((t) => t.panes.map((p) => p.id)));
+        const freshPanes = restoredPanes.filter((p) => !existingPaneIds.has(p.id));
+        if (freshPanes.length === 0) return ts;
+
+        const originIdx = targetOriginId
+          ? ts.findIndex(
+              (t) =>
+                t.id === targetOriginId &&
+                t.kind !== 'sftp' &&
+                t.panes.length + freshPanes.length <= MAX_PANES_PER_TAB
+            )
+          : -1;
+        if (originIdx !== -1) {
+          return ts.map((t, idx) => {
+            if (idx !== originIdx) return t;
+            let nextTree = tabTree(t) ?? leaf(t.panes[0].id);
+            let anchorId = hasLeaf(nextTree, t.activePaneId) ? t.activePaneId : lastLeafId(nextTree);
+            for (const rp of freshPanes) {
+              nextTree = splitLeaf(nextTree, anchorId, rp.id, 'right');
+              anchorId = rp.id;
+            }
+            const nextPanes = [...t.panes, ...freshPanes];
+            setActiveTabId(t.id);
+            return {
+              ...t,
+              panes: nextPanes,
+              tree: nextTree,
+              layout: undefined,
+              activePaneId: freshPanes[freshPanes.length - 1].id,
+              title: `${t.title.split(' +')[0]} +${nextPanes.length - 1}`,
+            };
+          });
+        }
+        const newTabTree =
+          freshPanes.length > 1
+            ? treeFromLayout(
+                'columns',
+                freshPanes.map((p) => p.id)
+              ) ?? leaf(freshPanes[0].id)
+            : leaf(freshPanes[0].id);
+        const newTab: Tab = {
+          id: targetOriginId && !ts.some((t) => t.id === targetOriginId) ? targetOriginId : uid(),
+          title: freshPanes.length > 1 ? `${h.label} +${freshPanes.length - 1}` : h.label,
+          color: h.color,
+          panes: freshPanes,
+          tree: newTabTree,
+          activePaneId: freshPanes[0].id,
+        };
+        setActiveTabId(newTab.id);
+        return [...ts, newTab];
+      });
+      toast(
+        restoredPanes.length > 1
+          ? `Docked ${restoredPanes.length} panes (${title}) back to workspace`
+          : `Docked ${title} back to workspace`
+      );
+    },
+    [isPopoutWindow, poppedOutPanes, hostMap, toast]
+  );
+
+  const closePopoutPane = useCallback(
+    (paneId: string) => {
+      if (isPopoutWindow) return;
+      const existingEntry = poppedOutPanes.find((x) => x.pane.id === paneId);
+      const storedMultiRaw = (() => {
+        try { return localStorage.getItem('drx.popout.panes.' + paneId); } catch { return null; }
+      })();
+      try {
+        localStorage.removeItem('drx.popout.pane.' + paneId);
+        localStorage.removeItem('drx.popout.panes.' + paneId);
+      } catch {}
+      setPoppedOutPanes((prev) => prev.filter((x) => x.pane.id !== paneId));
+      bridge.popoutCloseWindow(paneId).catch(() => {});
+      let cleanedAny = false;
+      if (storedMultiRaw) {
+        try {
+          const parsed = JSON.parse(storedMultiRaw);
+          if (Array.isArray(parsed)) {
+            for (const p of parsed as Pane[]) {
+              cleanupPaneSession(p);
+              cleanedAny = true;
+            }
+          }
+        } catch {}
+      }
+      if (existingEntry) {
+        if (!cleanedAny) cleanupPaneSession(existingEntry.pane);
+        toast(`Closed popped-out session: ${existingEntry.title}`);
+      }
+    },
+    [isPopoutWindow, poppedOutPanes, cleanupPaneSession, toast]
+  );
+
+  // Listen for Dock Back / Close actions triggered from popped-out OS windows
+  useEffect(() => {
+    if (isPopoutWindow) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== POPOUT_ACTION_KEY || !e.newValue) return;
+      try {
+        const payload = JSON.parse(e.newValue) as {
+          action?: 'dock' | 'close';
+          paneId?: string;
+          panes?: Pane[];
+        };
+        if (!payload?.paneId) return;
+        if (payload.action === 'dock') {
+          dockBackPane(payload.paneId, payload.panes);
+        } else if (payload.action === 'close') {
+          closePopoutPane(payload.paneId);
+        }
+      } catch {}
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [isPopoutWindow, dockBackPane, closePopoutPane]);
+
+  // Re-open any persisted popped-out windows once on initial unlock
+  const reopenedPopoutsRef = useRef(false);
+  useEffect(() => {
+    if (!unlocked || isPopoutWindow) {
+      reopenedPopoutsRef.current = false;
+      return;
+    }
+    if (reopenedPopoutsRef.current) return;
+    reopenedPopoutsRef.current = true;
+    for (const entry of poppedOutPanes) {
+      void openPopoutOsWindow(entry);
+    }
+  }, [unlocked, isPopoutWindow, poppedOutPanes, openPopoutOsWindow]);
 
   const closeTab = useCallback((id: string) => {
     setTabs((ts) => {
@@ -1509,7 +2039,7 @@ export default function App() {
         if (hasPendingConfirm()) return;
         // A terminal-screen drawer (AI / snippets) is the topmost layer on mobile: Escape dismisses it first.
         if (closeTerminalDrawerRef.current?.()) { e.preventDefault(); e.stopPropagation(); return; }
-        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu || showSettings || showSavePresetModal) {
+        if (quick || showThemes || panel || modal || showAutoLockMenu || showDockerModal || splitMenu || showSettings || showSavePresetModal || showPopoutMenu) {
           e.preventDefault();
           e.stopPropagation();
           setQuick(false);
@@ -1521,6 +2051,7 @@ export default function App() {
           setSplitMenu(null);
           setShowSettings(false);
           setShowSavePresetModal(false);
+          setShowPopoutMenu(false);
         }
         return;
       }
@@ -1628,6 +2159,22 @@ export default function App() {
         }
       }
 
+      // ── Pop Out Active Pane / Dock Back (Ctrl+Shift+P) ──
+      if (bindingMatches(e, shortcuts.popout_pane, 'Ctrl+Shift+P')) {
+        if (isPopoutWindow) {
+          e.preventDefault();
+          e.stopPropagation();
+          sendPopoutAction('dock');
+          return;
+        }
+        if (activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          popOutPane(activeTab.id, activeTab.activePaneId);
+          return;
+        }
+      }
+
       // ── Next / Previous Split Pane (Ctrl+] / Ctrl+[) ──
       if (bindingMatches(e, shortcuts.next_pane, 'Ctrl+]')) {
         if (activeTab && activeTab.panes.length > 1) {
@@ -1723,7 +2270,7 @@ export default function App() {
 
       // ── Save Layout Preset (Ctrl+Shift+S) ──
       if (bindingMatches(e, shortcuts.save_layout_preset, 'Ctrl+Shift+S')) {
-        if (activeTab && activeTab.panes.length > 1) {
+        if (activeTab && (activeTab.panes.length > 1 || poppedOutPanes.length > 0)) {
           e.preventDefault();
           e.stopPropagation();
           setPresetNameInput(activeTab.title || 'My Workspace');
@@ -1850,6 +2397,12 @@ export default function App() {
     equalizeActiveTab,
     closePane,
     toggleMaximizePane,
+    popOutPane,
+    isPopoutWindow,
+    popoutParams.paneId,
+    poppedOutPanes.length,
+    showPopoutMenu,
+    showSavePresetModal,
     toast,
     terminalContext,
     activePaneId,
@@ -1882,8 +2435,15 @@ export default function App() {
       }
       t.panes.forEach((p) => cleanupPaneSession(p));
     });
+    poppedOutPanes.forEach((entry) => {
+      try { localStorage.removeItem('drx.popout.pane.' + entry.pane.id); } catch {}
+      bridge.popoutCloseWindow(entry.pane.id).catch(() => {});
+      cleanupPaneSession(entry.pane);
+    });
     try { localStorage.removeItem(WORKSPACE_STORAGE_KEY); } catch {}
+    try { localStorage.removeItem(POPOUT_STORAGE_KEY); } catch {}
     setTabs([]);
+    setPoppedOutPanes([]);
     setActiveTabId(null);
     await bridge.lock();
     setUnlocked(false);
@@ -2023,6 +2583,15 @@ export default function App() {
     const t = tabs.find((t) => t.id === lastTerminalTab.current && t.panes.length) ?? [...tabs].reverse().find((t) => t.kind !== 'sftp' && t.panes.length);
     if (t) setActiveTabId(t.id);
   }, [terminalScreen, activeTab, tabs]);
+
+  useEffect(() => {
+    if (!isPopoutWindow || !popoutParams.paneId) return;
+    const onUnload = () => {
+      sendPopoutAction('dock');
+    };
+    window.addEventListener('beforeunload', onUnload);
+    return () => window.removeEventListener('beforeunload', onUnload);
+  }, [isPopoutWindow, popoutParams.paneId, sendPopoutAction]);
 
   return (
     <>
@@ -2427,6 +2996,151 @@ export default function App() {
             >
               <LayoutGrid className="h-3.5 w-3.5" style={{ color: splitMenu?.tab === 'presets' || splitMenu?.tab === 'layout' ? theme.accent : undefined }} />
             </button>
+            {isPopoutWindow ? (
+              <div className="flex items-center gap-1 shrink-0">
+                <span
+                  className="hidden xl:inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider uppercase"
+                  style={{
+                    backgroundColor: `${theme.accent}18`,
+                    borderColor: `${theme.accent}45`,
+                    color: theme.accent,
+                  }}
+                >
+                  Popped Out
+                </span>
+                <button
+                  type="button"
+                  onClick={() => sendPopoutAction('dock')}
+                  title="Dock all panes in this window back into main workspace (⌘⇧P / Ctrl+Shift+P)"
+                  className="flex h-7 items-center gap-1.5 rounded-lg border border-cyan-400/45 bg-cyan-500/15 px-2.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/25 transition cursor-pointer select-none"
+                >
+                  <Minimize2 className="h-3.5 w-3.5 text-cyan-300" />
+                  <span>Dock Back</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => sendPopoutAction('close')}
+                  title="Terminate session(s) and close popped-out window"
+                  className="grid h-7 w-7 place-items-center rounded-lg border border-rose-500/30 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 transition cursor-pointer"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                title="Pop out active pane into standalone window (⌘⇧P / Ctrl+Shift+P)"
+                disabled={!activeTab || activeTab.kind === 'sftp' || activeTab.panes.length === 0}
+                onClick={() => {
+                  if (activeTab && activeTab.kind !== 'sftp' && activeTab.panes.length > 0) {
+                    popOutPane(activeTab.id, activeTab.activePaneId);
+                  }
+                }}
+                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-white/10 hover:text-cyan-300 transition border border-transparent disabled:opacity-30 cursor-pointer"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {poppedOutPanes.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowPopoutMenu((v) => !v)}
+                  title={`${poppedOutPanes.length} popped-out terminal window${poppedOutPanes.length > 1 ? 's' : ''} — click to manage or dock back`}
+                  className={cn(
+                    'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold border transition cursor-pointer select-none',
+                    showPopoutMenu
+                      ? 'bg-cyan-500/25 text-cyan-200 border-cyan-400/60 shadow-[0_0_12px_rgba(34,211,238,0.25)]'
+                      : 'bg-cyan-500/15 text-cyan-300 border-cyan-400/35 hover:bg-cyan-500/25'
+                  )}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  <span className="hidden lg:inline">Popped Out</span>
+                  <span className="rounded bg-cyan-400/25 px-1 font-mono text-[10px] text-cyan-100">
+                    {poppedOutPanes.length}
+                  </span>
+                </button>
+                {showPopoutMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowPopoutMenu(false)} />
+                    <div
+                      className="absolute right-0 top-9 z-50 w-72 rounded-xl border border-white/10 p-2 shadow-2xl backdrop-blur-xl text-xs text-slate-200"
+                      style={{
+                        backgroundColor: theme.xterm.background || '#0e131d',
+                        borderColor: `${theme.accent}35`,
+                        boxShadow: `0 16px 36px rgba(0,0,0,0.65), 0 0 20px ${theme.accent}15`,
+                      }}
+                    >
+                      <div className="flex items-center justify-between px-2 py-1 mb-1 border-b border-white/10">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Popped-Out Panes ({poppedOutPanes.length})
+                        </span>
+                        {poppedOutPanes.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowPopoutMenu(false);
+                              poppedOutPanes.forEach((entry) => dockBackPane(entry.pane.id));
+                            }}
+                            className="text-[10px] font-semibold text-cyan-300 hover:text-white transition cursor-pointer"
+                          >
+                            Dock All Back
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1 max-h-56 overflow-y-auto">
+                        {poppedOutPanes.map((entry) => (
+                          <div
+                            key={entry.pane.id}
+                            className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] border border-white/5 px-2.5 py-1.5"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowPopoutMenu(false);
+                                void openPopoutOsWindow(entry);
+                              }}
+                              title="Focus popped-out window"
+                              className="min-w-0 flex-1 text-left hover:text-white transition cursor-pointer"
+                            >
+                              <div className="font-medium text-white truncate">{entry.title}</div>
+                              <div className="font-mono text-[10px] text-slate-400 truncate">
+                                {entry.pane.initialCwd || '~'}
+                              </div>
+                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPopoutMenu(false);
+                                  dockBackPane(entry.pane.id);
+                                }}
+                                title="Dock pane back into main window"
+                                className="flex items-center gap-1 rounded bg-cyan-500/15 border border-cyan-400/35 px-2 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-cyan-500/25 transition cursor-pointer"
+                              >
+                                <Minimize2 className="h-2.5 w-2.5" />
+                                <span>Dock</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setShowPopoutMenu(false);
+                                  closePopoutPane(entry.pane.id);
+                                }}
+                                title="Close session"
+                                className="rounded p-1 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition cursor-pointer"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {splitMenu && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setSplitMenu(null)} />
@@ -2695,7 +3409,7 @@ export default function App() {
                     <div className="relative z-10 py-1 space-y-2">
                       <button
                         type="button"
-                        disabled={!activeTab || activeTab.panes.length < 2}
+                        disabled={!activeTab || (activeTab.panes.length < 2 && poppedOutPanes.length === 0)}
                         onClick={() => {
                           setPresetNameInput(activeTab?.title || `Workspace ${userPresets.length + 1}`);
                           setShowSavePresetModal(true);
@@ -2741,6 +3455,11 @@ export default function App() {
                                     <span className="text-[9px] px-1 py-0 rounded bg-white/10 text-slate-300 font-mono">
                                       {p.layout}
                                     </span>
+                                    {p.popoutPanes && p.popoutPanes.length > 0 && (
+                                      <span className="text-[9px] px-1 py-0 rounded bg-cyan-500/20 text-cyan-300 font-mono">
+                                        +{p.popoutPanes.length} pop-out
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-[10px] text-slate-400 truncate">
                                     {p.panes.length} panes: {p.panes.map((pp: LayoutPresetPane) => pp.hostLabel || pp.label || (pp.isLocal ? 'Local' : 'Host')).join(', ')}
@@ -3305,7 +4024,20 @@ export default function App() {
                 {[...t.panes]
                   .sort((a, b) => a.id.localeCompare(b.id))
                   .map((p) => {
-                    const h = hostMap.get(p.hostId);
+                    const h =
+                      hostMap.get(p.hostId) ??
+                      (p.isLocal
+                        ? LOCAL_HOST
+                        : p.kind === 'serial'
+                          ? {
+                              ...LOCAL_HOST,
+                              id: p.hostId,
+                              label: `Serial ${p.serialOptions?.portName || ''}`.trim(),
+                              hostname: p.serialOptions?.portName || 'serial',
+                              port: p.serialOptions?.baudRate || 115200,
+                              username: 'serial',
+                            }
+                          : undefined);
                     if (!h) return null;
                     const rect = rects?.get(p.id);
                     const isPaneMaximized = currentTabMaximized === p.id;
@@ -3401,6 +4133,7 @@ export default function App() {
                           isMaximized={isPaneMaximized}
                           onToggleMaximize={() => toggleMaximizePane(p.id)}
                           onSplitPane={(dir) => splitPaneInDirection(dir, undefined, p.id)}
+                          onPopOut={!mobile && !isPopoutWindow ? () => popOutPane(t.id, p.id) : undefined}
                           onDragStart={(id) => setDraggedPaneId(id)}
                           onDragEnd={() => {
                             setDraggedPaneId(null);
@@ -4709,6 +5442,14 @@ export default function App() {
                     {activeTab.panes.map((p) => hostMap.get(p.hostId)?.label || (p.isLocal ? 'Local Terminal' : 'Host')).join(' • ')}
                   </span>
                 </div>
+                {poppedOutPanes.length > 0 && (
+                  <div className="flex items-start justify-between text-slate-300 pt-1 border-t border-white/5">
+                    <span className="text-cyan-300 shrink-0">Popped Out ({poppedOutPanes.length}):</span>
+                    <span className="text-right truncate ml-2 text-cyan-200">
+                      {poppedOutPanes.map((e) => e.title).join(' • ')}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -258,12 +258,28 @@ export type Layout =
   /** A free-form arrangement described by a split tree rather than a named template. */
   | 'custom';
 
+export interface PopoutWindowBounds {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface PopoutPaneEntry {
+  pane: Pane;
+  originTabId: string;
+  title: string;
+  bounds?: PopoutWindowBounds;
+}
+
 export interface LayoutPresetPane {
   hostId: string;
   isLocal?: boolean;
   label?: string;
   hostLabel?: string;
   color?: string | null;
+  poppedOut?: boolean;
+  popoutBounds?: PopoutWindowBounds;
 }
 
 export interface LayoutPreset {
@@ -276,6 +292,8 @@ export interface LayoutPreset {
    *  presets saved before split trees existed, which are rebuilt from `layout`. */
   tree?: LayoutNode;
   panes: LayoutPresetPane[];
+  /** Additional detached panes popped out to secondary monitors when this layout preset was saved. */
+  popoutPanes?: LayoutPresetPane[];
   isBuiltin?: boolean;
 }
 

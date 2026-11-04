@@ -17,6 +17,8 @@ import {
   saveUiPreferences,
 } from '../src/lib/settings.ts';
 import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, clampTerminalFontSize } from '../src/lib/mobileTerminal.ts';
+import { createUserPreset } from '../src/lib/layoutPresets.ts';
+import { leaf, splitLeaf } from '../src/lib/splitTree.ts';
 
 // Minimal in-memory localStorage for the persistence round-trip tests.
 class MemoryStorage {
@@ -62,6 +64,7 @@ test('the split shortcuts are present with the documented defaults', () => {
   assert.equal(keys('split_up'), 'Alt+Shift+E');
   assert.equal(keys('split_menu'), 'Ctrl+Shift+O');
   assert.equal(keys('equalize_splits'), 'Ctrl+Shift+N');
+  assert.equal(keys('popout_pane'), 'Ctrl+Shift+P');
 });
 
 test('combos compare regardless of order, case and Ctrl/Cmd spelling', () => {
@@ -183,4 +186,30 @@ test('loadUiPreferences and saveUiPreferences round-trip copyOnSelect and rightC
   assert.equal(updated.rightClickPaste, true);
 
   localStorage.clear();
+});
+
+test('createUserPreset saves popped-out panes and their multi-monitor window bounds', () => {
+  const tree = splitLeaf(leaf('p1'), 'p1', 'p2', 'right');
+  const panes = [
+    { id: 'p1', hostId: 'h1', isLocal: false },
+    { id: 'p2', hostId: '__local__', isLocal: true },
+  ];
+  const hostMap = new Map([
+    ['h1', { id: 'h1', label: 'prod-api-01', hostname: '10.0.0.1', port: 22, username: 'ubuntu', authMethod: 'key', tags: [], hasSecret: true, color: '#f43f5e' }],
+  ]);
+  const poppedOutEntries = [
+    {
+      pane: { id: 'p3', hostId: 'h1', isLocal: false },
+      originTabId: 'tab-1',
+      title: 'prod-api-01',
+      bounds: { x: 1920, y: 120, width: 960, height: 640 },
+    },
+  ];
+  const preset = createUserPreset('Multi-Monitor Setup', tree, panes, hostMap, poppedOutEntries);
+  assert.equal(preset.panes.length, 2);
+  assert.equal(preset.popoutPanes?.length, 1);
+  assert.equal(preset.popoutPanes[0].hostId, 'h1');
+  assert.equal(preset.popoutPanes[0].poppedOut, true);
+  assert.deepEqual(preset.popoutPanes[0].popoutBounds, { x: 1920, y: 120, width: 960, height: 640 });
+  assert.match(preset.description, /1 popped out/);
 });

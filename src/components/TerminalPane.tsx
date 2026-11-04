@@ -302,6 +302,7 @@ interface Props {
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
   onSplitPane?: (direction: 'right' | 'down') => void;
+  onPopOut?: () => void;
   onDragStart?: (paneId: string) => void;
   onDragEnd?: () => void;
   hidden?: boolean;
@@ -370,6 +371,7 @@ export const TerminalPane = memo(function TerminalPane({
   isMaximized = false,
   onToggleMaximize,
   onSplitPane,
+  onPopOut,
   onDragStart,
   onDragEnd,
   hidden = false,
@@ -1063,6 +1065,9 @@ export const TerminalPane = memo(function TerminalPane({
     [isSerial, isLocal, scheduleResync]
   );
 
+  const hostRef = useRef(host);
+  hostRef.current = host;
+
   const connect = useCallback(
     async (resume: boolean) => {
       const term = termRef.current;
@@ -1251,9 +1256,17 @@ export const TerminalPane = memo(function TerminalPane({
                   `\x1b[32m✔ Authenticated\x1b[90m · host key SHA256:${ev.fingerprint.slice(0, 22)}…\x1b[0m\r\n`
                 );
               }
+              const currentHost = hostRef.current;
               const detected = ev.os ?? parseOsFromBanner(ev.banner);
-              if (detected && detected !== host.os) {
-                bridge.saveHost({ ...host, os: detected }).then(() => onChange()).catch(() => {});
+              if (
+                !suppressConnectBanner &&
+                detected &&
+                detected !== currentHost.os &&
+                currentHost.port > 0 &&
+                currentHost.id !== '__local__' &&
+                !(currentHost.hostname === 'localhost' && currentHost.username === 'local')
+              ) {
+                bridge.saveHost({ ...currentHost, os: detected }).then(() => onChange()).catch(() => {});
               }
               break;
             }
@@ -1309,12 +1322,13 @@ export const TerminalPane = memo(function TerminalPane({
           } catch {}
         }
 
+        const currentHost = hostRef.current;
         term.write(
-          `\r\n\x1b[90m${resume ? '⟲ Resuming' : '→ Connecting to'} \x1b[36m${host.username}@${host.hostname}:${
-            host.port
-          }\x1b[90m via ${host.keychainId ? 'keychain identity' : host.authMethod === 'key' ? 'public key' : host.authMethod}…\x1b[0m\r\n`
+          `\r\n\x1b[90m${resume ? '⟲ Resuming' : '→ Connecting to'} \x1b[36m${currentHost.username}@${currentHost.hostname}:${
+            currentHost.port
+          }\x1b[90m via ${currentHost.keychainId ? 'keychain identity' : currentHost.authMethod === 'key' ? 'public key' : currentHost.authMethod}…\x1b[0m\r\n`
         );
-        const sid = await bridge.connect(host.id, initCols, initRows, resume, onSshEvent, pane.initialCwd);
+        const sid = await bridge.connect(currentHost.id, initCols, initRows, resume, onSshEvent, pane.initialCwd);
         if (dead()) {
           bridge.disconnect(sid);
           return;
@@ -2024,7 +2038,7 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       // Prevent xterm from sending control sequences on workspace shift shortcuts
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w', 'p', 'm', 'l', 's', 'n', 'o'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;
       }
 
@@ -2890,6 +2904,19 @@ export const TerminalPane = memo(function TerminalPane({
                 {isMaximized ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
               </button>
             )}
+            {onPopOut && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPopOut();
+                }}
+                title="Pop out pane into standalone window (Ctrl+Shift+P)"
+                className="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-cyan-300 transition cursor-pointer"
+              >
+                <ExternalLink className="h-3 w-3" />
+              </button>
+            )}
             {isSplit && (
               <button
                 type="button"
@@ -3465,7 +3492,7 @@ export const TerminalPane = memo(function TerminalPane({
       {/* Desktop Terminal Right-Click Context Menu */}
       {!mobile && contextMenu && (() => {
         const menuWidth = 208;
-        const menuHeight = onSplitPane ? 220 : 160;
+        const menuHeight = onSplitPane || onPopOut ? 252 : 160;
         const clampedX = typeof window !== 'undefined'
           ? Math.max(8, Math.min(contextMenu.x, window.innerWidth - menuWidth - 8))
           : contextMenu.x;
@@ -3601,34 +3628,52 @@ export const TerminalPane = memo(function TerminalPane({
                 </kbd>
               </button>
 
-              {/* Split Actions */}
-              {onSplitPane && (
+              {/* Split & Pop-Out Actions */}
+              {(onSplitPane || onPopOut) && (
                 <>
                   <div className="my-1 border-t border-white/[0.08]" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setContextMenu(null);
-                      onSplitPane('right');
-                    }}
-                    className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
-                  >
-                    <Columns2 className="h-3.5 w-3.5 text-slate-400" />
-                    <span>Split Right</span>
-                    <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+D</kbd>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setContextMenu(null);
-                      onSplitPane('down');
-                    }}
-                    className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
-                  >
-                    <Rows2 className="h-3.5 w-3.5 text-slate-400" />
-                    <span>Split Down</span>
-                    <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+E</kbd>
-                  </button>
+                  {onSplitPane && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setContextMenu(null);
+                          onSplitPane('right');
+                        }}
+                        className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                      >
+                        <Columns2 className="h-3.5 w-3.5 text-slate-400" />
+                        <span>Split Right</span>
+                        <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+D</kbd>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setContextMenu(null);
+                          onSplitPane('down');
+                        }}
+                        className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                      >
+                        <Rows2 className="h-3.5 w-3.5 text-slate-400" />
+                        <span>Split Down</span>
+                        <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+E</kbd>
+                      </button>
+                    </>
+                  )}
+                  {onPopOut && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setContextMenu(null);
+                        onPopOut();
+                      }}
+                      className="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-lg text-left text-xs font-medium text-slate-200 hover:bg-white/10 hover:text-white transition cursor-pointer"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
+                      <span>Pop Out Pane</span>
+                      <kbd className="ml-auto text-[10px] text-slate-500 font-mono">Ctrl+Shift+P</kbd>
+                    </button>
+                  )}
                 </>
               )}
             </div>

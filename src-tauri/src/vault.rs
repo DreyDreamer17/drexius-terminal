@@ -1266,6 +1266,7 @@ impl Vault {
 
     pub fn host_with_secret(&self, id: &str) -> AppResult<(HostProfile, HostSecret)> {
         self.with(|c| {
+            let _ = repair_corrupted_local_hosts(c);
             let android_ip = latest_paired_android_ip(c);
             let host_res = c
                 .query_row(
@@ -1292,11 +1293,23 @@ impl Vault {
                             )
                         } else {
                             // Sourced from Host Secret
+                            let pw: Option<String> = r.get(15)?;
+                            let pk: Option<String> = r.get(16)?;
+                            let pass: Option<String> = r.get(17)?;
+                            let has_pk = pk.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+                            let has_pw = pw.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+                            let resolved_auth = if has_pk && !has_pw {
+                                AuthMethod::Key
+                            } else if has_pw && !has_pk {
+                                AuthMethod::Password
+                            } else {
+                                profile.auth_method
+                            };
                             (
-                                profile.auth_method,
-                                r.get(15)?,
-                                r.get(16)?,
-                                r.get(17)?,
+                                resolved_auth,
+                                pw,
+                                pk,
+                                pass,
                                 profile.username.clone(),
                             )
                         };
@@ -1902,9 +1915,108 @@ pub(crate) fn ensure_vault_writable(conn: &Connection, vault_id: Option<&str>) -
     Ok(())
 }
 
+/// Self-healing repair for any host row whose metadata was overwritten by the frontend
+/// `LOCAL_HOST` placeholder (`hostname = 'localhost'`, `port = 0`, `username = 'local'`).
+/// Recovers the original `hostname` and `username` from `connection_logs`, `port` from
+/// `known_hosts`, and `auth_method` / `keychain_id` from `secrets` and `keychain`.
+fn repair_corrupted_local_hosts(conn: &Connection) -> AppResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, label FROM hosts WHERE port = 0 OR (hostname = 'localhost' AND username = 'local')",
+    )?;
+    let corrupted: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    for (host_id, host_label) in corrupted {
+        let log_match: Option<(String, String)> = conn
+            .query_row(
+                "SELECT username, hostname FROM connection_logs
+                 WHERE (host_id = ?1 OR LOWER(host_label) = LOWER(?2))
+                   AND hostname != 'localhost' AND hostname != ''
+                   AND username != 'local'
+                 ORDER BY started_at DESC LIMIT 1",
+                params![host_id, host_label],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((restored_user, restored_host)) = log_match else {
+            continue;
+        };
+        let restored_port: u16 = conn
+            .query_row(
+                "SELECT port FROM known_hosts WHERE host = ?1 AND port > 0 ORDER BY added_at DESC LIMIT 1",
+                params![&restored_host],
+                |r| r.get::<_, u16>(0),
+            )
+            .optional()?
+            .unwrap_or(22);
+
+        // Inspect secrets table first
+        let secret_row: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT password, private_key FROM secrets WHERE host_id = ?1",
+                params![&host_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+
+        let mut restored_auth = "password".to_string();
+        let mut restored_kc_id: Option<String> = None;
+
+        if let Some((pw, pk)) = secret_row {
+            if pk.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                restored_auth = "key".to_string();
+            } else if pw.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                restored_auth = "password".to_string();
+            }
+        } else {
+            let kc_match: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT id, auth_method FROM keychain
+                     WHERE username = ?1
+                     ORDER BY updated_at DESC LIMIT 1",
+                    params![&restored_user],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .or_else(|| {
+                    conn.query_row(
+                        "SELECT id, auth_method FROM keychain ORDER BY updated_at DESC LIMIT 1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten()
+                });
+            if let Some((kc_id, kc_auth)) = kc_match {
+                restored_kc_id = Some(kc_id);
+                restored_auth = kc_auth;
+            }
+        }
+
+        let _ = conn.execute(
+            "UPDATE hosts
+             SET hostname = ?1, port = ?2, username = ?3, auth_method = ?4, keychain_id = ?5, updated_at = ?6
+             WHERE id = ?7",
+            params![
+                restored_host,
+                restored_port,
+                restored_user,
+                restored_auth,
+                restored_kc_id,
+                now(),
+                host_id
+            ],
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn hosts_list(vault: State<'_, Vault>) -> AppResult<Vec<HostProfile>> {
     vault.with(|c| {
+        let _ = repair_corrupted_local_hosts(c);
         let android_ip = latest_paired_android_ip(c);
         let mut st = c.prepare(
             "SELECT h.id, h.label, h.hostname, h.port, h.username, h.auth_method, h.grp, h.tags, h.color, h.os, h.keychain_id, h.jump_host_id, h.vault_id, h.startup_command, h.proxy_command,
@@ -1996,6 +2108,15 @@ pub fn host_save(input: HostInput, vault: State<'_, Vault>) -> AppResult<String>
         profile.id = uuid::Uuid::new_v4().to_string();
     }
     vault.with(|c| {
+        if profile.port == 0 || (profile.hostname == "localhost" && profile.username == "local") {
+            if let Some(os_val) = profile.os.as_deref() {
+                let _ = c.execute(
+                    "UPDATE hosts SET os=?1, updated_at=?2 WHERE id=?3 AND COALESCE(os, '') != ?1",
+                    params![os_val, now(), profile.id],
+                );
+            }
+            return Ok(profile.id);
+        }
         ensure_vault_writable(c, profile.vault_id.as_deref())?;
         if let Some(existing_vid) = c
             .query_row("SELECT vault_id FROM hosts WHERE id=?1", [&profile.id], |r| r.get::<_, Option<String>>(0))

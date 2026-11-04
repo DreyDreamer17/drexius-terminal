@@ -1,5 +1,5 @@
-import type { Layout, Host, Pane, LayoutPreset, LayoutPresetPane } from './types';
-import { leafIds, toPresetTree, type LayoutNode } from './splitTree';
+import type { Layout, Host, Pane, LayoutPreset, LayoutPresetPane, PopoutPaneEntry } from './types.ts';
+import { leafIds, toPresetTree, type LayoutNode } from './splitTree.ts';
 
 export type { LayoutPreset, LayoutPresetPane };
 
@@ -102,12 +102,13 @@ export function saveUserLayoutPresets(presets: LayoutPreset[]): void {
   } catch {}
 }
 
-/** Snapshot a tab's free-form arrangement. Panes are stored in visual order. */
+/** Snapshot a tab's free-form arrangement (plus any popped-out panes). Panes are stored in visual order. */
 export function createUserPreset(
   name: string,
   tree: LayoutNode,
   panes: Pane[],
-  hostMap: Map<string, Host>
+  hostMap: Map<string, Host>,
+  poppedOutEntries?: PopoutPaneEntry[]
 ): LayoutPreset {
   const order = leafIds(tree);
   const byId = new Map(panes.map((p) => [p.id, p]));
@@ -124,14 +125,32 @@ export function createUserPreset(
     };
   });
 
+  const popoutPanes: LayoutPresetPane[] = (poppedOutEntries ?? []).map((entry) => {
+    const p = entry.pane;
+    const h = hostMap.get(p.hostId);
+    const lbl = h?.label || (p.isLocal ? 'Local Terminal' : 'Remote Session');
+    return {
+      hostId: p.hostId,
+      isLocal: p.isLocal,
+      label: lbl,
+      hostLabel: lbl,
+      color: h?.color ?? undefined,
+      poppedOut: true,
+      popoutBounds: entry.bounds,
+    };
+  });
+
+  const popoutSuffix = popoutPanes.length > 0 ? ` + ${popoutPanes.length} popped out` : '';
+
   return {
     id: 'preset_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
     name: name.trim() || 'Custom Layout',
-    description: `${ordered.length} panes (${getLayoutDescription('custom')})`,
+    description: `${ordered.length} panes (${getLayoutDescription('custom')}${popoutSuffix})`,
     createdAt: Date.now(),
     layout: 'custom',
     tree: toPresetTree(tree, order),
     panes: presetPanes,
+    ...(popoutPanes.length > 0 ? { popoutPanes } : {}),
     isBuiltin: false,
   };
 }
