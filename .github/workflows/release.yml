@@ -149,11 +149,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing is disabled by default for unsigned open-source community builds.
-          # To enable macOS/Windows code signing in the future, add repository secrets and uncomment:
+          # Use ad-hoc bundle signing ("-") by default on macOS when no Apple Developer ID
+          # certificate is configured so the outer .app bundle is properly sealed.
+          # To enable paid Apple Developer ID signing + notarization or Windows Authenticode in
+          # the future, add repository secrets and uncomment the remaining variables below:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           # APPLE_ID: ${{ secrets.APPLE_ID }}
           # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -167,6 +169,12 @@ jobs:
 
             Check the release notes for any change to the trust model before upgrading
             a machine that holds production credentials.
+
+            ### 🍎 macOS First-Launch Note (Gatekeeper)
+            Pre-built macOS community bundles are ad-hoc signed without paid Apple notarization. After dragging `DrexiusTerminal.app` to `/Applications`, clear the browser quarantine flag once in Terminal before opening:
+            ```bash
+            xattr -cr /Applications/DrexiusTerminal.app
+            ```
           # Draft on purpose: an accidental tag push must not ship binaries to the
           # world. Review the notes, then publish the draft from the Releases page.
           releaseDraft: true
