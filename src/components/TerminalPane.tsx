@@ -61,6 +61,25 @@ import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 
+/**
+ * Undo the input/screen modes a full-screen TUI (vim, claude, htop, less…) leaves enabled when its
+ * session dies without a clean exit. Without this, xterm.js keeps reporting mouse moves, focus
+ * changes and app-mode cursor keys as escape sequences into the *next* shell, which echoes them as
+ * junk such as `35;42;12M` or `^[[I`. Scrollback is preserved (no RIS).
+ */
+const TERMINAL_MODE_RESET =
+  '\x1b[?1049l' + // leave the alternate screen, restoring the main buffer and cursor
+  '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l' + // mouse tracking
+  '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l' + // mouse encodings
+  '\x1b[?1004l' + // focus in/out reporting
+  '\x1b[?2004l' + // bracketed paste
+  '\x1b[?2026l' + // synchronized output
+  '\x1b[<99u' + // pop kitty keyboard protocol flags (ignored if unsupported)
+  '\x1b[>4m' + // modifyOtherKeys off (ignored if unsupported)
+  '\x1b[!p' + // DECSTR: cursor keys/keypad, SGR, charset, scroll region, wraparound, origin
+  '\x1b[?25h' + // show cursor
+  '\x1b[0 q'; // default cursor shape
+
 const COMMON_SHELL_COMMANDS = [
   'pm2 status',
   'pm2 logs',
@@ -444,6 +463,18 @@ export const TerminalPane = memo(function TerminalPane({
   const [showClipboard, setShowClipboard] = useState(false);
   const pasteLockRef = useRef(false);
   const smartWriterRef = useRef<SmartTerminalWriter | null>(null);
+  /** Routed through the smart writer so its alternate-screen tracking sees the exit too. */
+  const resetTerminalModes = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const writer = smartWriterRef.current;
+    if (writer) {
+      writer.flush();
+      writer.write(TERMINAL_MODE_RESET);
+    } else {
+      term.write(TERMINAL_MODE_RESET);
+    }
+  }, []);
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
@@ -1103,6 +1134,7 @@ export const TerminalPane = memo(function TerminalPane({
                 break;
               case 'disconnected':
                 sessionRef.current = null;
+                resetTerminalModes();
                 term.write(`
 [90m[Serial port closed: ${ev.reason}][0m
 `);
@@ -1163,6 +1195,7 @@ export const TerminalPane = memo(function TerminalPane({
             case 'disconnected':
               sessionRef.current = null;
               try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
+              resetTerminalModes();
               term.write(`\r\n\x1b[90m[Process completed: ${ev.reason}]\x1b[0m\r\n`);
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });
@@ -1193,6 +1226,7 @@ export const TerminalPane = memo(function TerminalPane({
           try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
         }
 
+        resetTerminalModes();
         term.write(`\r\n\x1b[90m→ Spawning ${pane.customShell ? 'custom session' : 'local PTY shell'}…\x1b[0m\r\n`);
         try {
           const t = term as any;
@@ -1274,6 +1308,7 @@ export const TerminalPane = memo(function TerminalPane({
               sessionRef.current = null;
               try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
               lastSentSize.current = { cols: 0, rows: 0 };
+              resetTerminalModes();
               term.write(`\r\n\x1b[31m✖ ${ev.reason}\x1b[0m\r\n`);
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });
@@ -1322,6 +1357,8 @@ export const TerminalPane = memo(function TerminalPane({
           } catch {}
         }
 
+        // Fresh remote shell: any modes the previous session's TUI left on are now stale.
+        resetTerminalModes();
         const currentHost = hostRef.current;
         term.write(
           `\r\n\x1b[90m${resume ? '⟲ Resuming' : '→ Connecting to'} \x1b[36m${currentHost.username}@${currentHost.hostname}:${
@@ -1378,7 +1415,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     },
-    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange, handleDetectedPorts]
+    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange, handleDetectedPorts, resetTerminalModes]
   );
 
   const mobile = useMobile();
