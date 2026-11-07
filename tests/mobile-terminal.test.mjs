@@ -314,4 +314,150 @@ test('PortStreamDetector reassembles split chunks without premature partial-port
   assert.deepEqual(detector.feed('Listening on 0.0.0.0:2222\r\n'), []);
 });
 
+async function createHeadlessXterm(cols = 80, rows = 24) {
+  globalThis.self ??= globalThis;
+  globalThis.window ??= globalThis;
+  const xtermMod = await import('@xterm/xterm');
+  const Terminal = xtermMod.Terminal ?? xtermMod.default?.Terminal;
+  return new Terminal({ cols, rows, allowProposedApi: true });
+}
+
+function flushXterm(term) {
+  return new Promise((resolve) => term.write('', resolve));
+}
+
+test('SmartTerminalWriter.resetModes clears TUI modes and preserves history across disconnect -> reconnect (#44)', async (t) => {
+  const term = await createHeadlessXterm(80, 24);
+  const writer = new SmartTerminalWriter(term);
+  t.after(() => {
+    writer.dispose();
+    term.dispose();
+  });
+
+  // 1. Run shell commands in normal buffer, then launch a full-screen TUI enabling mouse tracking,
+  //    SGR mouse, focus reporting, bracketed paste, sync output, app cursor/keypad, no-wrap,
+  //    insert mode, DEC line-drawing charset, scroll margins, hidden cursor, and an OSC 8 link.
+  writer.write(
+    'history line 0\r\nhistory line 1\r\nhistory line 2\r\nbalajie@chnbld04:~$ nvim\r\n' +
+    '\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?2026h' +
+    '\x1b[?1h\x1b[?66h\x1b[?7l\x1b[4h\x1b[?25l\x1b[2;10r\x1b(0\x0e' +
+    '\x1b]8;;https://stale.example\x07TUI FRAME'
+  );
+  await flushXterm(term);
+
+  assert.equal(term.buffer.active.type, 'alternate');
+  assert.equal(term.modes.mouseTrackingMode, 'any');
+  assert.equal(term.modes.sendFocusMode, true);
+  assert.equal(term.modes.bracketedPasteMode, true);
+  assert.equal(term.modes.synchronizedOutputMode, true);
+  assert.equal(term.modes.applicationCursorKeysMode, true);
+  assert.equal(term.modes.applicationKeypadMode, true);
+  assert.equal(term.modes.wraparoundMode, false);
+  assert.equal(term.modes.insertMode, true);
+
+  // 2. Simulate abrupt SSH disconnect: reset modes + write disconnect status line.
+  writer.resetModes();
+  term.write('\r\n\x1b[31m✖ connection lost\x1b[0m\r\n');
+  await flushXterm(term);
+
+  assert.equal(term.buffer.active.type, 'normal');
+  assert.equal(term.modes.mouseTrackingMode, 'none');
+  assert.equal(term.modes.sendFocusMode, false);
+  assert.equal(term.modes.bracketedPasteMode, false);
+  assert.equal(term.modes.synchronizedOutputMode, false);
+  assert.equal(term.modes.applicationCursorKeysMode, false);
+  assert.equal(term.modes.applicationKeypadMode, false);
+  assert.equal(term.modes.wraparoundMode, true);
+  assert.equal(term.modes.insertMode, false);
+  assert.equal(term.modes.originMode, false);
+
+  // 3. Simulate reconnect: calling resetModes() again (including back-to-back synchronously)
+  //    must be idempotent and MUST NOT jump cursor to row 0 via DECRST 1049 restoreCursor().
+  writer.resetModes();
+  writer.resetModes();
+  term.write('\r\n⟲ Resuming balajie@chnbld04:22…\r\n');
+  writer.write('✔ Authenticated\r\nbalajie@chnbld04:~$ ascii_ok');
+  await flushXterm(term);
+
+  assert.equal(term.buffer.active.getLine(0)?.translateToString(true), 'history line 0');
+  assert.equal(term.buffer.active.getLine(1)?.translateToString(true), 'history line 1');
+  assert.equal(term.buffer.active.getLine(2)?.translateToString(true), 'history line 2');
+  assert.equal(term.buffer.active.getLine(3)?.translateToString(true), 'balajie@chnbld04:~$ nvim');
+  assert.equal(term.buffer.active.getLine(5)?.translateToString(true), '✖ connection lost');
+  assert.equal(term.buffer.active.getLine(7)?.translateToString(true), '⟲ Resuming balajie@chnbld04:22…');
+  assert.equal(term.buffer.active.getLine(8)?.translateToString(true), '✔ Authenticated');
+  // Confirms G0/GL charset returned to ASCII (`ascii_ok`, not DEC box-drawing glyphs).
+  assert.equal(term.buffer.active.getLine(9)?.translateToString(true), 'balajie@chnbld04:~$ ascii_ok');
+});
+
+test('SmartTerminalWriter.resetModes preserves cursor row on normal-shell and ?1047h/?47h disconnects', async (t) => {
+  const term = await createHeadlessXterm(80, 24);
+  const writer = new SmartTerminalWriter(term);
+  t.after(() => {
+    writer.dispose();
+    term.dispose();
+  });
+
+  // Case A: Disconnect from a normal shell (never entered alternate buffer) keeps cursor row intact.
+  writer.write('row zero\r\nrow one\r\nrow two\r\nprompt$ ');
+  await flushXterm(term);
+  assert.equal(term.buffer.active.cursorY, 3);
+
+  writer.resetModes();
+  term.write('\r\n[disconnected]\r\n');
+  await flushXterm(term);
+  assert.equal(term.buffer.active.getLine(0)?.translateToString(true), 'row zero');
+  assert.equal(term.buffer.active.getLine(1)?.translateToString(true), 'row one');
+  assert.equal(term.buffer.active.getLine(2)?.translateToString(true), 'row two');
+  assert.equal(term.buffer.active.getLine(3)?.translateToString(true), 'prompt$ ');
+  assert.equal(term.buffer.active.getLine(4)?.translateToString(true), '[disconnected]');
+
+  // Case B: Bare `?1047h` TUI (entered without saving cursor) restores normal buffer cursor row instead of row 0.
+  writer.write('next prompt$ \r\n\x1b[?1047h\x1b[1;1HTUI TOP');
+  await flushXterm(term);
+  assert.equal(term.buffer.active.type, 'alternate');
+
+  writer.resetModes();
+  term.write('[after 1047]\r\n');
+  await flushXterm(term);
+  assert.equal(term.buffer.active.type, 'normal');
+  assert.equal(term.buffer.active.getLine(0)?.translateToString(true), 'row zero');
+  assert.equal(term.buffer.active.getLine(5)?.translateToString(true), 'next prompt$ ');
+  assert.equal(term.buffer.active.getLine(6)?.translateToString(true), '[after 1047]');
+});
+
+test('SmartTerminalWriter.resetModes survives mid-stream Kitty APC, split UTF-8, unterminated OSC/DCS, and trailing CR', async (t) => {
+  const term = await createHeadlessXterm(40, 24);
+  const writer = new SmartTerminalWriter(term);
+  t.after(() => {
+    writer.dispose();
+    term.dispose();
+  });
+
+  // 1. Wrapped output ending on a split `\r` (before `\n`) + mouse tracking + unterminated Kitty APC:
+  //    resetModes() must NOT `\x1b[J` erase wrapped output and must NOT let kittyProcessor swallow the reset.
+  writer.write('Download: 99.9 Mbps [====================] wrapping line\r');
+  writer.write('\x1b[?1003h\x1b[?1006h\x1b_Ga=T,f=100;iVBORw0KGgoAAAANSUhEUgAA');
+  await flushXterm(term);
+  assert.equal(term.modes.mouseTrackingMode, 'any');
+
+  writer.resetModes();
+  await flushXterm(term);
+  assert.equal(term.modes.mouseTrackingMode, 'none');
+  assert.match(term.buffer.active.getLine(0)?.translateToString(true) ?? '', /^Download: 99\.9 Mbps/);
+
+  // 2. Drop mid-UTF-8 multibyte sequence + mid-SIXEL DCS: next session's UTF-8 decodes cleanly without U+FFFD.
+  const fullEmoji = new TextEncoder().encode('🚀');
+  writer.write('\x1bPq#0;2;0;0;0~-');
+  writer.write(fullEmoji.subarray(0, 2)); // incomplete 4-byte UTF-8 sequence at disconnect
+  writer.resetModes();
+  writer.write(new TextEncoder().encode('\r\nfresh: 🚀'));
+  await flushXterm(term);
+
+  const rendered = Array.from({ length: 6 }, (_, i) => term.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n');
+  assert.equal(rendered.includes('\uFFFD'), false);
+  assert.equal(rendered.includes('fresh: 🚀'), true);
+});
+
+
 

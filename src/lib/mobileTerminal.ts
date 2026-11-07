@@ -149,8 +149,37 @@ export interface TerminalLike {
         translateToString?(trimRight?: boolean, startColumn?: number, endColumn?: number): string;
       } | undefined;
     };
+    normal?: {
+      cursorX: number;
+      cursorY: number;
+    };
   };
 }
+
+/**
+ * Undo the input/render modes a full-screen TUI (neovim, claude, htop, less, tmux…) leaves enabled
+ * when its session dies without sending teardown sequences. Without this, xterm.js keeps reporting
+ * mouse moves, focus changes, and app-mode cursor keys into the *next* shell, which echoes them as
+ * junk such as `65;133;35M` or `^[[I`.
+ *
+ * NOTE: Alternate-screen exit (`\x1b[?1049l` / `\x1b[?1047l`) is intentionally omitted here and
+ * emitted conditionally by `SmartTerminalWriter.resetModes()` only while the alternate buffer is
+ * active: in xterm.js, sending `\x1b[?1049l` while already in the normal buffer unconditionally
+ * invokes `restoreCursor()`, jumping the cursor to `savedY` (row 0 after `DECSTR`) and overwriting
+ * prior viewport output. Scrollback is preserved (no RIS `\x1bc`).
+ */
+export const TERMINAL_MODE_RESET =
+  '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l' + // mouse tracking protocols
+  '\x1b[?1005l\x1b[?1006l\x1b[?1007l\x1b[?1015l\x1b[?1016l' + // mouse coordinate encodings & alt-scroll
+  '\x1b[?1004l' + // focus in/out reporting
+  '\x1b[?2004l' + // bracketed paste
+  '\x1b[?2026l' + // synchronized output (also flushes held row refresh)
+  '\x1b[<99u\x1b[=0u' + // kitty keyboard protocol stack pop + flags reset (ignored if unsupported)
+  '\x1b[>4;0m\x1b[>4m' + // xterm modifyOtherKeys off (ignored if unsupported)
+  '\x1b]8;;\x07' + // close any unterminated OSC 8 hyperlink
+  '\x1b[!p' + // DECSTR: cursor/keypad modes, SGR, charsets, scroll region, wraparound, origin, insert
+  '\x1b[?25h' + // show cursor
+  '\x1b[0 q'; // reset DECSCUSR cursor shape override to user default
 
 /**
  * Strips ANSI escape sequences from a string to measure its printable character width.
@@ -266,6 +295,9 @@ export class SmartTerminalWriter {
   private pendingCr = false;
   private decoder: TextDecoder | null = null;
   private alternateScreen = false;
+  private alternateSavedCursor = false;
+  private cursorSavedInNormal = false;
+  private pendingAltExit = false;
   private modeSequenceTail = '';
   private editingPrompt = false;
   private suppressRewindUntil = 0;
@@ -321,20 +353,43 @@ export class SmartTerminalWriter {
    */
   private updateAlternateScreenMode(chunk: string): boolean {
     const combined = this.modeSequenceTail + chunk;
-    const modeChanges = /\x1b\[\?([0-9;]+)([hl])/g;
+    const modeChanges = /\x1b(?:\[\?([0-9;]+)([hl])|(7)|(\[s)|(\[!p))/g;
     let match: RegExpExecArray | null;
     let sawAlternateSwitch = false;
     while ((match = modeChanges.exec(combined)) !== null) {
+      if (match[3] || match[4]) {
+        if (!this.alternateScreen) this.cursorSavedInNormal = true;
+        continue;
+      }
+      if (match[5]) {
+        this.cursorSavedInNormal = false;
+        continue;
+      }
+      const enabling = match[2] === 'h';
       const modes = match[1].split(';').map(Number);
-      if (modes.some((mode) => mode === 47 || mode === 1047 || mode === 1049)) {
-        this.alternateScreen = match[2] === 'h';
-        sawAlternateSwitch = true;
+      for (const mode of modes) {
+        if (mode === 1048 && enabling && !this.alternateScreen) {
+          this.cursorSavedInNormal = true;
+        } else if (mode === 47 || mode === 1047 || mode === 1049) {
+          sawAlternateSwitch = true;
+          if (enabling) {
+            if (!this.alternateScreen) {
+              this.alternateSavedCursor = mode === 1049 || this.cursorSavedInNormal;
+            }
+            this.alternateScreen = true;
+            this.pendingAltExit = false;
+          } else {
+            this.alternateScreen = false;
+            this.alternateSavedCursor = false;
+            this.pendingAltExit = false;
+          }
+        }
       }
     }
-    // Retain only an unfinished private-mode CSI prefix, not completed commands;
+    // Retain only an unfinished escape / private-mode CSI prefix, not completed commands;
     // otherwise a recent enter/exit sequence would be replayed as a fresh switch
     // on every following PTY chunk while it remained in the rolling tail.
-    this.modeSequenceTail = combined.match(/\x1b\[\?[0-9;]*$/)?.[0].slice(-64) ?? '';
+    this.modeSequenceTail = combined.match(/\x1b(?:\[\?[0-9;]*|\[!?|)$/)?.[0].slice(-64) ?? '';
     return sawAlternateSwitch;
   }
 
@@ -355,7 +410,7 @@ export class SmartTerminalWriter {
     }
 
     const switchedAlternateScreen = this.updateAlternateScreenMode(chunk);
-    const activeBufferIsAlternate = this.term.buffer.active.type === 'alternate';
+    const activeBufferIsAlternate = !this.pendingAltExit && this.term.buffer.active.type === 'alternate';
     if (this.alternateScreen || activeBufferIsAlternate || switchedAlternateScreen) {
       // This writer's wrapped-progress-bar workaround is only safe in the normal
       // scrollback buffer. Full-screen TUIs own cursor addressing and CR behavior.
@@ -466,10 +521,76 @@ export class SmartTerminalWriter {
     }
   }
 
+  /**
+   * Resets stale TUI modes (mouse tracking, focus reporting, bracketed paste, synchronized
+   * output, keyboard protocols, charsets, SGR, scroll margins, alternate screen) and discards
+   * any incomplete mid-stream UTF-8 / Kitty APC / escape state left behind by a dropped link.
+   *
+   * Idempotent across repeated calls (e.g. disconnect followed by reconnect): `\x1b[?1049l` is
+   * emitted only when actually leaving the alternate screen so normal-buffer cursor coordinates
+   * and scrollback history are never overwritten.
+   */
+  resetModes() {
+    const wasAltTracked = this.alternateScreen;
+    const hadSavedCursor = this.alternateSavedCursor;
+    const alreadyExitingAlt = this.pendingAltExit;
+
+    // Discard incomplete stream state from the dead session rather than calling `flush()`,
+    // which would treat a split `\r\n` at EOF as a standalone progress-bar CR and `\x1b[J`
+    // erase wrapped lines above the cursor.
+    this.pendingCr = false;
+    this.inFlightWrappedRows = null;
+    this.inFlightCol = 0;
+    this.editingPrompt = false;
+    this.suppressRewindUntil = 0;
+    this.alternateScreen = false;
+    this.alternateSavedCursor = false;
+    this.cursorSavedInNormal = false;
+    this.modeSequenceTail = '';
+    this.decoder = null;
+    this.kittyProcessor.reset();
+
+    const bufIsAlt = !alreadyExitingAlt && this.term.buffer.active.type === 'alternate';
+    const shouldExitAlt = wasAltTracked || bufIsAlt;
+    let altExit = '';
+    if (shouldExitAlt) {
+      if (hadSavedCursor || !wasAltTracked) {
+        altExit = '\x1b[?1049l';
+      } else if (this.term.buffer.active.type === 'alternate' && this.term.buffer.normal) {
+        const nx = Math.max(0, this.term.buffer.normal.cursorX) + 1;
+        const ny = Math.max(0, this.term.buffer.normal.cursorY) + 1;
+        altExit = `\x1b[?6l\x1b[${ny};${nx}H\x1b[?1047l\x1b[?47l`;
+      } else {
+        altExit = '\x1b[?1047l\x1b[?47l';
+      }
+    }
+
+    // Prefix `\x18` (CAN) so xterm's VT500 parser aborts any half-transmitted CSI, OSC,
+    // DCS/SIXEL, or APC sequence from the dead stream before parsing the mode resets.
+    const payload = '\x18' + altExit + TERMINAL_MODE_RESET;
+    if (shouldExitAlt && this.term.write.length >= 2) {
+      this.pendingAltExit = true;
+      this.term.write(payload, () => {
+        if (!this.alternateScreen) {
+          this.pendingAltExit = false;
+        }
+      });
+    } else {
+      this.pendingAltExit = false;
+      this.term.write(payload);
+    }
+  }
+
   dispose() {
     this.pendingCr = false;
     this.inFlightWrappedRows = null;
+    this.inFlightCol = 0;
+    this.editingPrompt = false;
+    this.suppressRewindUntil = 0;
     this.alternateScreen = false;
+    this.alternateSavedCursor = false;
+    this.cursorSavedInNormal = false;
+    this.pendingAltExit = false;
     this.modeSequenceTail = '';
     this.decoder = null;
     this.kittyProcessor.reset();

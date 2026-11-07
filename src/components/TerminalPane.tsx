@@ -1,7 +1,7 @@
 import { useMobile } from '../hooks/useMobile';
 import { useTerminalTouch, type TerminalTouchGesture } from '../hooks/useTerminalTouch';
 import { TerminalSelection } from './TerminalSelection';
-import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, SmartTerminalWriter, type TerminalModifiers } from '../lib/mobileTerminal';
+import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, TERMINAL_MODE_RESET, SmartTerminalWriter, type TerminalModifiers } from '../lib/mobileTerminal';
 import { TerminalAccessory } from './TerminalAccessory';
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
@@ -60,25 +60,6 @@ import type { DrexiusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
-
-/**
- * Undo the input/screen modes a full-screen TUI (vim, claude, htop, less…) leaves enabled when its
- * session dies without a clean exit. Without this, xterm.js keeps reporting mouse moves, focus
- * changes and app-mode cursor keys as escape sequences into the *next* shell, which echoes them as
- * junk such as `35;42;12M` or `^[[I`. Scrollback is preserved (no RIS).
- */
-const TERMINAL_MODE_RESET =
-  '\x1b[?1049l' + // leave the alternate screen, restoring the main buffer and cursor
-  '\x1b[?9l\x1b[?1000l\x1b[?1001l\x1b[?1002l\x1b[?1003l' + // mouse tracking
-  '\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l' + // mouse encodings
-  '\x1b[?1004l' + // focus in/out reporting
-  '\x1b[?2004l' + // bracketed paste
-  '\x1b[?2026l' + // synchronized output
-  '\x1b[<99u' + // pop kitty keyboard protocol flags (ignored if unsupported)
-  '\x1b[>4m' + // modifyOtherKeys off (ignored if unsupported)
-  '\x1b[!p' + // DECSTR: cursor keys/keypad, SGR, charset, scroll region, wraparound, origin
-  '\x1b[?25h' + // show cursor
-  '\x1b[0 q'; // default cursor shape
 
 const COMMON_SHELL_COMMANDS = [
   'pm2 status',
@@ -463,18 +444,10 @@ export const TerminalPane = memo(function TerminalPane({
   const [showClipboard, setShowClipboard] = useState(false);
   const pasteLockRef = useRef(false);
   const smartWriterRef = useRef<SmartTerminalWriter | null>(null);
-  /** Routed through the smart writer so its alternate-screen tracking sees the exit too. */
-  const resetTerminalModes = useCallback(() => {
-    const term = termRef.current;
-    if (!term) return;
-    const writer = smartWriterRef.current;
-    if (writer) {
-      writer.flush();
-      writer.write(TERMINAL_MODE_RESET);
-    } else {
-      term.write(TERMINAL_MODE_RESET);
-    }
-  }, []);
+  const cursorStyleRef = useRef(cursorStyle);
+  cursorStyleRef.current = cursorStyle;
+  const cursorBlinkRef = useRef(cursorBlink);
+  cursorBlinkRef.current = cursorBlink;
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
@@ -1099,6 +1072,42 @@ export const TerminalPane = memo(function TerminalPane({
   const hostRef = useRef(host);
   hostRef.current = host;
 
+  const mobile = useMobile();
+  const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
+  const modifiersRef = useRef(modifiers);
+
+  /**
+   * Clears stale TUI terminal modes, incomplete escape/UTF-8/Kitty stream state, user cursor
+   * option overrides (`?12l`), and partial command-line tracking when a session drops or before
+   * spawning a fresh shell. Idempotent across repeated disconnect -> reconnect cycles.
+   */
+  const resetTerminalModes = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const writer = smartWriterRef.current;
+    if (writer) {
+      writer.resetModes();
+    } else {
+      const altExit = term.buffer.active.type === 'alternate' ? '\x1b[?1049l' : '';
+      term.write('\x18' + altExit + TERMINAL_MODE_RESET);
+    }
+    term.options.cursorBlink = cursorBlinkRef.current;
+    term.options.cursorStyle = cursorStyleRef.current;
+    lineRef.current = '';
+    multilineBufferRef.current = [];
+    dirtyRef.current = false;
+    if (resyncTimerRef.current !== null) {
+      window.clearTimeout(resyncTimerRef.current);
+      resyncTimerRef.current = null;
+    }
+    setSuggestion((prev) => (prev !== null ? null : prev));
+    setGhostPos((prev) => (prev !== null ? null : prev));
+    if (modifiersRef.current.ctrl || modifiersRef.current.alt) {
+      modifiersRef.current = { ctrl: false, alt: false };
+      setModifiers(modifiersRef.current);
+    }
+  }, []);
+
   const connect = useCallback(
     async (resume: boolean) => {
       const term = termRef.current;
@@ -1114,6 +1123,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (isSerial) {
         const opts = pane.serialOptions!;
         const summary = `${opts.dataBits}/${(opts.parity ?? 'N')[0].toUpperCase()}/${opts.stopBits}`;
+        resetTerminalModes();
         term.write(`
 [90m→ Opening ${opts.portName} @ ${opts.baudRate} baud ${summary} (${opts.flowControl})…[0m
 `);
@@ -1415,12 +1425,9 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
     },
-    [host, isLocal, pane.id, pane.sessionId, pane.customShell, update, onChange, handleDetectedPorts, resetTerminalModes]
+    [host, isLocal, isSerial, pane.id, pane.sessionId, pane.customShell, update, onChange, handleDetectedPorts, resetTerminalModes]
   );
 
-  const mobile = useMobile();
-  const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
-  const modifiersRef = useRef(modifiers);
   const swallowRef = useRef<{ char: string; until: number } | null>(null);
   const handledInputRef = useRef(false);
   const lastEnterRef = useRef(0);
@@ -2378,6 +2385,7 @@ export const TerminalPane = memo(function TerminalPane({
               sessionRef.current = null;
               try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
               lastSentSize.current = { cols: 0, rows: 0 };
+              resetTerminalModes();
               setStatus('disconnected');
               update({ status: 'disconnected', sessionId: null });
               connect(true);
