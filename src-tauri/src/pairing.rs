@@ -217,12 +217,14 @@ impl PairingManager {
 }
 
 pub fn get_local_ip() -> String {
-    if let Ok(s) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if s.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = s.local_addr() {
-                let ip = addr.ip().to_string();
-                if ip != "0.0.0.0" && ip != "127.0.0.1" {
-                    return ip;
+    for probe in ["8.8.8.8:80", "192.168.1.1:80", "192.168.0.1:80", "10.0.0.1:80"] {
+        if let Ok(s) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if s.connect(probe).is_ok() {
+                if let Ok(addr) = s.local_addr() {
+                    let ip = addr.ip().to_string();
+                    if ip != "0.0.0.0" && ip != "127.0.0.1" {
+                        return ip;
+                    }
                 }
             }
         }
@@ -1283,12 +1285,14 @@ pub async fn pairing_join_client(
     device_name: Option<String>,
     vault: State<'_, Vault>,
 ) -> AppResult<PairingJoinResult> {
+    let target_host = target_host.trim().to_string();
     let clean_pin = pin.replace('-', "").trim().to_string();
     if clean_pin.len() != 6 || !clean_pin.chars().all(|c| c.is_ascii_digit()) {
         return Err(AppError::Other("The pairing code must be 6 digits.".into()));
     }
 
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| AppError::Network(e.to_string()))?;

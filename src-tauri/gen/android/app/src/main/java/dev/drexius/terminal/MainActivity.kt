@@ -35,6 +35,7 @@ class MainActivity : TauriActivity() {
   companion object {
     private const val STORAGE_PERMISSION_CODE = 1001
     private const val NOTIFICATION_PERMISSION_CODE = 1002
+    private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
     private const val KEYSTORE_ALIAS = "dev.drexius.terminal.vault_quick_unlock"
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val GCM_IV_LENGTH = 12
@@ -408,17 +409,26 @@ class MainActivity : TauriActivity() {
   }
 
   private fun promptNotificationPermissionIfNeeded() {
-    if (Build.VERSION.SDK_INT >= 33) {
-      try {
+    try {
+      val perms = mutableListOf<String>()
+      if (Build.VERSION.SDK_INT >= 33) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-          ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-            NOTIFICATION_PERMISSION_CODE
-          )
+          perms.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-      } catch (_: Exception) {}
-    }
+      }
+      if (Build.VERSION.SDK_INT >= 36) {
+        if (ContextCompat.checkSelfPermission(this, LOCAL_NETWORK_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+          perms.add(LOCAL_NETWORK_PERMISSION)
+        }
+      }
+      if (perms.isNotEmpty()) {
+        ActivityCompat.requestPermissions(
+          this,
+          perms.toTypedArray(),
+          NOTIFICATION_PERMISSION_CODE
+        )
+      }
+    } catch (_: Exception) {}
   }
 
   fun requestStoragePermissions() {
