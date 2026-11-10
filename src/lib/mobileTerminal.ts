@@ -2,6 +2,96 @@ import { KittyGraphicsProcessor } from './kittyGraphics.ts';
 
 export interface TerminalModifiers { ctrl: boolean; alt: boolean }
 
+export interface MobileInputTracker {
+  fullText: string;
+  time: number;
+}
+
+/**
+ * Deduplicates mobile soft-keyboard (IME) cumulative token re-emissions.
+ *
+ * On mobile keyboards (such as Samsung Keyboard and Gboard on Android), typing
+ * numbers and punctuation emits individual single-character events (e.g. "7" then "7",
+ * "5" then "6", or "5" then "-"), and then typing a following letter causes the IME
+ * to bundle the preceding token characters together with the new letter into a
+ * multi-character composition string (e.g. "77t", "56y", "5-t", or "4-p").
+ *
+ * Because terminal input is streamed immediately to the PTY as each key is pressed,
+ * re-sending the preceding token characters duplicates them (e.g. "77" + "77t" = "777t",
+ * "56" + "56y" = "5656y", "mt5-" + "5-t" = "mt5-5-t").
+ *
+ * Design invariants to prevent keystroke loss:
+ * 1. Single-character inputs (`data.length === 1`) are NEVER dropped, regardless of
+ *    typing speed (preserving fast repeated digits/flags like `5522`, `777`, `1000`, `ls -ll`).
+ * 2. Control characters (`\t`, `\r`, `\n`, `\x1b`, etc.) and whitespace reset the
+ *    tracked token buffer so shell completions (`Tab`) or line edits never corrupt
+ *    subsequent input.
+ * 3. Multi-character IME strings (`data.length > 1`) only strip a strict prefix
+ *    (`overlapLen <= data.length - 1`) matching a suffix of `sentBuffer`, so a
+ *    printable input event is never swallowed into an empty string.
+ */
+export function deduplicateMobileInput(
+  data: string,
+  tracker: MobileInputTracker,
+  now: number = Date.now(),
+): { toSend: string; updatedTracker: MobileInputTracker } {
+  if (!data) {
+    return { toSend: '', updatedTracker: tracker };
+  }
+
+  const sentBuffer = tracker.fullText;
+
+  // Backspace slices the last character from the tracked token buffer
+  if (data === '\x7f' || data === '\x08') {
+    return {
+      toSend: data,
+      updatedTracker: { fullText: sentBuffer.slice(0, -1), time: now },
+    };
+  }
+
+  // Control characters (Tab, Enter, ESC sequences, Ctrl combos) or single space
+  // invalidate the token buffer and pass through untouched
+  if (data === ' ' || /[\x00-\x1f\x7f]/.test(data)) {
+    return {
+      toSend: data,
+      updatedTracker: { fullText: '', time: now },
+    };
+  }
+
+  // Multi-character cumulative IME / token re-emission overlap detection:
+  // Find the longest strict prefix of `data` (`1 <= len < data.length`) that matches
+  // a suffix of `sentBuffer`
+  // (e.g. sentBuffer="77" + data="77t" -> overlap="77" -> toSend="t";
+  //  sentBuffer="56" + data="56y" -> overlap="56" -> toSend="y";
+  //  sentBuffer="mt5-" + data="5-t" -> overlap="5-" -> toSend="t").
+  let toSend = data;
+  if (sentBuffer && data.length > 1) {
+    const maxOverlap = Math.min(sentBuffer.length, data.length - 1);
+    let overlapLen = 0;
+    for (let len = maxOverlap; len >= 1; len--) {
+      if (sentBuffer.endsWith(data.slice(0, len))) {
+        overlapLen = len;
+        break;
+      }
+    }
+    if (overlapLen > 0) {
+      toSend = data.slice(overlapLen);
+    }
+  }
+
+  // Append newly sent characters to the current token buffer, resetting past any space
+  let nextBuffer = sentBuffer + toSend;
+  const lastSpaceIdx = nextBuffer.lastIndexOf(' ');
+  if (lastSpaceIdx !== -1) {
+    nextBuffer = nextBuffer.slice(lastSpaceIdx + 1);
+  }
+
+  return {
+    toSend,
+    updatedTracker: { fullText: nextBuffer, time: now },
+  };
+}
+
 export function isTerminalModifierKey(data: string): boolean {
   return data.length === 1 || /^\x1b[\[O][ABCD]$/.test(data);
 }

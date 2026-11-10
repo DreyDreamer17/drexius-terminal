@@ -6,6 +6,7 @@ import {
   modifiedTerminalInput,
   resolveGhostAccessoryAction,
   resolveGhostSuggestionKeyAction,
+  deduplicateMobileInput,
   getWrappedRowsAbove,
   SmartTerminalWriter,
 } from '../src/lib/mobileTerminal.ts';
@@ -521,6 +522,84 @@ test('mobile accessory ghost suggestion action accepts only on unmodified Right 
   for (const seq of ['\x1b', '\x1b[A', '\x1b[B', '\x1b[D', '\x1bOA', '\x1b[H', '\x1b[F']) {
     assert.equal(resolveGhostAccessoryAction(seq, true, none), 'dismiss-passthrough');
   }
+});
+
+test('mobile IME deduplication prevents number/symbol + letter token duplication (7t, 77t, 56y, mt5-terminal, stev-4-pc)', () => {
+  const simulateSequence = (events, defaultDelay = 150) => {
+    let tracker = { fullText: '', time: 0 };
+    let t = 1000;
+    let output = '';
+    for (const ev of events) {
+      const data = typeof ev === 'string' ? ev : ev.data;
+      const delay = typeof ev === 'string' ? defaultDelay : (ev.delay ?? defaultDelay);
+      t += delay;
+      const res = deduplicateMobileInput(data, tracker, t);
+      output += res.toSend;
+      tracker = res.updatedTracker;
+    }
+    return { output, tracker };
+  };
+
+  // 1. Single digit + letter: 7t -> 7t (not 77t)
+  assert.equal(simulateSequence(['7', '7t']).output, '7t');
+
+  // 2. Double digit + letter: 77t -> 77t (not 777t), both slow and fast (< 60ms)
+  assert.equal(simulateSequence(['7', '7', '77t'], 150).output, '77t');
+  assert.equal(simulateSequence(['7', '7', '77t'], 15).output, '77t');
+  assert.equal(simulateSequence(['7', '77', '77t'], 15).output, '77t');
+
+  // 3. Multi-digit + letter: 56y -> 56y (not 5656y)
+  assert.equal(simulateSequence(['5', '6', '56y']).output, '56y');
+  assert.equal(simulateSequence(['5', '6', '56y'], 15).output, '56y');
+
+  // 4. Alphanumeric + hyphen + word: mt5-terminal -> mt5-terminal (not mt5-5-terminal)
+  assert.equal(
+    simulateSequence([
+      'm', 'mt', '5', '-',
+      '5-t', '5-te', '5-ter', '5-term', '5-termi', '5-termin', '5-termina', '5-terminal',
+    ]).output,
+    'mt5-terminal',
+  );
+  assert.equal(
+    simulateSequence([
+      'm', 'mt', '5', '5-',
+      'mt5-t', 'mt5-te', 'mt5-ter', 'mt5-term', 'mt5-termi', 'mt5-termin', 'mt5-termina', 'mt5-terminal',
+    ]).output,
+    'mt5-terminal',
+  );
+
+  // 5. Hyphen + digit + hyphen + letters: stev-4-pc -> stev-4-pc (not stev-4-4-pc)
+  assert.equal(
+    simulateSequence(['s', 'st', 'ste', 'stev', '-', '4', '-', '4-p', '4-pc']).output,
+    'stev-4-pc',
+  );
+
+  // 6. Destructive fast-typing regressions: repeated digits, flags, and paths at 0ms-15ms intervals MUST NEVER drop characters
+  for (const fastDelay of [0, 10, 30, 150]) {
+    assert.equal(simulateSequence([...'ssh 5522'], fastDelay).output, 'ssh 5522');
+    assert.equal(simulateSequence([...'chmod 777'], fastDelay).output, 'chmod 777');
+    assert.equal(simulateSequence([...'port 1000'], fastDelay).output, 'port 1000');
+    assert.equal(simulateSequence([...'ls -ll'], fastDelay).output, 'ls -ll');
+    assert.equal(simulateSequence([...'cd ../..'], fastDelay).output, 'cd ../..');
+    assert.equal(simulateSequence(['c', 'd', ' ', '.', '..', '/', '.', '..'], fastDelay).output, 'cd ../..');
+  }
+
+  // 7. Shell-side / control key invalidation: Tab (\t), Enter (\r), and ESC sequences reset the token buffer
+  // so typing `mt5-` -> TAB -> `5-t` never strips `5-` after Tab completion
+  assert.equal(
+    simulateSequence(['m', 't', '5', '-', '\t', '5-t']).output,
+    'mt5-\t5-t',
+  );
+  assert.equal(
+    simulateSequence(['m', 't', '5', '-', '\x1b[C', '5-t']).output,
+    'mt5-\x1b[C5-t',
+  );
+
+  // 8. Backspace updates token buffer without losing remaining prefix
+  assert.equal(
+    simulateSequence(['5', '6', '7', '\x7f', '56y']).output,
+    '567\x7f56y'.replace('567\x7f56y', '567\x7fy'),
+  );
 });
 
 

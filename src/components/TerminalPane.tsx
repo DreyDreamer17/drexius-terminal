@@ -6,6 +6,8 @@ import {
   modifiedTerminalInput,
   resolveGhostAccessoryAction,
   resolveGhostSuggestionKeyAction,
+  deduplicateMobileInput,
+  type MobileInputTracker,
   TERMINAL_FONT_MIN,
   TERMINAL_FONT_MAX,
   TERMINAL_MODE_RESET,
@@ -1481,7 +1483,7 @@ export const TerminalPane = memo(function TerminalPane({
   const handledInputRef = useRef(false);
   const lastEnterRef = useRef(0);
   const lastBackspaceRef = useRef(0);
-  const lastInsertedRef = useRef<{ text: string; time: number }>({ text: '', time: 0 });
+  const mobileTrackerRef = useRef<MobileInputTracker>({ fullText: '', time: 0 });
 
   /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
   const sendAccessoryKey = useCallback((data: string) => {
@@ -1509,6 +1511,7 @@ export const TerminalPane = memo(function TerminalPane({
       modifiersRef.current = { ctrl: false, alt: false };
       setModifiers(modifiersRef.current);
     }
+    mobileTrackerRef.current = { fullText: '', time: Date.now() };
     term?.input(data, true);
     term?.focus();
   }, [mobile, acceptSuggestion, clearSuggestion]);
@@ -1790,6 +1793,7 @@ export const TerminalPane = memo(function TerminalPane({
           modifiersRef.current = { ctrl: false, alt: false };
           setModifiers(modifiersRef.current);
           const modified = modifiedTerminalInput(data, activeMod);
+          mobileTrackerRef.current = { fullText: '', time: Date.now() };
           term.input(modified, true);
           resetHelperValue();
           handledInputRef.current = true;
@@ -1797,22 +1801,31 @@ export const TerminalPane = memo(function TerminalPane({
         }
       }
 
+      if (inputType === 'insertFromPaste') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (data) {
+          mobileTrackerRef.current = { fullText: '', time: Date.now() };
+          term.input(data, true);
+        }
+        resetHelperValue();
+        handledInputRef.current = true;
+        return;
+      }
+
       if (
         inputType === 'insertText' ||
         inputType === 'insertCompositionText' ||
-        inputType === 'insertReplacementText' ||
-        inputType === 'insertFromPaste'
+        inputType === 'insertReplacementText'
       ) {
         e.preventDefault();
         e.stopPropagation();
         if (data) {
-          if (data === lastInsertedRef.current.text && Date.now() - lastInsertedRef.current.time < 60) {
-            resetHelperValue();
-            handledInputRef.current = true;
-            return;
+          const { toSend, updatedTracker } = deduplicateMobileInput(data, mobileTrackerRef.current);
+          mobileTrackerRef.current = updatedTracker;
+          if (toSend) {
+            term.input(toSend, true);
           }
-          lastInsertedRef.current = { text: data, time: Date.now() };
-          term.input(data, true);
         }
         resetHelperValue();
         handledInputRef.current = true;
@@ -1824,6 +1837,10 @@ export const TerminalPane = memo(function TerminalPane({
         e.stopPropagation();
         if (Date.now() - lastBackspaceRef.current > 120) {
           lastBackspaceRef.current = Date.now();
+          mobileTrackerRef.current = {
+            fullText: mobileTrackerRef.current.fullText.slice(0, -1),
+            time: Date.now(),
+          };
           term.input('\x7f', true);
         }
         resetHelperValue();
@@ -1834,6 +1851,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (inputType === 'deleteContentForward') {
         e.preventDefault();
         e.stopPropagation();
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
         term.input('\x1b[3~', true);
         resetHelperValue();
         handledInputRef.current = true;
@@ -1843,6 +1861,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (inputType === 'deleteWordBackward') {
         e.preventDefault();
         e.stopPropagation();
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
         term.input('\x17', true); // ^W in readline
         resetHelperValue();
         handledInputRef.current = true;
@@ -1852,6 +1871,7 @@ export const TerminalPane = memo(function TerminalPane({
       if (inputType === 'insertLineBreak' || inputType === 'insertParagraph') {
         e.preventDefault();
         e.stopPropagation();
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
         if (Date.now() - lastEnterRef.current > 200) {
           lastEnterRef.current = Date.now();
           term.input('\r', true);
@@ -1922,16 +1942,21 @@ export const TerminalPane = memo(function TerminalPane({
         if (val === '') {
           if (Date.now() - lastBackspaceRef.current > 120) {
             lastBackspaceRef.current = Date.now();
+            mobileTrackerRef.current = {
+              fullText: mobileTrackerRef.current.fullText.slice(0, -1),
+              time: Date.now(),
+            };
             term.input('\x7f', true);
           }
         } else if (val !== ' ') {
           let text = val;
           if (text.startsWith(' ')) text = text.slice(1);
-          else if (text.endsWith(' ')) text = text.slice(0, -1);
+          if (text.endsWith(' ')) text = text.slice(0, -1);
           if (text) {
-            if (!(text === lastInsertedRef.current.text && Date.now() - lastInsertedRef.current.time < 60)) {
-              lastInsertedRef.current = { text, time: Date.now() };
-              term.input(text, true);
+            const { toSend, updatedTracker } = deduplicateMobileInput(text, mobileTrackerRef.current);
+            mobileTrackerRef.current = updatedTracker;
+            if (toSend) {
+              term.input(toSend, true);
             }
           }
         }
@@ -1950,6 +1975,7 @@ export const TerminalPane = memo(function TerminalPane({
     const handleHelperPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData('text/plain');
       if (text) {
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
         smartWriterRef.current?.notifyUserInput(text, true);
         bridge.addClipboardHistory(text, 'System Clipboard').catch(() => {});
       }
@@ -2245,9 +2271,14 @@ export const TerminalPane = memo(function TerminalPane({
       // Escape sequences (arrows, Home/End, Delete, bracketed paste...) change the
       // line in ways we can't track from keystrokes -> re-read it from the screen.
       if (data.startsWith('\x1b')) {
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
         scheduleResync();
         onDataRef.current?.(data);
         return;
+      }
+
+      if (/[\x00-\x1f]/.test(data)) {
+        mobileTrackerRef.current = { fullText: '', time: Date.now() };
       }
 
       // Track submitted lines for snapshot, command history, and autosuggestion
