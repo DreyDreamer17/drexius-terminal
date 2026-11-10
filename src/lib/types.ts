@@ -233,6 +233,9 @@ export interface Pane {
   /** Directory to `cd` into once connected. Set when a pane is created by splitting another
    *  so the new shell starts where the focused one was. POSIX paths only. */
   initialCwd?: string;
+  /** Per-pane terminal font size override (set via Ctrl+Scroll or Ctrl+=/-/0).
+   *  When omitted, falls back to the global default terminal font size. */
+  fontSize?: number;
 }
 
 export interface ActiveSshSession {

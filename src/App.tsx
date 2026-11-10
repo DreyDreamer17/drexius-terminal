@@ -697,6 +697,49 @@ export default function App() {
     if (fontZoomHudTimer.current !== null) window.clearTimeout(fontZoomHudTimer.current);
     fontZoomHudTimer.current = window.setTimeout(() => setFontZoomHud(null), 900);
   }, []);
+
+  const updatePaneFontSize = useCallback((tabId: string, paneId: string, nextSize: number | undefined) => {
+    const clamped = nextSize === undefined ? undefined : clampTerminalFontSize(nextSize);
+    setTabs((ts) =>
+      ts.map((t) => {
+        if (t.id !== tabId || t.kind === 'sftp') return t;
+        const target = t.panes.find((p) => p.id === paneId);
+        if (!target || (target.fontSize === clamped && t.activePaneId === paneId)) return t;
+        return {
+          ...t,
+          activePaneId: paneId,
+          panes: t.panes.map((p) =>
+            p.id === paneId
+              ? clamped === undefined
+                ? (() => {
+                    const { fontSize: _omit, ...rest } = p;
+                    return rest;
+                  })()
+                : { ...p, fontSize: clamped }
+              : p
+          ),
+        };
+      })
+    );
+  }, []);
+
+  const handleGlobalFontSizeChange = useCallback((nextOrUpdater: number | ((prev: number) => number)) => {
+    setFontSize((prev) => {
+      const raw = typeof nextOrUpdater === 'function' ? nextOrUpdater(prev) : nextOrUpdater;
+      return clampTerminalFontSize(raw);
+    });
+    setTabs((ts) => {
+      if (!ts.some((t) => t.panes.some((p) => p.fontSize !== undefined))) return ts;
+      return ts.map((t) => ({
+        ...t,
+        panes: t.panes.map((p) => {
+          if (p.fontSize === undefined) return p;
+          const { fontSize: _omit, ...rest } = p;
+          return rest;
+        }),
+      }));
+    });
+  }, []);
   const [lineHeight, setLineHeight] = useState(() => Number(localStorage.getItem('drx.lineHeight') ?? 1.0));
   const [showThemes, setShowThemes] = useState(false);
   const [showSync, setShowSync] = useState(false);
@@ -2472,6 +2515,8 @@ export default function App() {
       // Not shell control characters, so plain-Ctrl is safe to intercept. Ctrl++ (the shifted
       // '+' on most layouts) is the same action as Ctrl+=, but only while the binding still uses
       // its default — a user who rebound zoom-in keeps exactly what they configured.
+      // Adjusts the focused pane only (falling back to global fontSize when no pane is open).
+      const focusedPaneFontSize = activePane?.fontSize ?? fontSizeRef.current;
       const zoomInAtDefault =
         normalizeCombo(shortcuts.font_zoom_in?.keys ?? 'Ctrl+=') === normalizeCombo('Ctrl+=');
       if (
@@ -2480,24 +2525,37 @@ export default function App() {
       ) {
         e.preventDefault();
         e.stopPropagation();
-        const next = clampTerminalFontSize(fontSizeRef.current + 1);
-        setFontSize(next);
+        const next = clampTerminalFontSize(focusedPaneFontSize + 1);
+        if (terminalContext && activePane) {
+          updatePaneFontSize(terminalContext.id, activePane.id, next);
+        } else {
+          setFontSize(next);
+        }
         showFontZoomHud(next);
         return;
       }
       if (bindingMatches(e, shortcuts.font_zoom_out, 'Ctrl+-')) {
         e.preventDefault();
         e.stopPropagation();
-        const next = clampTerminalFontSize(fontSizeRef.current - 1);
-        setFontSize(next);
+        const next = clampTerminalFontSize(focusedPaneFontSize - 1);
+        if (terminalContext && activePane) {
+          updatePaneFontSize(terminalContext.id, activePane.id, next);
+        } else {
+          setFontSize(next);
+        }
         showFontZoomHud(next);
         return;
       }
       if (bindingMatches(e, shortcuts.font_zoom_reset, 'Ctrl+0')) {
         e.preventDefault();
         e.stopPropagation();
-        setFontSize(DEFAULT_TERMINAL_FONT_SIZE);
-        showFontZoomHud(DEFAULT_TERMINAL_FONT_SIZE);
+        if (terminalContext && activePane) {
+          updatePaneFontSize(terminalContext.id, activePane.id, undefined);
+          showFontZoomHud(fontSizeRef.current);
+        } else {
+          setFontSize(DEFAULT_TERMINAL_FONT_SIZE);
+          showFontZoomHud(DEFAULT_TERMINAL_FONT_SIZE);
+        }
         return;
       }
     };
@@ -2536,7 +2594,9 @@ export default function App() {
     toast,
     terminalContext,
     activePaneId,
+    activePane,
     activeTab,
+    updatePaneFontSize,
     showFontZoomHud,
   ]);
 
@@ -3685,9 +3745,9 @@ export default function App() {
                     <div className="mt-2 flex items-center justify-between border-t border-white/5 px-2 pt-2 text-xs text-slate-400">
                       Font size
                       <div className="flex items-center gap-1">
-                        <button onClick={() => setFontSize((f) => Math.max(TERMINAL_FONT_MIN, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
+                        <button onClick={() => handleGlobalFontSizeChange((f) => Math.max(TERMINAL_FONT_MIN, f - 1))} className="rounded p-1 hover:bg-white/10"><Minus className="h-3 w-3" /></button>
                         <span className="w-6 text-center font-mono text-white">{fontSize}</span>
-                        <button onClick={() => setFontSize((f) => Math.min(TERMINAL_FONT_MAX, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
+                        <button onClick={() => handleGlobalFontSizeChange((f) => Math.min(TERMINAL_FONT_MAX, f + 1))} className="rounded p-1 hover:bg-white/10"><Plus className="h-3 w-3" /></button>
                       </div>
                     </div>
                     <div className="mt-1 flex items-center justify-between px-2 pt-1 text-xs text-slate-400">
@@ -4242,12 +4302,12 @@ export default function App() {
                           pane={p}
                           host={h}
                           theme={theme}
-                          fontSize={fontSize}
+                          fontSize={p.fontSize ?? fontSize}
                           fontFamily={uiPrefs.fontFamily}
                           customFontFamily={uiPrefs.customFontFamily}
                           fontWeight={uiPrefs.fontWeight}
                           letterSpacing={uiPrefs.letterSpacing}
-                          onFontSizeChange={setFontSize}
+                          onFontSizeChange={(nextSize) => updatePaneFontSize(t.id, p.id, nextSize)}
                           lineHeight={lineHeight}
                           cursorStyle={uiPrefs.cursorStyle}
                           cursorBlink={uiPrefs.cursorBlink}
@@ -5477,7 +5537,7 @@ export default function App() {
           themeId={themeId}
           onThemeSelect={setThemeId}
           fontSize={fontSize}
-          onFontSizeChange={setFontSize}
+          onFontSizeChange={handleGlobalFontSizeChange}
           lineHeight={lineHeight}
           onLineHeightChange={setLineHeight}
           zen={zen}

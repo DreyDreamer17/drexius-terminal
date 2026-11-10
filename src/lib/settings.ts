@@ -418,21 +418,21 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     category: 'Terminal Actions',
     // Ctrl++ (the shifted '+' on most layouts) is accepted as the same action.
     keys: 'Ctrl+=',
-    description: 'Grow the terminal font by one step (also Ctrl+Scroll Wheel up)',
+    description: 'Grow the focused terminal pane font by one step (also Ctrl+Scroll Wheel up)',
   },
   font_zoom_out: {
     id: 'font_zoom_out',
     label: 'Decrease Terminal Font Size',
     category: 'Terminal Actions',
     keys: 'Ctrl+-',
-    description: 'Shrink the terminal font by one step (also Ctrl+Scroll Wheel down)',
+    description: 'Shrink the focused terminal pane font by one step (also Ctrl+Scroll Wheel down)',
   },
   font_zoom_reset: {
     id: 'font_zoom_reset',
     label: 'Reset Terminal Font Size',
     category: 'Terminal Actions',
     keys: 'Ctrl+0',
-    description: 'Restore the terminal font to its default size',
+    description: 'Restore the focused terminal pane font to its default size',
   },
 };
 
