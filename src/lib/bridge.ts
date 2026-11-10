@@ -1483,7 +1483,14 @@ export const bridge = {
     demoSessions.delete(sessionId);
   },
 
-  async attachLocalPty(sessionId: string, cols: number, rows: number, onEvent: (e: SessionEvent) => void): Promise<boolean> {
+  async attachLocalPty(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    onEvent: (e: SessionEvent) => void,
+    cellWidth?: number,
+    cellHeight?: number,
+  ): Promise<boolean> {
     if (isTauri) {
       const channel = new Channel<{ event: string; data: Record<string, unknown> }>();
       channel.onmessage = (msg) => {
@@ -1495,7 +1502,14 @@ export const bridge = {
           case 'disconnected': onEvent({ type: 'disconnected', reason: d.reason, resumable: d.resumable }); break;
         }
       };
-      return invoke<boolean>('local_pty_attach', { sessionId, cols, rows, onEvent: channel }).catch(() => false);
+      return invoke<boolean>('local_pty_attach', {
+        sessionId,
+        cols,
+        rows,
+        cellWidth: cellWidth ?? null,
+        cellHeight: cellHeight ?? null,
+        onEvent: channel,
+      }).catch(() => false);
     }
     const s = demoSessions.get(sessionId);
     if (!s) return false;

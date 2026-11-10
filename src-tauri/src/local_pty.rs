@@ -59,6 +59,7 @@ pub struct LocalPtyRequest {
 enum PtyCmd {
     Write(Vec<u8>),
     Resize(u32, u32, Option<u32>, Option<u32>),
+    ForceResize(u32, u32, Option<u32>, Option<u32>),
     Close,
 }
 
@@ -73,6 +74,7 @@ struct LocalSessionHandle {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     events: Arc<Mutex<IpcChannel<PtyEvent>>>,
     scrollback: Arc<Mutex<Vec<u8>>>,
+    modes: Arc<Mutex<crate::ssh::TerminalModeTracker>>,
     banner: String,
     os: String,
     cwd: Arc<Mutex<String>>,
@@ -320,6 +322,7 @@ pub fn local_pty_spawn(
     let cwd_shared = Arc::new(Mutex::new(cwd_str.clone()));
     let events_shared = Arc::new(Mutex::new(on_event.clone()));
     let scrollback = Arc::new(Mutex::new(Vec::with_capacity(16 * 1024)));
+    let modes_shared = Arc::new(Mutex::new(crate::ssh::TerminalModeTracker::default()));
 
     mgr.sessions.lock().insert(
         session_id.clone(),
@@ -328,6 +331,7 @@ pub fn local_pty_spawn(
             child: child.clone(),
             events: events_shared.clone(),
             scrollback: scrollback.clone(),
+            modes: modes_shared.clone(),
             banner: banner_str.clone(),
             os: os_name.into(),
             cwd: cwd_shared.clone(),
@@ -355,6 +359,7 @@ pub fn local_pty_spawn(
                 rx,
                 &events_for_thread,
                 &scrollback,
+                &modes_shared,
                 &cwd_for_thread,
             );
             // Reap the child so exited shells don't linger as zombies.
@@ -402,15 +407,23 @@ pub fn local_pty_attach(
     let _ = on_event.send(PtyEvent::Cwd {
         path: h.cwd.lock().clone(),
     });
-    let sb = h.scrollback.lock().clone();
-    if !sb.is_empty() {
+    let (replay, in_alt_screen) = {
+        let sb = h.scrollback.lock();
+        let modes = h.modes.lock();
+        (modes.build_attach_replay(&sb), modes.in_alt_screen())
+    };
+    if !replay.is_empty() {
         let _ = on_event.send(PtyEvent::Output {
-            b64: B64.encode(&sb),
+            b64: B64.encode(&replay),
         });
     }
     if cols > 0 && rows > 0 {
-        let _ =
-            h.tx.try_send(PtyCmd::Resize(cols, rows, cell_width, cell_height));
+        let cmd = if in_alt_screen {
+            PtyCmd::ForceResize(cols, rows, cell_width, cell_height)
+        } else {
+            PtyCmd::Resize(cols, rows, cell_width, cell_height)
+        };
+        let _ = h.tx.try_send(cmd);
     }
     Ok(true)
 }
@@ -528,6 +541,7 @@ fn pty_io_loop(
     rx: Receiver<PtyCmd>,
     events: &Arc<Mutex<IpcChannel<PtyEvent>>>,
     scrollback: &Arc<Mutex<Vec<u8>>>,
+    modes_state: &Arc<Mutex<crate::ssh::TerminalModeTracker>>,
     cwd_state: &Arc<Mutex<String>>,
 ) {
     let mut reader = match master.try_clone_reader() {
@@ -563,6 +577,25 @@ fn pty_io_loop(
                         pixel_height: r.saturating_mul(ch),
                     });
                 }
+                Ok(PtyCmd::ForceResize(cols, rows, cell_w_opt, cell_h_opt)) => {
+                    let c = cols.max(10) as u16;
+                    let r = rows.max(5) as u16;
+                    let cw = cell_w_opt.unwrap_or(9).max(1) as u16;
+                    let ch = cell_h_opt.unwrap_or(18).max(1) as u16;
+                    let r_bounce = r.saturating_add(1);
+                    let _ = master.resize(PtySize {
+                        rows: r_bounce,
+                        cols: c,
+                        pixel_width: c.saturating_mul(cw),
+                        pixel_height: r_bounce.saturating_mul(ch),
+                    });
+                    let _ = master.resize(PtySize {
+                        rows: r,
+                        cols: c,
+                        pixel_width: c.saturating_mul(cw),
+                        pixel_height: r.saturating_mul(ch),
+                    });
+                }
                 Ok(PtyCmd::Close) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -585,13 +618,11 @@ fn pty_io_loop(
                     *cwd_state.lock() = new_cwd.clone();
                     let _ = events.lock().send(PtyEvent::Cwd { path: new_cwd });
                 }
+                modes_state.lock().feed(chunk);
                 {
                     let mut sb = scrollback.lock();
                     sb.extend_from_slice(chunk);
-                    if sb.len() > MAX_LOCAL_SCROLLBACK_BYTES {
-                        let excess = sb.len() - MAX_LOCAL_SCROLLBACK_BYTES;
-                        sb.drain(0..excess);
-                    }
+                    crate::ssh::trim_scrollback(&mut sb, MAX_LOCAL_SCROLLBACK_BYTES);
                 }
                 let _ = events.lock().send(PtyEvent::Output {
                     b64: B64.encode(chunk),

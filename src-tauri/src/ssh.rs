@@ -72,6 +72,7 @@ pub struct SessionInfo {
 enum Cmd {
     Write(Vec<u8>),
     Resize(u32, u32),
+    ForceResize(u32, u32),
     Close,
 }
 
@@ -81,6 +82,7 @@ struct SessionHandle {
     stop: Arc<AtomicBool>,
     events: Arc<Mutex<IpcChannel<SshEvent>>>,
     scrollback: Arc<Mutex<Vec<u8>>>,
+    modes: Arc<Mutex<TerminalModeTracker>>,
     cwd: Arc<Mutex<String>>,
     fingerprint: String,
     banner: Option<String>,
@@ -817,6 +819,7 @@ pub fn ssh_connect(
 
     let events_shared = Arc::new(Mutex::new(on_event.clone()));
     let scrollback = Arc::new(Mutex::new(Vec::with_capacity(16 * 1024)));
+    let modes_shared = Arc::new(Mutex::new(TerminalModeTracker::default()));
     let cwd_shared = Arc::new(Mutex::new(initial_cwd));
 
     let info = SessionInfo {
@@ -832,6 +835,7 @@ pub fn ssh_connect(
             stop: stop.clone(),
             events: events_shared.clone(),
             scrollback: scrollback.clone(),
+            modes: modes_shared.clone(),
             cwd: cwd_shared.clone(),
             fingerprint: fingerprint.clone(),
             banner: banner.clone(),
@@ -863,6 +867,7 @@ pub fn ssh_connect(
                 rx,
                 &events_for_thread,
                 &scrollback,
+                &modes_shared,
                 &cwd_shared,
                 &snaps,
                 &host_id,
@@ -913,14 +918,23 @@ pub fn ssh_attach(
     if !cwd.is_empty() {
         let _ = on_event.send(SshEvent::Cwd { path: cwd });
     }
-    let sb = h.scrollback.lock().clone();
-    if !sb.is_empty() {
+    let (replay, in_alt_screen) = {
+        let sb = h.scrollback.lock();
+        let modes = h.modes.lock();
+        (modes.build_attach_replay(&sb), modes.in_alt_screen())
+    };
+    if !replay.is_empty() {
         let _ = on_event.send(SshEvent::Output {
-            b64: B64.encode(&sb),
+            b64: B64.encode(&replay),
         });
     }
     if cols > 0 && rows > 0 {
-        let _ = h.tx.try_send(Cmd::Resize(cols, rows));
+        let cmd = if in_alt_screen {
+            Cmd::ForceResize(cols, rows)
+        } else {
+            Cmd::Resize(cols, rows)
+        };
+        let _ = h.tx.try_send(cmd);
     }
     Ok(true)
 }
@@ -1008,6 +1022,7 @@ fn io_loop(
     rx: Receiver<Cmd>,
     events: &Arc<Mutex<IpcChannel<SshEvent>>>,
     scrollback: &Arc<Mutex<Vec<u8>>>,
+    modes_state: &Arc<Mutex<TerminalModeTracker>>,
     cwd_state: &Arc<Mutex<String>>,
     snaps: &SnapshotStore,
     host_id: &str,
@@ -1028,7 +1043,7 @@ fn io_loop(
         }
 
         let mut idle = true;
-        let mut pending_resize: Option<(u32, u32)> = None;
+        let mut pending_resize: Option<(u32, u32, bool)> = None;
 
         // 1. Drain UI commands (capped per tick to prevent starvation).
         for _ in 0..32 {
@@ -1042,7 +1057,13 @@ fn io_loop(
                 }
                 Ok(Cmd::Resize(c, r)) => {
                     if c > 0 && r > 0 {
-                        pending_resize = Some((c, r));
+                        let force = pending_resize.is_some_and(|(_, _, f)| f);
+                        pending_resize = Some((c, r, force));
+                    }
+                }
+                Ok(Cmd::ForceResize(c, r)) => {
+                    if c > 0 && r > 0 {
+                        pending_resize = Some((c, r, true));
                     }
                 }
                 Ok(Cmd::Close) | Err(TryRecvError::Disconnected) => {
@@ -1054,8 +1075,15 @@ fn io_loop(
             }
         }
 
-        if let Some((c, r)) = pending_resize {
-            if (c, r) != last_size {
+        if let Some((c, r, force)) = pending_resize {
+            if force {
+                idle = false;
+                let _ = request_pty_size_nb(&mut ch, c, r.saturating_add(1));
+                if let Err(e) = request_pty_size_nb(&mut ch, c, r) {
+                    return (format!("resize failed: {e}"), true);
+                }
+                last_size = (c, r);
+            } else if (c, r) != last_size {
                 idle = false;
                 if let Err(e) = request_pty_size_nb(&mut ch, c, r) {
                     return (format!("resize failed: {e}"), true);
@@ -1080,13 +1108,11 @@ fn io_loop(
                     *cwd_state.lock() = cwd.clone();
                     let _ = events.lock().send(SshEvent::Cwd { path: cwd });
                 }
+                modes_state.lock().feed(chunk);
                 {
                     let mut sb = scrollback.lock();
                     sb.extend_from_slice(chunk);
-                    if sb.len() > MAX_SCROLLBACK_BYTES {
-                        let excess = sb.len() - MAX_SCROLLBACK_BYTES;
-                        sb.drain(0..excess);
-                    }
+                    trim_scrollback(&mut sb, MAX_SCROLLBACK_BYTES);
                 }
                 // Best-effort delivery to the currently attached WebView channel.
                 // Never close the SSH channel if the WebView is temporarily detached
@@ -1217,6 +1243,429 @@ fn parse_file_url(raw: &[u8]) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Trims `sb` so its length does not exceed `max_bytes`, advancing the cut point
+/// past any leading UTF-8 continuation bytes (`0x80..0xBF`) or mid-CSI escape
+/// parameters so replayed scrollback never begins with a torn escape sequence or
+/// invalid UTF-8 codepoint fragment.
+pub(crate) fn trim_scrollback(sb: &mut Vec<u8>, max_bytes: usize) {
+    if sb.len() <= max_bytes {
+        return;
+    }
+    let mut cut = sb.len() - max_bytes;
+    let search_limit = (cut + 128).min(sb.len());
+
+    // If `cut` falls inside an unfinished CSI/OSC sequence that started within the
+    // preceding 64 bytes, advance `cut` past the end of that escape sequence.
+    let back_start = cut.saturating_sub(64);
+    if let Some(rel_esc) = sb[back_start..cut].iter().rposition(|&b| b == 0x1b) {
+        let esc_idx = back_start + rel_esc;
+        if esc_idx + 1 == cut {
+            cut = (cut + 1).min(search_limit);
+        } else if sb.get(esc_idx + 1) == Some(&b'[') {
+            let csi_body = &sb[esc_idx + 2..cut];
+            if csi_body.iter().all(|&b| (0x20..=0x3f).contains(&b)) {
+                while cut < search_limit && (0x20..=0x3f).contains(&sb[cut]) {
+                    cut += 1;
+                }
+                if cut < search_limit && (0x40..=0x7e).contains(&sb[cut]) {
+                    cut += 1;
+                }
+            }
+        }
+    }
+
+    // Advance past any UTF-8 continuation bytes (10xxxxxx).
+    while cut < search_limit && (sb[cut] & 0b1100_0000) == 0b1000_0000 {
+        cut += 1;
+    }
+
+    sb.drain(0..cut);
+}
+
+/// Tracks active DEC private modes (`DECSET` / `DECRST`) and keypad state across a
+/// streaming PTY output session so that re-attaching a newly mounted `xterm.js`
+/// instance (pop-out window, dock-back, or mobile WebView recreation) restores
+/// alternate-screen and mouse-reporting state (`?1000`, `?1002`, `?1003`, `?1006`,
+/// `?1015`, `?1049`, etc.) even after the startup sequences have been evicted from
+/// the 256 KiB scrollback buffer (#41).
+#[derive(Clone, Debug)]
+pub(crate) struct TerminalModeTracker {
+    state: u8,
+    private_marker: u8,
+    intermediate: u8,
+    params: Vec<u8>,
+    alt_screen: Option<u16>,
+    app_cursor_keys: bool,
+    autowrap: bool,
+    cursor_visible: bool,
+    app_keypad: bool,
+    decnkm: bool,
+    mouse_9: bool,
+    mouse_1000: bool,
+    mouse_1001: bool,
+    mouse_1002: bool,
+    mouse_1003: bool,
+    last_mouse_protocol: Option<u16>,
+    mouse_1005: bool,
+    mouse_1006: bool,
+    mouse_1015: bool,
+    mouse_1016: bool,
+    last_mouse_encoding: Option<u16>,
+    focus_events: bool,
+    alt_scroll: bool,
+    bracketed_paste: bool,
+}
+
+impl Default for TerminalModeTracker {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            private_marker: 0,
+            intermediate: 0,
+            params: Vec::with_capacity(32),
+            alt_screen: None,
+            app_cursor_keys: false,
+            autowrap: true,
+            cursor_visible: true,
+            app_keypad: false,
+            decnkm: false,
+            mouse_9: false,
+            mouse_1000: false,
+            mouse_1001: false,
+            mouse_1002: false,
+            mouse_1003: false,
+            last_mouse_protocol: None,
+            mouse_1005: false,
+            mouse_1006: false,
+            mouse_1015: false,
+            mouse_1016: false,
+            last_mouse_encoding: None,
+            focus_events: false,
+            alt_scroll: false,
+            bracketed_paste: false,
+        }
+    }
+}
+
+impl TerminalModeTracker {
+    pub(crate) fn in_alt_screen(&self) -> bool {
+        self.alt_screen.is_some()
+    }
+
+    fn reset_all(&mut self) {
+        let state = self.state;
+        *self = Self::default();
+        self.state = state;
+    }
+
+    fn reset_soft(&mut self) {
+        self.app_cursor_keys = false;
+        self.autowrap = true;
+        self.cursor_visible = true;
+        self.app_keypad = false;
+        self.decnkm = false;
+    }
+
+    fn apply_dec_mode(&mut self, mode: u16, enable: bool) {
+        match mode {
+            1 => self.app_cursor_keys = enable,
+            7 => self.autowrap = enable,
+            9 => {
+                self.mouse_9 = enable;
+                if enable {
+                    self.last_mouse_protocol = Some(9);
+                } else if self.last_mouse_protocol == Some(9) {
+                    self.last_mouse_protocol = None;
+                }
+            }
+            25 => self.cursor_visible = enable,
+            47 | 1047 | 1049 => {
+                if enable {
+                    self.alt_screen = Some(mode);
+                } else {
+                    self.alt_screen = None;
+                }
+            }
+            66 => self.decnkm = enable,
+            1000 => {
+                self.mouse_1000 = enable;
+                if enable {
+                    self.last_mouse_protocol = Some(1000);
+                } else if self.last_mouse_protocol == Some(1000) {
+                    self.last_mouse_protocol = None;
+                }
+            }
+            1001 => {
+                self.mouse_1001 = enable;
+                if enable {
+                    self.last_mouse_protocol = Some(1001);
+                } else if self.last_mouse_protocol == Some(1001) {
+                    self.last_mouse_protocol = None;
+                }
+            }
+            1002 => {
+                self.mouse_1002 = enable;
+                if enable {
+                    self.last_mouse_protocol = Some(1002);
+                } else if self.last_mouse_protocol == Some(1002) {
+                    self.last_mouse_protocol = None;
+                }
+            }
+            1003 => {
+                self.mouse_1003 = enable;
+                if enable {
+                    self.last_mouse_protocol = Some(1003);
+                } else if self.last_mouse_protocol == Some(1003) {
+                    self.last_mouse_protocol = None;
+                }
+            }
+            1004 => self.focus_events = enable,
+            1005 => {
+                self.mouse_1005 = enable;
+                if enable {
+                    self.last_mouse_encoding = Some(1005);
+                } else if self.last_mouse_encoding == Some(1005) {
+                    self.last_mouse_encoding = None;
+                }
+            }
+            1006 => {
+                self.mouse_1006 = enable;
+                if enable {
+                    self.last_mouse_encoding = Some(1006);
+                } else if self.last_mouse_encoding == Some(1006) {
+                    self.last_mouse_encoding = None;
+                }
+            }
+            1007 => self.alt_scroll = enable,
+            1015 => {
+                self.mouse_1015 = enable;
+                if enable {
+                    self.last_mouse_encoding = Some(1015);
+                } else if self.last_mouse_encoding == Some(1015) {
+                    self.last_mouse_encoding = None;
+                }
+            }
+            1016 => {
+                self.mouse_1016 = enable;
+                if enable {
+                    self.last_mouse_encoding = Some(1016);
+                } else if self.last_mouse_encoding == Some(1016) {
+                    self.last_mouse_encoding = None;
+                }
+            }
+            2004 => self.bracketed_paste = enable,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn feed(&mut self, data: &[u8]) {
+        for &b in data {
+            match self.state {
+                // Ground
+                0 => {
+                    if b == 0x1b {
+                        self.state = 1;
+                    }
+                }
+                // ESC received
+                1 => match b {
+                    b'[' => {
+                        self.params.clear();
+                        self.private_marker = 0;
+                        self.intermediate = 0;
+                        self.state = 2;
+                    }
+                    b']' => {
+                        self.state = 3;
+                    }
+                    b'=' => {
+                        self.app_keypad = true;
+                        self.state = 0;
+                    }
+                    b'>' => {
+                        self.app_keypad = false;
+                        self.state = 0;
+                    }
+                    b'c' => {
+                        self.reset_all();
+                        self.state = 0;
+                    }
+                    0x1b => {
+                        self.state = 1;
+                    }
+                    _ => {
+                        self.state = 0;
+                    }
+                },
+                // CSI sequence
+                2 => match b {
+                    0x1b => {
+                        self.state = 1;
+                    }
+                    b'?' | b'>' | b'<' | b'=' if self.params.is_empty() && self.private_marker == 0 => {
+                        self.private_marker = b;
+                    }
+                    b'0'..=b'9' | b';' | b':' => {
+                        if self.params.len() < 64 {
+                            self.params.push(b);
+                        }
+                    }
+                    0x20..=0x2f => {
+                        self.intermediate = b;
+                    }
+                    0x40..=0x7e => {
+                        if self.private_marker == b'?' && self.intermediate == 0 && (b == b'h' || b == b'l') {
+                            let enable = b == b'h';
+                            if let Ok(s) = std::str::from_utf8(&self.params) {
+                                let modes: Vec<u16> = s
+                                    .split(';')
+                                    .filter_map(|p| p.parse::<u16>().ok())
+                                    .collect();
+                                for m in modes {
+                                    self.apply_dec_mode(m, enable);
+                                }
+                            }
+                        } else if self.private_marker == 0 && self.intermediate == b'!' && b == b'p' {
+                            self.reset_soft();
+                        }
+                        self.state = 0;
+                    }
+                    0x00..=0x1f => {}
+                    _ => {
+                        self.state = 0;
+                    }
+                },
+                // OSC string (skip until BEL or ST so digits inside titles/hyperlinks are ignored)
+                3 => match b {
+                    0x07 => self.state = 0,
+                    0x1b => self.state = 4,
+                    _ => {}
+                },
+                // ESC inside OSC
+                4 => match b {
+                    b'\\' => self.state = 0,
+                    b'[' => {
+                        self.params.clear();
+                        self.private_marker = 0;
+                        self.intermediate = 0;
+                        self.state = 2;
+                    }
+                    0x1b => self.state = 4,
+                    _ => self.state = 0,
+                },
+                _ => self.state = 0,
+            }
+        }
+    }
+
+    /// Synthesizes the escape sequences needed to restore all currently active
+    /// input/cursor/mouse modes at the end of a scrollback replay.
+    pub(crate) fn active_modes_suffix(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if self.app_cursor_keys {
+            out.extend_from_slice(b"\x1b[?1h");
+        }
+        if !self.autowrap {
+            out.extend_from_slice(b"\x1b[?7l");
+        }
+        if !self.cursor_visible {
+            out.extend_from_slice(b"\x1b[?25l");
+        }
+        if self.app_keypad {
+            out.extend_from_slice(b"\x1b=");
+        }
+        if self.decnkm {
+            out.extend_from_slice(b"\x1b[?66h");
+        }
+
+        let protocols = [
+            (9u16, self.mouse_9),
+            (1000, self.mouse_1000),
+            (1001, self.mouse_1001),
+            (1002, self.mouse_1002),
+            (1003, self.mouse_1003),
+        ];
+        let mut last_proto_active = false;
+        for (mode, active) in protocols {
+            if active {
+                if self.last_mouse_protocol == Some(mode) {
+                    last_proto_active = true;
+                } else {
+                    out.extend_from_slice(format!("\x1b[?{mode}h").as_bytes());
+                }
+            }
+        }
+        if last_proto_active {
+            if let Some(last) = self.last_mouse_protocol {
+                out.extend_from_slice(format!("\x1b[?{last}h").as_bytes());
+            }
+        }
+
+        let encodings = [
+            (1005u16, self.mouse_1005),
+            (1015, self.mouse_1015),
+            (1006, self.mouse_1006),
+            (1016, self.mouse_1016),
+        ];
+        let mut last_enc_active = false;
+        for (mode, active) in encodings {
+            if active {
+                if self.last_mouse_encoding == Some(mode) {
+                    last_enc_active = true;
+                } else {
+                    out.extend_from_slice(format!("\x1b[?{mode}h").as_bytes());
+                }
+            }
+        }
+        if last_enc_active {
+            if let Some(last) = self.last_mouse_encoding {
+                out.extend_from_slice(format!("\x1b[?{last}h").as_bytes());
+            }
+        }
+
+        if self.focus_events {
+            out.extend_from_slice(b"\x1b[?1004h");
+        }
+        if self.alt_scroll {
+            out.extend_from_slice(b"\x1b[?1007h");
+        }
+        if self.bracketed_paste {
+            out.extend_from_slice(b"\x1b[?2004h");
+        }
+        out
+    }
+
+    /// Builds the full replay buffer to send on `ssh_attach` / `local_pty_attach`.
+    ///
+    /// - If the session is currently in the alternate screen buffer (`?1049h` / `?1047h` / `?47h`)
+    ///   and the retained `scrollback` no longer contains the alternate-screen entry sequence
+    ///   (because >256 KiB of TUI frames were emitted since startup), prepends the alternate-screen
+    ///   entry sequence so `scrollback` renders into `xterm.js`'s alternate buffer rather than
+    ///   polluting normal scrollback.
+    /// - Appends `active_modes_suffix()` so mouse tracking (`?1000h`, `?1002h`, `?1003h`, `?1006h`,
+    ///   `?1015h`), application cursor keys (`?1h`), cursor visibility (`?25l`), and focus/paste
+    ///   modes are guaranteed to be restored on the newly attached `xterm.js` instance.
+    pub(crate) fn build_attach_replay(&self, scrollback: &[u8]) -> Vec<u8> {
+        let suffix = self.active_modes_suffix();
+        let mut prefix = Vec::new();
+        if let Some(alt_mode) = self.alt_screen {
+            let mut sb_tracker = Self::default();
+            sb_tracker.feed(scrollback);
+            if !sb_tracker.in_alt_screen() {
+                prefix.extend_from_slice(format!("\x1b[?{alt_mode}h").as_bytes());
+            }
+        }
+        if prefix.is_empty() && suffix.is_empty() {
+            return scrollback.to_vec();
+        }
+        let mut out = Vec::with_capacity(prefix.len() + scrollback.len() + suffix.len());
+        out.extend_from_slice(&prefix);
+        out.extend_from_slice(scrollback);
+        out.extend_from_slice(&suffix);
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1288,5 +1737,54 @@ mod tests {
             expand_proxy_command("connect %r@%h", "host.internal", 22, "admin; $(reboot)"),
             "connect 'admin; $(reboot)'@host.internal"
         );
+    }
+
+    #[test]
+    fn mode_tracker_preserves_btop_mouse_and_alt_screen_after_scrollback_eviction() {
+        let mut tracker = TerminalModeTracker::default();
+        let mut scrollback = Vec::new();
+
+        // 1. btop startup sequences: enter alternate screen, hide cursor, enable mouse tracking + SGR encoding
+        let startup = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1015h\x1b[?1006h\x1b[?25l";
+        tracker.feed(startup);
+        scrollback.extend_from_slice(startup);
+
+        // 2. Stream > 256 KiB of btop frame updates so startup sequences are evicted from scrollback
+        let frame = b"\x1b[1;1H\x1b[38;2;0;255;128mCPU [|||||||||| 42%] Process List...\r\n".repeat(64);
+        for _ in 0..80 {
+            tracker.feed(&frame);
+            scrollback.extend_from_slice(&frame);
+            trim_scrollback(&mut scrollback, MAX_SCROLLBACK_BYTES);
+        }
+
+        // Startup sequences were evicted from the raw scrollback buffer:
+        let raw_str = String::from_utf8_lossy(&scrollback);
+        assert!(!raw_str.contains("\x1b[?1049h"));
+        assert!(!raw_str.contains("\x1b[?1006h"));
+
+        // 3. Building the attach replay restores ?1049h before scrollback and mouse/cursor modes after:
+        let replay = tracker.build_attach_replay(&scrollback);
+        assert!(replay.starts_with(b"\x1b[?1049h"));
+        let replay_str = String::from_utf8_lossy(&replay);
+        assert!(replay_str.ends_with("\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1015h\x1b[?1006h"));
+
+        // 4. Exiting btop clears all tracked modes:
+        let teardown = b"\x1b[?1000l\x1b[?1002l\x1b[?1015l\x1b[?1006l\x1b[?25h\x1b[?1049l";
+        tracker.feed(teardown);
+        assert!(!tracker.in_alt_screen());
+        assert!(tracker.active_modes_suffix().is_empty());
+    }
+
+    #[test]
+    fn mode_tracker_handles_compound_and_split_csi_sequences() {
+        let mut tracker = TerminalModeTracker::default();
+        // Split compound sequence `\x1b[?1049;1000;1003;1006;2004h` across three chunks:
+        tracker.feed(b"normal output \x1b[?1049;10");
+        tracker.feed(b"00;1003;100");
+        tracker.feed(b"6;2004h\x1b=");
+
+        assert!(tracker.in_alt_screen());
+        let suffix = String::from_utf8(tracker.active_modes_suffix()).unwrap();
+        assert_eq!(suffix, "\x1b=\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h");
     }
 }

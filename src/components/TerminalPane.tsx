@@ -484,10 +484,6 @@ export const TerminalPane = memo(function TerminalPane({
   const [matchWholeWord, setMatchWholeWord] = useState(false);
   const [isAlternateBuffer, setIsAlternateBuffer] = useState(false);
 
-  useEffect(() => {
-    refreshTerminal();
-  }, [isAlternateBuffer, refreshTerminal]);
-
   const isSerial = pane.kind === 'serial';
   const isLocal = (!isSerial) && (pane.isLocal || host.id === '__local__' || host.id.startsWith('local'));
   const isLoopbackHost =
@@ -744,6 +740,13 @@ export const TerminalPane = memo(function TerminalPane({
       }
     });
   }, [isSerial, isLocal]);
+
+  useEffect(() => {
+    refreshTerminal();
+    if (termRef.current?.cols && termRef.current?.rows) {
+      scheduleResize(termRef.current.cols, termRef.current.rows);
+    }
+  }, [isAlternateBuffer, refreshTerminal, scheduleResize]);
 
   const performSearch = useCallback(
     (query: string, reverse = false) => {
@@ -1235,16 +1238,34 @@ export const TerminalPane = memo(function TerminalPane({
           })();
         if (existingLocalSid) {
           suppressLocalBanner = true;
-          const attached = await bridge.attachLocalPty(existingLocalSid, initCols, initRows, onLocalEvent);
+          const t = term as any;
+          const cw = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.width || 9);
+          const ch = Math.round(t?._core?._renderService?.dimensions?.css?.cell?.height || 18);
+          const attached = await bridge.attachLocalPty(existingLocalSid, initCols, initRows, onLocalEvent, cw, ch);
           suppressLocalBanner = false;
           if (attached) {
             if (dead()) return;
             sessionRef.current = existingLocalSid;
             try { localStorage.setItem('drx.pane.sid.' + pane.id, existingLocalSid); } catch {}
+            lastSentSize.current = { cols: 0, rows: 0 };
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingLocalSid });
             window.setTimeout(syncLocalCwd, 100);
+            refreshTerminal();
+            if (term.cols && term.rows) {
+              scheduleResize(term.cols, term.rows);
+            }
+            requestAnimationFrame(() => {
+              if (dead()) return;
+              refreshTerminal();
+              if (term.cols && term.rows) {
+                scheduleResize(term.cols, term.rows);
+              }
+              if (active && !mobile) {
+                term.focus();
+              }
+            });
             return;
           }
           try { localStorage.removeItem('drx.pane.sid.' + pane.id); } catch {}
@@ -1368,10 +1389,24 @@ export const TerminalPane = memo(function TerminalPane({
             if (dead()) return;
             sessionRef.current = existingSshSid;
             try { localStorage.setItem('drx.pane.sid.' + pane.id, existingSshSid); } catch {}
-            lastSentSize.current = { cols: initCols, rows: initRows };
+            lastSentSize.current = { cols: 0, rows: 0 };
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingSshSid });
+            refreshTerminal();
+            if (term.cols && term.rows) {
+              scheduleResize(term.cols, term.rows);
+            }
+            requestAnimationFrame(() => {
+              if (dead()) return;
+              refreshTerminal();
+              if (term.cols && term.rows) {
+                scheduleResize(term.cols, term.rows);
+              }
+              if (active && !mobile) {
+                term.focus();
+              }
+            });
             return;
           }
           try {
