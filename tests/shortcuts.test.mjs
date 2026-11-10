@@ -213,3 +213,17 @@ test('createUserPreset saves popped-out panes and their multi-monitor window bou
   assert.deepEqual(preset.popoutPanes[0].popoutBounds, { x: 1920, y: 120, width: 960, height: 640 });
   assert.match(preset.description, /1 popped out/);
 });
+
+test('Cmd+T and Cmd+W tab shortcuts match and respect reserved built-ins', () => {
+  assert.equal(DEFAULT_SHORTCUTS.new_terminal.keys, 'Ctrl+T');
+  assert.equal(DEFAULT_SHORTCUTS.close_pane.keys, 'Ctrl+Shift+W');
+  assert.match(DEFAULT_SHORTCUTS.new_terminal.description, /Duplicate the active terminal tab/);
+  assert.match(DEFAULT_SHORTCUTS.close_pane.description, /close the active tab/);
+
+  // On macOS, Cmd+T matches the default new_terminal binding ('Ctrl+T')
+  const macCmdT = keyEvent({ key: 't', code: 'KeyT', metaKey: true });
+  assert.equal(bindingMatches(macCmdT, DEFAULT_SHORTCUTS.new_terminal, 'Ctrl+T'), true);
+
+  // Ctrl+Shift+T is reserved as the built-in alternate for Duplicate / new tab
+  assert.match(findShortcutConflict(DEFAULT_SHORTCUTS, 'toggle_zen', 'Ctrl+Shift+T'), /Duplicate \/ new tab \(alternate\)/);
+});

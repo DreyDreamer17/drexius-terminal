@@ -131,6 +131,7 @@ import {
   loadShortcuts,
   saveShortcuts,
   bindingMatches,
+  isShortcutUnbound,
   normalizeCombo,
   DEFAULT_TERMINAL_FONT_SIZE,
   POPULAR_TERMINAL_FONTS,
@@ -1883,6 +1884,118 @@ export default function App() {
     });
   }, [cleanupPaneSession]);
 
+  const lastTabShortcutTsRef = useRef(0);
+
+  /**
+   * Close the focused split pane when the active tab has multiple panes, or close the entire
+   * active tab (terminal, serial, or SFTP) when it has a single pane.
+   */
+  const closeActivePaneOrTab = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTabShortcutTsRef.current < 100) return;
+    lastTabShortcutTsRef.current = now;
+
+    if (!activeTab) return;
+    if (activeTab.kind !== 'sftp' && activeTab.panes.length > 1) {
+      closePane(activeTab.id, activeTab.activePaneId);
+    } else {
+      closeTab(activeTab.id);
+    }
+  }, [activeTab, closePane, closeTab]);
+
+  /**
+   * Duplicate the active terminal tab (same host, custom shell, and live working directory),
+   * or open a fresh local terminal tab when no terminal tab is active.
+   */
+  const duplicateOrNewTab = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastTabShortcutTsRef.current < 100) return;
+    lastTabShortcutTsRef.current = now;
+
+    if (activeTab && activeTab.kind === 'sftp') {
+      const sftpHost = activeTab.sftpHostId ? hostMap.get(activeTab.sftpHostId) : undefined;
+      if (sftpHost && sftpHost.id !== LOCAL_HOST.id) {
+        openHost(sftpHost);
+      } else {
+        openLocalTerminal();
+      }
+      return;
+    }
+
+    const source: Pane | undefined =
+      activeTab && activeTab.kind !== 'sftp'
+        ? activeTab.panes.find((p) => p.id === activeTab.activePaneId) ?? activeTab.panes[0]
+        : activePane;
+
+    if (!source || source.kind === 'serial') {
+      openLocalTerminal();
+      return;
+    }
+
+    const h = hostMap.get(source.hostId) || LOCAL_HOST;
+    if (h.id && h.id !== LOCAL_HOST.id) {
+      markHostRecent(h.id);
+    }
+
+    const liveSid = registry.get(source.id)?.sessionId ?? null;
+    const osCwd = source.isLocal && liveSid ? await bridge.localPtyCwd(liveSid) : null;
+    const cwd = osCwd ?? registry.get(source.id)?.cwd ?? source.initialCwd;
+    const user = h.username;
+    const atRemoteHome =
+      !source.isLocal &&
+      !!user &&
+      (cwd === `/home/${user}` || cwd === `/Users/${user}` || (user === 'root' && cwd === '/root'));
+
+    const isLocal = h.id === LOCAL_HOST.id;
+    const pane: Pane = {
+      id: uid(),
+      hostId: h.id,
+      isLocal,
+      ...(source.customShell ? { customShell: source.customShell } : {}),
+      ...(cwd && (cwd.startsWith('/') || cwd.startsWith('~/')) && !atRemoteHome ? { initialCwd: cwd } : {}),
+    };
+    const shellName = source.customShell ? source.customShell.split('/').pop() || source.customShell : null;
+    const tab: Tab = {
+      id: uid(),
+      title: isLocal ? (shellName ? `Local (${shellName})` : 'Local Shell') : h.label,
+      color: isLocal ? '#22d3ee' : h.color,
+      panes: [pane],
+      tree: leaf(pane.id),
+      activePaneId: pane.id,
+    };
+    setTabs((t) => [...t, tab]);
+    setActiveTabId(tab.id);
+    setQuick(false);
+    setPanel(null);
+    setShowAI(false);
+    setNewConnNonce((n) => n + 1);
+    setMobilePage('terminals');
+  }, [activeTab, activePane, hostMap, markHostRecent, openHost, openLocalTerminal]);
+
+  useEffect(() => {
+    return bridge.onMacosMenuAction((action) => {
+      const recorder = document.querySelector('[data-shortcut-recorder]');
+      if (recorder) {
+        recorder.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: action === 'new-tab' ? 't' : 'w',
+            code: action === 'new-tab' ? 'KeyT' : 'KeyW',
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+        return;
+      }
+      if (showSettings) return;
+      if (action === 'close-tab') {
+        closeActivePaneOrTab();
+      } else if (action === 'new-tab') {
+        void duplicateOrNewTab();
+      }
+    });
+  }, [showSettings, closeActivePaneOrTab, duplicateOrNewTab]);
+
   const openSftpTab = useCallback((hostId?: string) => {
     setMobilePage('sftp');
     if (mobile) { setPanel(null); setShowAI(false); }
@@ -2139,12 +2252,19 @@ export default function App() {
         return;
       }
 
-      // ── Close Active Split Pane (Ctrl+Shift+W) ──
-      if (bindingMatches(e, shortcuts.close_pane, 'Ctrl+Shift+W')) {
-        if (activeTab && activeTab.panes.length > 1) {
+      // ── Close Active Split Pane or Tab (Ctrl+Shift+W / Cmd+W on macOS / Ctrl+W outside terminal) ──
+      const isPlainCtrlW =
+        e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'w' || e.code === 'KeyW');
+      const isMacCmdW =
+        e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'w' || e.code === 'KeyW');
+      if (
+        bindingMatches(e, shortcuts.close_pane, 'Ctrl+Shift+W') ||
+        (!isShortcutUnbound(shortcuts.close_pane) && (isMacCmdW || (!inTerminal && isPlainCtrlW)))
+      ) {
+        if (!inTerminal || !isPlainCtrlW) {
           e.preventDefault();
           e.stopPropagation();
-          closePane(activeTab.id, activeTab.activePaneId);
+          closeActivePaneOrTab();
           return;
         }
       }
@@ -2193,12 +2313,20 @@ export default function App() {
         }
       }
 
-      // ── New Local Terminal (Ctrl+T) ──
-      if (bindingMatches(e, shortcuts.new_terminal, 'Ctrl+T')) {
-        if (!inTerminal) {
+      // ── Duplicate Active Tab / New Terminal (Cmd+T, Ctrl+T outside terminal, Ctrl+Shift+T) ──
+      const isPlainCtrlT =
+        e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && (e.key.toLowerCase() === 't' || e.code === 'KeyT');
+      const isShiftNewTab =
+        !isShortcutUnbound(shortcuts.new_terminal) &&
+        e.shiftKey &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        (e.key.toLowerCase() === 't' || e.code === 'KeyT');
+      if (bindingMatches(e, shortcuts.new_terminal, 'Ctrl+T') || isShiftNewTab) {
+        if (!inTerminal || !isPlainCtrlT) {
           e.preventDefault();
           e.stopPropagation();
-          openLocalTerminal();
+          void duplicateOrNewTab();
           return;
         }
       }
@@ -2396,6 +2524,8 @@ export default function App() {
     splitPaneInDirection,
     equalizeActiveTab,
     closePane,
+    closeActivePaneOrTab,
+    duplicateOrNewTab,
     toggleMaximizePane,
     popOutPane,
     isPopoutWindow,

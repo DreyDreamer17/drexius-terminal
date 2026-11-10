@@ -7,6 +7,7 @@
  *                      via WebCrypto (PBKDF2-SHA256 310k → AES-256-GCM).
  */
 import { invoke, Channel } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { readText as tauriReadText, writeText as tauriWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { DemoShell, homeOf, vfs } from './demoShell';
 import type {
@@ -2184,5 +2185,29 @@ export const bridge = {
       return invoke<string[]>('popout_list_windows');
     }
     return [];
+  },
+
+  onMacosMenuAction(handler: (action: 'new-tab' | 'close-tab') => void): () => void {
+    if (!isTauri) return () => {};
+    let disposed = false;
+    let unlistenFn: (() => void) | null = null;
+    listen<string>('drx:macos-menu-action', (event) => {
+      if (disposed) return;
+      if (event.payload === 'new-tab' || event.payload === 'close-tab') {
+        handler(event.payload);
+      }
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      if (unlistenFn) unlistenFn();
+    };
   },
 };

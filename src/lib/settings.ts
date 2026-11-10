@@ -330,10 +330,10 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
   },
   close_pane: {
     id: 'close_pane',
-    label: 'Close Active Pane',
+    label: 'Close Active Pane / Tab',
     category: 'Splits & Navigation',
     keys: 'Ctrl+Shift+W',
-    description: 'Close the currently focused split pane in tab',
+    description: 'Close the focused split pane, or close the active tab if it has a single pane (also Cmd+W on macOS)',
   },
   next_pane: {
     id: 'next_pane',
@@ -365,10 +365,10 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
   },
   new_terminal: {
     id: 'new_terminal',
-    label: 'New Local Terminal Tab',
+    label: 'Duplicate / New Terminal Tab',
     category: 'Workspace',
     keys: 'Ctrl+T',
-    description: 'Open a new local shell terminal tab',
+    description: 'Duplicate the active terminal tab (same host & directory) or open a new local shell (also Cmd+T / Ctrl+Shift+T)',
   },
   open_sftp: {
     id: 'open_sftp',
@@ -549,6 +549,18 @@ export const BUILTIN_SHORTCUTS: BuiltinShortcut[] = [
     label: 'Quick connect (alternate)',
     description: 'Same as Quick Switch, and works while a terminal has focus',
     keys: ['Ctrl+Shift+K'],
+  },
+  {
+    label: 'Duplicate / new tab (alternate)',
+    description: 'Duplicate the active terminal tab (or open a local shell) even while a terminal has focus',
+    keys: ['Ctrl+Shift+T', 'Cmd+T (macOS)'],
+    reserved: ['Ctrl+Shift+T'],
+  },
+  {
+    label: 'Close pane / tab (macOS)',
+    description: 'Close the focused split pane, or close the active tab without closing the window',
+    keys: ['Cmd+W (macOS)'],
+    reserved: [],
   },
   {
     label: 'Toggle status bar',

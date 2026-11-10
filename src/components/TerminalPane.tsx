@@ -2093,7 +2093,12 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
       // Prevent xterm from sending control sequences on workspace shift shortcuts
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w', 'p', 'm', 'l', 's', 'n', 'o'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w', 'p', 'm', 'l', 's', 'n', 'o', 't'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+        return false;
+      }
+
+      // Allow macOS Cmd+W (close pane/tab) and Cmd+T (duplicate/new tab) to bubble to window listener
+      if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && ['w', 't'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;
       }
 
