@@ -10,12 +10,24 @@
    utility in the codebase), the `@variant max-md` blocks further down, and
    `mobileQuery` in src/hooks/useMobile.ts, which must stay identical.
 
-   A phone is a touch-first device whose screen's shorter edge is ≤ 480 CSS px in
-   either orientation (so rotating to landscape never switches to the desktop
-   chrome), plus any window narrower than 768px. `device-*` is screen-based, so
-   the virtual keyboard can't flip the layout while typing. */
-@custom-variant md (@media (width >= 768px) and (not ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px)))));
-@custom-variant max-md (@media (width < 768px) or ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px))));
+   A phone is a touch-first device (pointer: coarse) whose screen's shorter edge
+   is ≤ 480 CSS px in either orientation (so rotating to landscape never switches
+   to the desktop chrome), plus any narrow touch-screen viewport (< 768px). Desktop
+   apps and pointer: fine devices never match phone layout. */
+@custom-variant md (@media (not (((pointer: coarse) and (width < 768px)) or ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px))))));
+@custom-variant max-md (@media ((pointer: coarse) and (width < 768px)) or ((pointer: coarse) and ((max-device-width: 480px) or (max-device-height: 480px))));
+
+/* Desktop platforms and popout windows must never render mobile phone chrome */
+[data-popout="true"] .nx-session-bar,
+[data-popout="true"] .nx-bottom-nav,
+[data-popout="true"] .nx-fab,
+[data-popout="true"] .nx-docker-fab,
+[data-platform="desktop"] .nx-session-bar,
+[data-platform="desktop"] .nx-bottom-nav,
+[data-platform="desktop"] .nx-fab,
+[data-platform="desktop"] .nx-docker-fab {
+  display: none !important;
+}
 
 @theme {
   --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
@@ -31,7 +43,7 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 *:not(.no-scrollbar)::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
 
 /* On mobile/touch screens, eliminate default webkit scrollbars so animations and re-renders do not cause periodic scrollbar flashing */
-@media (max-width: 768px) {
+@media (pointer: coarse) and (max-width: 768px) {
   *:not(.force-scrollbar) {
     scrollbar-width: none !important;
     -ms-overflow-style: none !important;

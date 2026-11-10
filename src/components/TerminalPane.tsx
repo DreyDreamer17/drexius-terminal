@@ -3303,7 +3303,7 @@ export const TerminalPane = memo(function TerminalPane({
           {searchControls}
         </div>
       )}
-      {mobile && active && drawerInset <= 0 && (() => {
+      {mobile && active && drawerInset <= 0 && mobileBar && (() => {
         const accent = theme.accent || '#22d3ee';
         const sessionName = isSerial ? host.label : isLocal ? 'Local Terminal' : `${host.username}@${host.hostname}${host.port && host.port !== 22 ? `:${host.port}` : ''}`;
         const count = mobileBar?.sessionCount ?? 1;

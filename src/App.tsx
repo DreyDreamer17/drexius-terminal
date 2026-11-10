@@ -307,6 +307,15 @@ export default function App() {
   const isAndroid = useMemo(() => isAndroidPlatform(), []);
   const popoutParams = useMemo(() => getPopoutWindowParams(), []);
   const isPopoutWindow = popoutParams.isPopout;
+
+  useEffect(() => {
+    if (isPopoutWindow) {
+      document.documentElement.dataset.popout = 'true';
+    }
+    if (isTauri && !isAndroid) {
+      document.documentElement.dataset.platform = 'desktop';
+    }
+  }, [isPopoutWindow, isAndroid]);
   const persistedWorkspace = useMemo(() => (popoutParams.isPopout ? null : readPersistedWorkspace()), [popoutParams.isPopout]);
   const initialPopoutTab = useMemo<Tab | null>(() => {
     if (!popoutParams.isPopout || !popoutParams.paneId) return null;
@@ -2803,7 +2812,7 @@ export default function App() {
     >
       {/* Top Header Bar — floating controls across the top */}
       {!zen && (
-        <header className="max-md:hidden flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 relative z-50">
+        <header className={cn("flex h-10 shrink-0 items-center gap-1.5 px-1 pt-1 pb-0.5 bg-transparent border-0 relative z-50", !isPopoutWindow && "max-md:hidden")}>
           {/* Logo / Sidebar Toggle Button (replaces hamburger menu, aligned with rail below) */}
           <div className="flex w-12 shrink-0 items-center justify-center">
             <button
@@ -4357,7 +4366,7 @@ export default function App() {
                           }}
                           onData={(d) => handlePaneData(t.id, p.id, d)}
                           toast={toast}
-                          mobileBar={mobile ? {
+                          mobileBar={!isPopoutWindow && mobile ? {
                             sessionCount: terminalSessionCount,
                             onBack: () => navigateMobile('hosts'),
                             onOpenSessions: () => setSessionSheet(true),
