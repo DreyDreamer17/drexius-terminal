@@ -1,7 +1,17 @@
 import { useMobile } from '../hooks/useMobile';
 import { useTerminalTouch, type TerminalTouchGesture } from '../hooks/useTerminalTouch';
 import { TerminalSelection } from './TerminalSelection';
-import { isTerminalModifierKey, modifiedTerminalInput, TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, TERMINAL_MODE_RESET, SmartTerminalWriter, type TerminalModifiers } from '../lib/mobileTerminal';
+import {
+  isTerminalModifierKey,
+  modifiedTerminalInput,
+  resolveGhostAccessoryAction,
+  resolveGhostSuggestionKeyAction,
+  TERMINAL_FONT_MIN,
+  TERMINAL_FONT_MAX,
+  TERMINAL_MODE_RESET,
+  SmartTerminalWriter,
+  type TerminalModifiers,
+} from '../lib/mobileTerminal';
 import { TerminalAccessory } from './TerminalAccessory';
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
@@ -451,6 +461,8 @@ export const TerminalPane = memo(function TerminalPane({
   const [suggestion, setSuggestion] = useState<{ full: string; suffix: string } | null>(null);
   const suggestionRef = useRef<{ full: string; suffix: string } | null>(null);
   suggestionRef.current = suggestion;
+  const ghostSuggestionsRef = useRef(ghostSuggestions);
+  ghostSuggestionsRef.current = ghostSuggestions;
   const multilineBufferRef = useRef<string[]>([]);
 
   const [status, setStatus] = useState<PaneStatus>('connecting');
@@ -835,11 +847,16 @@ export const TerminalPane = memo(function TerminalPane({
   const dirtyRef = useRef(false);
   const resyncTimerRef = useRef<number | null>(null);
 
+  const clearSuggestion = useCallback(() => {
+    suggestionRef.current = null;
+    setSuggestion(null);
+    setGhostPos(null);
+  }, []);
+
   const updateSuggestion = useCallback((overrideText?: string) => {
-    if (ghostSuggestions === false) {
+    if (ghostSuggestionsRef.current === false) {
       if (suggestionRef.current) {
-        setSuggestion(null);
-        setGhostPos(null);
+        clearSuggestion();
       }
       return;
     }
@@ -849,15 +866,13 @@ export const TerminalPane = memo(function TerminalPane({
     const prefix = (overrideText !== undefined ? overrideText : lineRef.current) || '';
 
     if (prefix.trim().length < 2) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
       return;
     }
     // Cursor moved back into the command (←, Home, Ctrl+A...): the text to its right is
     // already typed, so a ghost suffix would overlap it and accepting would duplicate it.
     if (!isCursorAtCommandEnd()) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
       return;
     }
     const prefixLower = prefix.toLowerCase();
@@ -885,23 +900,23 @@ export const TerminalPane = memo(function TerminalPane({
     }
 
     if (!bestMatch) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
       return;
     }
 
-    setSuggestion({
+    const next = {
       full: bestMatch,
       suffix: bestMatch.slice(prefix.length),
-    });
-  }, [isCursorAtCommandEnd, ghostSuggestions]);
+    };
+    suggestionRef.current = next;
+    setSuggestion(next);
+  }, [isCursorAtCommandEnd, clearSuggestion]);
 
   // After Tab / history navigation / paste / cursor movement, the real line only
   // exists on screen. Wait for the server echo to land, then re-read it once.
   const scheduleResync = useCallback(() => {
     dirtyRef.current = true;
-    setSuggestion(null);
-    setGhostPos(null);
+    clearSuggestion();
     if (resyncTimerRef.current !== null) window.clearTimeout(resyncTimerRef.current);
     resyncTimerRef.current = window.setTimeout(() => {
       resyncTimerRef.current = null;
@@ -909,17 +924,16 @@ export const TerminalPane = memo(function TerminalPane({
       dirtyRef.current = false;
       updateSuggestion(lineRef.current);
     }, 120);
-  }, [getCurrentCommandLine, updateSuggestion]);
+  }, [getCurrentCommandLine, updateSuggestion, clearSuggestion]);
 
   /** Types the ghost suffix. Returns false (and drops the ghost) when it can't apply, so the key reaches the shell. */
   const acceptSuggestion = useCallback((): boolean => {
-    if (ghostSuggestions === false) return false;
+    if (ghostSuggestionsRef.current === false) return false;
     const s = suggestionRef.current;
     const sid = sessionRef.current;
     if (!s || !s.suffix || !sid) return false;
     if (!isCursorAtCommandEnd()) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
       return false;
     }
 
@@ -932,18 +946,19 @@ export const TerminalPane = memo(function TerminalPane({
       bridge.write(sid, s.suffix);
     }
     lineRef.current += s.suffix;
-    setSuggestion(null);
-    setGhostPos(null);
+    clearSuggestion();
     termRef.current?.focus();
     return true;
-  }, [isSerial, isLocal, isCursorAtCommandEnd, ghostSuggestions]);
+  }, [isSerial, isLocal, isCursorAtCommandEnd, clearSuggestion]);
+
+  const acceptSuggestionRef = useRef(acceptSuggestion);
+  acceptSuggestionRef.current = acceptSuggestion;
 
   useEffect(() => {
     if (ghostSuggestions === false && suggestion) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
     }
-  }, [ghostSuggestions, suggestion]);
+  }, [ghostSuggestions, suggestion, clearSuggestion]);
 
   const updateGhostPos = useCallback(() => {
     // If no suggestion is active, skip measuring and avoid re-renders (fixes H4 render storm)
@@ -954,8 +969,7 @@ export const TerminalPane = memo(function TerminalPane({
 
     // Cursor left the end of the command (moved back with ←, Home...): drop the ghost.
     if (!isCursorAtCommandEnd()) {
-      setSuggestion(null);
-      setGhostPos(null);
+      clearSuggestion();
       return;
     }
 
@@ -1436,15 +1450,12 @@ export const TerminalPane = memo(function TerminalPane({
 
   /** Key-row / keypad input: honours application cursor mode and the one-shot CTRL/ALT latches. */
   const sendAccessoryKey = useCallback((data: string) => {
-    // If an autosuggestion is active and Tab or Right Arrow is pressed -> accept suggestion!
-    if (suggestionRef.current && (data === '\t' || data === '\x1b[C' || data === '\x1bOC') && acceptSuggestion()) {
+    const ghostAction = resolveGhostAccessoryAction(data, !!suggestionRef.current, modifiersRef.current);
+    if (ghostAction === 'accept' && acceptSuggestion()) {
       return;
     }
-
-    // Dismiss suggestion on navigation arrows or Escape
-    if (suggestionRef.current && (data === '\x1b' || /^\x1b(\[|O)[ABD]$/.test(data))) {
-      setSuggestion(null);
-      setGhostPos(null);
+    if (ghostAction === 'dismiss-passthrough') {
+      clearSuggestion();
     }
 
     const term = termRef.current;
@@ -1465,7 +1476,7 @@ export const TerminalPane = memo(function TerminalPane({
     }
     term?.input(data, true);
     term?.focus();
-  }, [mobile, acceptSuggestion]);
+  }, [mobile, acceptSuggestion, clearSuggestion]);
 
   // Latest callbacks for the registry entry (created once in the mount effect) — the phone's
   // keypad and history drawers live in App and reach the pane through these.
@@ -2131,22 +2142,28 @@ export const TerminalPane = memo(function TerminalPane({
       }
 
 
-      // ArrowRight or Tab -> Accept autosuggestion
-      if (suggestionRef.current && (e.key === 'ArrowRight' || e.key === 'Tab') && e.type === 'keydown' && acceptSuggestion()) {
+      // Inline ghost autosuggestion key handling:
+      // - Unmodified ArrowRight accepts the suggestion (calling preventDefault so focus stays in xterm)
+      // - Unmodified Escape dismisses the suggestion without sending ESC to the shell
+      // - Tab and navigation keys dismiss the suggestion and pass through to xterm so native
+      //   shell Tab completion works and never causes browser Tab focus traversal (#42)
+      const ghostAction = resolveGhostSuggestionKeyAction(e, !!suggestionRef.current);
+      if (ghostAction === 'accept') {
+        if (acceptSuggestionRef.current()) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+        return true;
+      }
+      if (ghostAction === 'dismiss-consume') {
+        e.preventDefault();
+        e.stopPropagation();
+        clearSuggestion();
         return false;
       }
-
-      // Escape -> Dismiss suggestion
-      if (e.key === 'Escape' && suggestionRef.current && e.type === 'keydown') {
-        setSuggestion(null);
-        setGhostPos(null);
-        return false;
-      }
-
-      // Arrow navigation -> Dismiss suggestion so shell history navigation is clean
-      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft') && suggestionRef.current && e.type === 'keydown') {
-        setSuggestion(null);
-        setGhostPos(null);
+      if (ghostAction === 'dismiss-passthrough') {
+        clearSuggestion();
         return true;
       }
 
@@ -2213,8 +2230,7 @@ export const TerminalPane = memo(function TerminalPane({
           if (isContinuation) {
             multilineBufferRef.current.push(lineCmd.slice(0, -1).trimEnd());
             lineRef.current = '';
-            setSuggestion(null);
-            setGhostPos(null);
+            clearSuggestion();
             continue;
           }
 
@@ -2259,8 +2275,7 @@ export const TerminalPane = memo(function TerminalPane({
             historyLowerRef.current.unshift(cmd.toLowerCase());
           }
           lineRef.current = '';
-          setSuggestion(null);
-          setGhostPos(null);
+          clearSuggestion();
         } else if (ch === '\t') {
           scheduleResync();
         } else if (ch === '\x01' || ch === '\x02' || ch === '\x05' || ch === '\x06') {
@@ -2276,8 +2291,7 @@ export const TerminalPane = memo(function TerminalPane({
           multilineBufferRef.current = [];
           lineRef.current = '';
           dirtyRef.current = false;
-          setSuggestion(null);
-          setGhostPos(null);
+          clearSuggestion();
         } else if (ch === '\x17') {
           const parts = lineRef.current.trimEnd().split(/\s+/);
           parts.pop();
@@ -3231,7 +3245,7 @@ export const TerminalPane = memo(function TerminalPane({
               whiteSpace: 'pre',
             }}
             className="select-none text-slate-400/50 hover:text-cyan-400/90 active:text-cyan-300 transition-colors"
-            title="Tap to complete (or press Tab / →)"
+            title="Tap to complete (or press →)"
           >
             {suggestion.suffix.replace(/ /g, '\u00A0')}
           </div>

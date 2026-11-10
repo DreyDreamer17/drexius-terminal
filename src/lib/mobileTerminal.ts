@@ -23,6 +23,70 @@ export function modifiedTerminalInput(data: string, modifiers: TerminalModifiers
   return modifiers.alt ? `\x1b${result}` : result;
 }
 
+export type GhostSuggestionKeyAction =
+  | 'accept'
+  | 'dismiss-consume'
+  | 'dismiss-passthrough'
+  | 'passthrough';
+
+/**
+ * Decides how a desktop keyboard event interacts with an active inline ghost suggestion.
+ * `Tab` never accepts inline ghost suggestions so native shell Tab completion (such as
+ * `cd <Tab>` on remote Linux shells) always reaches the PTY and never steals terminal focus.
+ */
+export function resolveGhostSuggestionKeyAction(
+  event: Pick<KeyboardEvent, 'key' | 'type' | 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'>,
+  hasSuggestion: boolean,
+): GhostSuggestionKeyAction {
+  if (!hasSuggestion || event.type !== 'keydown') return 'passthrough';
+
+  const hasModifier = event.ctrlKey || event.altKey || event.metaKey || event.shiftKey;
+
+  if (event.key === 'ArrowRight') {
+    return hasModifier ? 'dismiss-passthrough' : 'accept';
+  }
+
+  if (event.key === 'Escape' && !hasModifier) {
+    return 'dismiss-consume';
+  }
+
+  if (
+    event.key === 'Tab' ||
+    event.key === 'ArrowUp' ||
+    event.key === 'ArrowDown' ||
+    event.key === 'ArrowLeft' ||
+    event.key === 'Home' ||
+    event.key === 'End'
+  ) {
+    return 'dismiss-passthrough';
+  }
+
+  return 'passthrough';
+}
+
+/**
+ * Decides how a mobile accessory-bar key press interacts with an active inline ghost suggestion.
+ * Only unmodified Right Arrow accepts; Tab and navigation keys dismiss the ghost and pass through to the shell.
+ */
+export function resolveGhostAccessoryAction(
+  data: string,
+  hasSuggestion: boolean,
+  modifiers: TerminalModifiers,
+): 'accept' | 'dismiss-passthrough' | 'passthrough' {
+  if (!hasSuggestion) return 'passthrough';
+
+  const isRightArrow = data === '\x1b[C' || data === '\x1bOC';
+  if (isRightArrow && !modifiers.ctrl && !modifiers.alt) {
+    return 'accept';
+  }
+
+  if (data === '\t' || data === '\x1b' || /^\x1b(\[|O)[ABCDHF]$/.test(data)) {
+    return 'dismiss-passthrough';
+  }
+
+  return 'passthrough';
+}
+
 export const accessoryKeys = [
   ['ESC', '\x1b'], ['TAB', '\t'], ['↑', '\x1b[A'], ['↓', '\x1b[B'],
   ['←', '\x1b[D'], ['→', '\x1b[C'], ['|', '|'], ['/', '/'], ['~', '~'], ['-', '-'],

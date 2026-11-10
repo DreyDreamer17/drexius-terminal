@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { accessoryKeys, isTerminalModifierKey, modifiedTerminalInput, getWrappedRowsAbove, SmartTerminalWriter } from '../src/lib/mobileTerminal.ts';
+import {
+  accessoryKeys,
+  isTerminalModifierKey,
+  modifiedTerminalInput,
+  resolveGhostAccessoryAction,
+  resolveGhostSuggestionKeyAction,
+  getWrappedRowsAbove,
+  SmartTerminalWriter,
+} from '../src/lib/mobileTerminal.ts';
 import { detectPortsInLine, PortStreamDetector } from '../src/lib/portDetector.ts';
 
 const ctrl = { ctrl: true, alt: false };
@@ -458,6 +466,63 @@ test('SmartTerminalWriter.resetModes survives mid-stream Kitty APC, split UTF-8,
   assert.equal(rendered.includes('\uFFFD'), false);
   assert.equal(rendered.includes('fresh: 🚀'), true);
 });
+
+test('ghost suggestion key resolution uses Right Arrow to accept and lets Tab pass through to the shell (#42)', () => {
+  const keyEvent = (key, overrides = {}) => ({
+    key,
+    type: 'keydown',
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    shiftKey: false,
+    ...overrides,
+  });
+
+  // Tab and Shift+Tab must NEVER accept inline ghost suggestions; they dismiss the ghost and pass through to xterm/shell
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Tab'), true), 'dismiss-passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Tab', { shiftKey: true }), true), 'dismiss-passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Tab'), false), 'passthrough');
+
+  // Unmodified Right Arrow accepts when a suggestion is active, and passes through otherwise or on keyup
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight'), true), 'accept');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight'), false), 'passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { type: 'keyup' }), true), 'passthrough');
+
+  // Modified Right Arrow (word jump / selection) dismisses the ghost and passes through instead of accepting
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { ctrlKey: true }), true), 'dismiss-passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { shiftKey: true }), true), 'dismiss-passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { metaKey: true }), true), 'dismiss-passthrough');
+
+  // Escape consumes the event to dismiss the ghost without sending ESC to the shell
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Escape'), true), 'dismiss-consume');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Escape'), false), 'passthrough');
+
+  // Shell history/cursor navigation keys dismiss the ghost and pass through
+  for (const navKey of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'Home', 'End']) {
+    assert.equal(resolveGhostSuggestionKeyAction(keyEvent(navKey), true), 'dismiss-passthrough');
+  }
+});
+
+test('mobile accessory ghost suggestion action accepts only on unmodified Right Arrow and passes Tab through (#42)', () => {
+  // Tab on mobile accessory bar dismisses ghost and sends \t to remote shell
+  assert.equal(resolveGhostAccessoryAction('\t', true, none), 'dismiss-passthrough');
+  assert.equal(resolveGhostAccessoryAction('\t', false, none), 'passthrough');
+
+  // Unmodified Right Arrow (normal and application cursor modes) accepts ghost suggestion
+  assert.equal(resolveGhostAccessoryAction('\x1b[C', true, none), 'accept');
+  assert.equal(resolveGhostAccessoryAction('\x1bOC', true, none), 'accept');
+  assert.equal(resolveGhostAccessoryAction('\x1b[C', false, none), 'passthrough');
+
+  // Latched CTRL or ALT + Right Arrow dismisses ghost and passes modified arrow to shell
+  assert.equal(resolveGhostAccessoryAction('\x1b[C', true, ctrl), 'dismiss-passthrough');
+  assert.equal(resolveGhostAccessoryAction('\x1b[C', true, alt), 'dismiss-passthrough');
+
+  // Escape and other arrows dismiss ghost and pass through
+  for (const seq of ['\x1b', '\x1b[A', '\x1b[B', '\x1b[D', '\x1bOA', '\x1b[H', '\x1b[F']) {
+    assert.equal(resolveGhostAccessoryAction(seq, true, none), 'dismiss-passthrough');
+  }
+});
+
 
 
 

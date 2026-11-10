@@ -129,18 +129,23 @@ export function TerminalAccessory({
         )}
 
         {button('esc', () => onKey('\x1b'), false, { ariaLabel: 'Escape' })}
-        {button('tab', () => onKey('\t'), hasSuggestion, { ariaLabel: hasSuggestion ? 'Accept suggestion (Tab)' : 'Tab' })}
+        {button('tab', () => onKey('\t'), false, { ariaLabel: 'Tab' })}
         {button('ctrl', () => onModifier('ctrl'), modifiers.ctrl, { ariaLabel: 'CTRL' })}
         {button('alt', () => onModifier('alt'), modifiers.alt, { ariaLabel: 'ALT' })}
 
-        {scrollableAccessoryKeys.slice(2).map(([label, data]) =>
-          button(
+        {scrollableAccessoryKeys.slice(2).map(([label, data]) => {
+          const canAcceptSuggestion = label === '→' && !!hasSuggestion && !modifiers.ctrl && !modifiers.alt;
+          return button(
             label,
             () => onKey(data),
-            false,
-            label === '^C' ? { interrupt: true, ariaLabel: 'Ctrl+C' } : undefined
-          )
-        )}
+            canAcceptSuggestion,
+            label === '^C'
+              ? { interrupt: true, ariaLabel: 'Ctrl+C' }
+              : label === '→'
+                ? { ariaLabel: canAcceptSuggestion ? 'Accept suggestion (Right arrow)' : 'Right arrow' }
+                : undefined
+          );
+        })}
       </div>
   );
 }
