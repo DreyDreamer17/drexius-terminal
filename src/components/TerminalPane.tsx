@@ -68,7 +68,7 @@ import { registry } from '../lib/sessions';
 import { resolveTerminalFontFamily } from '../lib/settings';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
-import type { DrexiusTheme } from '../lib/themes';
+import { hexToRgba, type DrexiusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
@@ -303,6 +303,11 @@ interface Props {
   ghostSuggestions?: boolean;
   copyOnSelect?: boolean;
   rightClickPaste?: boolean;
+  terminalPadding?: number;
+  terminalOpacity?: number;
+  terminalBlur?: number;
+  terminalWallpaper?: string;
+  wallpaperOpacity?: number;
   /** Phone pinch-to-zoom commits the new size here (the app owns and persists the setting). */
   onFontSizeChange?: (size: number) => void;
   /** Invoked whenever the terminal working directory is resolved or updated. */
@@ -375,6 +380,11 @@ export const TerminalPane = memo(function TerminalPane({
   ghostSuggestions = true,
   copyOnSelect = false,
   rightClickPaste = false,
+  terminalPadding = 10,
+  terminalOpacity = 1.0,
+  terminalBlur = 0,
+  terminalWallpaper = '',
+  wallpaperOpacity = 0.25,
   onFontSizeChange,
   lineHeight = 1.0,
   active,
@@ -1623,6 +1633,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   // Mount xterm once
   useEffect(() => {
+    const isTranslucent = !!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1);
     const term = new Terminal({
       fontFamily: resolveTerminalFontFamily(fontFamily, customFontFamily),
       fontSize,
@@ -1634,9 +1645,15 @@ export const TerminalPane = memo(function TerminalPane({
       cursorStyle,
       scrollback,
       allowProposedApi: true,
+      allowTransparency: true,
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
-      theme: theme.xterm,
+      theme: {
+        ...theme.xterm,
+        background: isTranslucent
+          ? '#00000000'
+          : (theme.xterm.background || '#0a0d14'),
+      },
     });
     const fit = new FitAddon();
     // NexusTerminal uses a zero-width overlay scrollbar (and no scrollbar in alternate buffer mode),
@@ -1721,14 +1738,14 @@ export const TerminalPane = memo(function TerminalPane({
       return false;
     });
 
-    // Prefer the hardware-accelerated WebGL renderer for gapless box/block drawing.
+    // Prefer the hardware-accelerated WebGL renderer for gapless box/block drawing and 120 FPS rendering.
     // If WebGL2 is unavailable, or the context is lost later (common on phones when
     // the app is backgrounded or under memory pressure), xterm 6 falls back to its
     // built-in DOM renderer: disposing the addon restores it automatically.
     // Note: @xterm/addon-canvas only supports xterm 5 and crashes on dispose under
     // xterm 6, so it must not be used as a fallback here.
     try {
-      const webgl = new WebglAddon(true);
+      const webgl = new WebglAddon();
       webglRef.current = webgl;
       webgl.onContextLoss(() => {
         console.warn('WebGL context lost; terminal switched to the DOM renderer');
@@ -2556,9 +2573,47 @@ export const TerminalPane = memo(function TerminalPane({
 
   useEffect(() => {
     if (termRef.current) {
-      termRef.current.options.theme = theme.xterm;
+      const isTranslucent = !!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1);
+      const effectiveBg = isTranslucent ? '#00000000' : (theme.xterm.background || '#0a0d14');
+      termRef.current.options.theme = {
+        ...theme.xterm,
+        background: effectiveBg,
+      };
+
+      // Ensure WebGL renderer is active for both solid and translucent wallpaper modes.
+      // WebglAddon with customGlyphs provides continuous, gapless box/block drawing
+      // without horizontal or vertical streak lines across TUIs.
+      if (!webglRef.current) {
+        try {
+          const webgl = new WebglAddon();
+          webglRef.current = webgl;
+          webgl.onContextLoss(() => {
+            console.warn('WebGL context lost; terminal switched to the DOM renderer');
+            webglRef.current = null;
+            setTimeout(() => {
+              try {
+                webgl.dispose();
+              } catch {}
+            }, 0);
+          });
+          termRef.current.loadAddon(webgl);
+        } catch (err) {
+          console.warn('WebGL renderer unavailable:', err);
+          webglRef.current = null;
+        }
+      }
+
+      try {
+        termRef.current.refresh(0, Math.max(0, (termRef.current.rows || 1) - 1));
+      } catch {}
     }
-  }, [theme]);
+  }, [theme, terminalOpacity, terminalWallpaper]);
+
+  useEffect(() => {
+    try {
+      if (elRef.current?.clientWidth && elRef.current.clientHeight) fitRef.current?.fit();
+    } catch {}
+  }, [terminalPadding]);
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -2879,10 +2934,44 @@ export const TerminalPane = memo(function TerminalPane({
             )
           : 'rounded-none border-0'
       )}
-      style={{ background: theme.xterm.background }}
+      style={{
+        backgroundColor: (terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1))
+          ? 'transparent'
+          : (theme.xterm.background || '#0a0d14'),
+      }}
     >
+      {/* Layer 0: Full-bleed wallpaper background */}
+      {terminalWallpaper && (
+        <div
+          className="absolute inset-0 pointer-events-none bg-cover bg-center transition-opacity duration-300"
+          style={{
+            backgroundImage: `url(${terminalWallpaper})`,
+            opacity: wallpaperOpacity ?? 0.25,
+            zIndex: 0,
+          }}
+        />
+      )}
+
+      {/* Layer 1: Frosted glass / liquid acrylic overlay (blurs wallpaper beneath and applies theme tint) */}
+      {(terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1) || (terminalBlur !== undefined && terminalBlur > 0)) && (
+        <div
+          className="absolute inset-0 pointer-events-none transition-all duration-200"
+          style={{
+            backgroundColor: hexToRgba(
+              theme.xterm.background || '#0a0d14',
+              terminalWallpaper
+                ? (terminalOpacity !== undefined && terminalOpacity < 1 ? terminalOpacity : 0.65)
+                : (terminalOpacity ?? 1)
+            ),
+            backdropFilter: terminalBlur && terminalBlur > 0 ? `blur(${terminalBlur}px) saturate(140%)` : undefined,
+            WebkitBackdropFilter: terminalBlur && terminalBlur > 0 ? `blur(${terminalBlur}px) saturate(140%)` : undefined,
+            zIndex: 0,
+          }}
+        />
+      )}
+
       {showHeader && !mobile && (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
+        <div className="relative z-10 flex h-8 shrink-0 items-center gap-2 border-b border-white/5 bg-black/20 px-3 text-[11px]">
           {isSplit && (
             <div
               draggable
@@ -3244,16 +3333,15 @@ export const TerminalPane = memo(function TerminalPane({
       <div
         ref={containerRef}
         className={cn(
-          'relative min-h-0 flex-1 isolate z-0',
-          isAlternateBuffer
-            ? 'p-0 nx-alternate-screen'
-            : showHeader
-            ? 'px-2 pt-2'
-            : 'max-md:px-1 max-md:py-1 px-3 py-1.5'
+          'relative z-10 min-h-0 flex-1 overflow-hidden',
+          isAlternateBuffer ? 'p-0 nx-alternate-screen' : ''
         )}
         // A half-open drawer takes the bottom of the pane; the rows refit to what is left so the prompt stays in view.
         // Mirrors the drawer's settled min-height (min(320px, 70%)) so the terminal never runs under it.
-        style={mobile && active && drawerInset > 0 ? { flex: `0 0 ${(1 - drawerInset) * 100}%`, maxHeight: 'max(calc(100% - 320px), 30%)' } : undefined}>
+        style={{
+          ...(mobile && active && drawerInset > 0 ? { flex: `0 0 ${(1 - drawerInset) * 100}%`, maxHeight: 'max(calc(100% - 320px), 30%)' } : {}),
+          padding: isAlternateBuffer ? 0 : `${terminalPadding}px`,
+        }}>
         <div ref={elRef} className="h-full w-full" />
         {mobile && active && (
           <TerminalSelection
@@ -3339,12 +3427,31 @@ export const TerminalPane = memo(function TerminalPane({
         const sessionName = isSerial ? host.label : isLocal ? 'Local Terminal' : `${host.username}@${host.hostname}${host.port && host.port !== 22 ? `:${host.port}` : ''}`;
         const count = mobileBar?.sessionCount ?? 1;
         const pick = (fn?: () => void) => () => { setConnectMenu(false); fn?.(); };
+        const isTranslucent = !!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1);
         return (
           // Clicks must not bubble to the workspace, whose click handler closes the side panel
           // (that would undo the "back to hosts" navigation this bar triggers).
-          <div className="nx-session-bar md:hidden" role="toolbar" aria-label="Session" onClick={e => e.stopPropagation()}>
+          <div
+            className="nx-session-bar md:hidden relative z-20 shrink-0"
+            role="toolbar"
+            aria-label="Session"
+            style={{
+              backgroundColor: isTranslucent ? hexToRgba(theme.xterm.background || '#0a0d14', 0.82) : undefined,
+              backdropFilter: isTranslucent ? 'blur(16px)' : undefined,
+              WebkitBackdropFilter: isTranslucent ? 'blur(16px)' : undefined,
+              borderTop: isTranslucent ? '1px solid rgba(255, 255, 255, 0.08)' : undefined,
+            }}
+            onClick={e => e.stopPropagation()}
+          >
             <button type="button" className="nx-bar-button" aria-label="Back to hosts" onClick={mobileBar?.onBack}><ChevronLeft size={22} /></button>
-            <div className="nx-session-pill" style={{ borderColor: `${accent}45`, background: `${accent}12`, color: accent }}>
+            <div
+              className="nx-session-pill"
+              style={{
+                borderColor: isTranslucent ? `${accent}60` : `${accent}45`,
+                background: isTranslucent ? `${accent}20` : `${accent}12`,
+                color: accent,
+              }}
+            >
               <button type="button" className="nx-session-pill-main" aria-label={`Sessions · ${count} open`} onClick={mobileBar?.onOpenSessions}>
                 <span className={cn('h-2 w-2 shrink-0 rounded-full', statusColor, status === 'connecting' && 'animate-pulse')} />
                 <span className="min-w-0 truncate font-mono text-[12.5px] font-medium">{sessionName}</span>
@@ -3375,10 +3482,17 @@ export const TerminalPane = memo(function TerminalPane({
           </div>
         );
       })()}
-      {mobile && active && drawerInset <= 0 && mobileBar && <TerminalAccessory modifiers={modifiers} onModifier={toggleModifier} theme={theme}
-        hasSuggestion={ghostSuggestions !== false && !!suggestion}
-        tools={{ onKeypad: mobileBar.onKeypad, onSearch: () => setShowSearch(v => !v), onHistory: mobileBar.onHistory, onAssistant: mobileBar.onAssistant, onSnippets: mobileBar.onSnippets }}
-        onKey={sendAccessoryKey} />}
+      {mobile && active && drawerInset <= 0 && mobileBar && (
+        <TerminalAccessory
+          modifiers={modifiers}
+          onModifier={toggleModifier}
+          theme={theme}
+          isTranslucent={!!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1)}
+          hasSuggestion={ghostSuggestions !== false && !!suggestion}
+          tools={{ onKeypad: mobileBar.onKeypad, onSearch: () => setShowSearch(v => !v), onHistory: mobileBar.onHistory, onAssistant: mobileBar.onAssistant, onSnippets: mobileBar.onSnippets }}
+          onKey={sendAccessoryKey}
+        />
+      )}
 
 
       {status === 'connecting' && (

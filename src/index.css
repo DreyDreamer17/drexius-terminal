@@ -84,8 +84,9 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
   opacity: 0 !important;
 }
 
-.xterm { height: 100%; }
+.xterm { height: 100%; background-color: transparent !important; }
 .xterm .xterm-viewport { background-color: transparent !important; }
+.xterm .xterm-screen { background-color: transparent !important; }
 /* Suppress floating IME composition view overlay on mobile virtual keyboards */
 .xterm .composition-view { display: none !important; }
 /* Native viewport scrollbar is fully hidden. */
@@ -139,7 +140,7 @@ body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
   background: rgba(255, 255, 255, 0.42) !important;
 }
 
-.xterm-screen { padding-bottom: 4px; }
+.xterm-screen { padding-bottom: 0 !important; }
 .nx-alternate-screen .xterm-screen { padding-bottom: 0 !important; }
 
 @keyframes nx-drift { 0%,100% { transform: translate(0,0) scale(1); } 33% { transform: translate(40px,-30px) scale(1.08); } 66% { transform: translate(-30px,20px) scale(0.95); } }
@@ -210,7 +211,16 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   [data-keyboard="true"] .nx-bottom-nav { display: none; }
   /* Terminal screen session bar (under the terminal, above the key row): back · session pill · new · keyboard. */
   /* No rules between terminal, session bar and key row: the whole bottom block floats on the terminal background. */
-  .nx-session-bar { display: flex; flex-shrink: 0; align-items: center; gap: 2px; min-height: 44px; padding: 4px 6px 2px; }
+  .nx-session-bar {
+    position: relative;
+    z-index: 20;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    min-height: 44px;
+    padding: 4px 6px 2px;
+  }
   /* Bar buttons float like the key row: the session pill is the only solid element on the bar. */
   .nx-session-bar .nx-bar-button { display: grid; place-items: center; width: 40px; height: 38px; flex-shrink: 0; border-radius: 11px; border: 0; background: transparent; color: #cbd5e1; -webkit-tap-highlight-color: transparent; transition: background .12s ease, transform .12s ease; }
   .nx-session-bar .nx-bar-button:active { background: rgb(255 255 255 / .1); transform: scale(.94); }
@@ -283,6 +293,8 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   /* Key row: a thin strip of floating labels (Termius-style) — no boxes, only a soft pressed tint
      and a filled accent pill for latched modifiers. Buttons keep a 34px hit height. */
   .nx-terminal-accessory {
+    position: relative;
+    z-index: 20;
     display: flex;
     align-items: center;
     gap: 0;
@@ -410,7 +422,7 @@ button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 
   .nx-editor-search input { min-height: 44px; width: 100%; }
   /* Find-in-terminal on phones: docked under the terminal (rows refit above it), themed like the modals. */
   .nx-terminal-search-docked {
-    position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; overflow: hidden;
+    position: relative; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex-shrink: 0; overflow: hidden;
     margin: 0 8px 6px; padding: 8px;
     border: 1px solid color-mix(in srgb, var(--nx-accent) 30%, transparent); border-radius: 16px;
     box-shadow: 0 12px 32px rgb(0 0 0 / .45), inset 0 1px 0 rgb(255 255 255 / .05);

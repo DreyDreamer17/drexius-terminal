@@ -160,6 +160,13 @@ export interface UiPreferences {
   customFontFamily: string;
   fontWeight: TerminalFontWeight;
   letterSpacing: number;
+
+  // Visual Customizations: Frame, Acrylic & Wallpaper
+  terminalPadding: number;
+  terminalOpacity: number;
+  terminalBlur: number;
+  terminalWallpaper: string;
+  wallpaperOpacity: number;
 }
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
@@ -191,6 +198,11 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   customFontFamily: '',
   fontWeight: '400',
   letterSpacing: 0,
+  terminalPadding: 10,
+  terminalOpacity: 1.0,
+  terminalBlur: 0,
+  terminalWallpaper: '',
+  wallpaperOpacity: 0.25,
 };
 
 export interface ShortcutBinding {

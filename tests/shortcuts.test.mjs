@@ -19,6 +19,15 @@ import {
 import { TERMINAL_FONT_MIN, TERMINAL_FONT_MAX, clampTerminalFontSize } from '../src/lib/mobileTerminal.ts';
 import { createUserPreset } from '../src/lib/layoutPresets.ts';
 import { leaf, splitLeaf } from '../src/lib/splitTree.ts';
+import {
+  THEMES,
+  hexToRgba,
+  exportThemeJson,
+  importThemeFromText,
+  loadCustomThemes,
+  saveCustomTheme,
+  deleteCustomTheme,
+} from '../src/lib/themes.ts';
 
 // Minimal in-memory localStorage for the persistence round-trip tests.
 class MemoryStorage {
@@ -226,4 +235,154 @@ test('Cmd+T and Cmd+W tab shortcuts match and respect reserved built-ins', () =>
 
   // Ctrl+Shift+T is reserved as the built-in alternate for Duplicate / new tab
   assert.match(findShortcutConflict(DEFAULT_SHORTCUTS, 'toggle_zen', 'Ctrl+Shift+T'), /Duplicate \/ new tab \(alternate\)/);
+});
+
+test('canvas styling and wallpaper preferences round-trip in UI preferences', () => {
+  assert.equal(DEFAULT_UI_PREFERENCES.terminalPadding, 10);
+  assert.equal(DEFAULT_UI_PREFERENCES.terminalOpacity, 1.0);
+  assert.equal(DEFAULT_UI_PREFERENCES.terminalBlur, 0);
+  assert.equal(DEFAULT_UI_PREFERENCES.terminalWallpaper, '');
+  assert.equal(DEFAULT_UI_PREFERENCES.wallpaperOpacity, 0.25);
+
+  const modified = {
+    ...DEFAULT_UI_PREFERENCES,
+    terminalPadding: 16,
+    terminalOpacity: 0.85,
+    terminalBlur: 12,
+    terminalWallpaper: 'data:image/png;base64,sample',
+    wallpaperOpacity: 0.4,
+  };
+  saveUiPreferences(modified);
+  const loaded = loadUiPreferences();
+  assert.equal(loaded.terminalPadding, 16);
+  assert.equal(loaded.terminalOpacity, 0.85);
+  assert.equal(loaded.terminalBlur, 12);
+  assert.equal(loaded.terminalWallpaper, 'data:image/png;base64,sample');
+  assert.equal(loaded.wallpaperOpacity, 0.4);
+});
+
+test('hexToRgba converts 6-digit, 3-digit and invalid hex strings with opacity clamping', () => {
+  assert.equal(hexToRgba('#ff0000', 0.5), 'rgba(255, 0, 0, 0.5)');
+  assert.equal(hexToRgba('#00ff00', 1.0), '#00ff00');
+  assert.equal(hexToRgba('#0f0', 0.8), 'rgba(0, 255, 0, 0.8)');
+  assert.equal(hexToRgba('#123456', 1.5), '#123456');
+  assert.equal(hexToRgba('#123456', -0.5), 'rgba(18, 52, 86, 0)');
+  assert.equal(hexToRgba('not-a-hex', 0.5), 'not-a-hex');
+});
+
+test('curated developer theme suite includes 34 high-fidelity themes', () => {
+  assert.equal(THEMES.length, 34);
+
+  const newlyAdded = [
+    'vesper',
+    'catppuccin-mocha',
+    'catppuccin-macchiato',
+    'tokyo-night-storm',
+    'solarized-osaka',
+    'cobalt2',
+    'retro-amber',
+    'gruvbox-material',
+  ];
+
+  for (const id of newlyAdded) {
+    const theme = THEMES.find((t) => t.id === id);
+    assert.ok(theme, `Theme ${id} must exist in THEMES`);
+    assert.ok(theme.name, `Theme ${id} must have a name`);
+    assert.ok(theme.accent, `Theme ${id} must have an accent`);
+    assert.ok(theme.xterm.background, `Theme ${id} must have a background`);
+    assert.ok(theme.xterm.foreground, `Theme ${id} must have a foreground`);
+    assert.ok(theme.xterm.cursor, `Theme ${id} must have a cursor`);
+    assert.ok(theme.xterm.black, `Theme ${id} must have ANSI black`);
+    assert.ok(theme.xterm.brightWhite, `Theme ${id} must have ANSI brightWhite`);
+  }
+});
+
+test('custom theme creator and export/import round-trip', () => {
+  // Clear any existing custom themes in mock storage
+  globalThis.localStorage.removeItem('drx.custom_themes.v1');
+  assert.deepEqual(loadCustomThemes(), []);
+
+  const sampleTheme = {
+    id: 'custom-neon-matrix-1',
+    name: 'Neon Matrix Custom',
+    accent: '#00ff66',
+    isLight: false,
+    isCustom: true,
+    xterm: {
+      background: '#050a06',
+      foreground: '#a3f7bf',
+      cursor: '#00ff66',
+      cursorAccent: '#050a06',
+      selectionBackground: '#00ff6633',
+      black: '#102015',
+      red: '#ff4d6d',
+      green: '#00ff66',
+      yellow: '#ffd166',
+      blue: '#118ab2',
+      magenta: '#b5179e',
+      cyan: '#06d6a0',
+      white: '#e8f7ee',
+      brightBlack: '#2d4a36',
+      brightRed: '#ff758f',
+      brightGreen: '#52b788',
+      brightYellow: '#ffe082',
+      brightBlue: '#48cae4',
+      brightMagenta: '#f72585',
+      brightCyan: '#70e000',
+      brightWhite: '#ffffff',
+    },
+  };
+
+  // Save custom theme
+  saveCustomTheme(sampleTheme);
+  const loaded = loadCustomThemes();
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].id, 'custom-neon-matrix-1');
+  assert.equal(loaded[0].name, 'Neon Matrix Custom');
+
+  // Export to JSON
+  const exported = exportThemeJson(loaded[0]);
+  assert.match(exported, /"name": "Neon Matrix Custom"/);
+
+  // Import from JSON text
+  const imported = importThemeFromText(exported);
+  assert.ok(imported);
+  assert.equal(imported.name, 'Neon Matrix Custom');
+  assert.equal(imported.accent, '#00ff66');
+  assert.equal(imported.isCustom, true);
+
+  // Import Ghostty config text format
+  const ghosttyConfig = `
+background = #1a1b26
+foreground = #c0caf5
+cursor-color = #c0caf5
+selection-background = #33467c
+palette = 0=#15161e
+palette = 1=#f7768e
+palette = 2=#9ece6a
+palette = 3=#e0af68
+palette = 4=#7aa2f7
+palette = 5=#bb9af7
+palette = 6=#7dcfff
+palette = 7=#a9b1d6
+palette = 8=#414868
+palette = 9=#f7768e
+palette = 10=#9ece6a
+palette = 11=#e0af68
+palette = 12=#7aa2f7
+palette = 13=#bb9af7
+palette = 14=#7dcfff
+palette = 15=#c0caf5
+`;
+  const importedGhostty = importThemeFromText(ghosttyConfig);
+  assert.ok(importedGhostty);
+  assert.equal(importedGhostty.xterm.background, '#1a1b26');
+  assert.equal(importedGhostty.xterm.foreground, '#c0caf5');
+  assert.equal(importedGhostty.xterm.cursor, '#c0caf5');
+  assert.equal(importedGhostty.xterm.black, '#15161e');
+  assert.equal(importedGhostty.xterm.brightWhite, '#c0caf5');
+
+  // Delete custom theme
+  deleteCustomTheme('custom-neon-matrix-1');
+  assert.deepEqual(loadCustomThemes(), []);
 });

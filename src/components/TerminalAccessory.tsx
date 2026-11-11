@@ -4,7 +4,7 @@ import {
   scrollableAccessoryKeys,
   type TerminalModifiers,
 } from '../lib/mobileTerminal';
-import type { DrexiusTheme } from '../lib/themes';
+import { hexToRgba, type DrexiusTheme } from '../lib/themes';
 
 export function TerminalAccessory({
   modifiers,
@@ -13,6 +13,7 @@ export function TerminalAccessory({
   theme,
   tools,
   hasSuggestion,
+  isTranslucent,
 }: {
   modifiers: TerminalModifiers;
   onModifier: (key: keyof TerminalModifiers) => void;
@@ -21,6 +22,7 @@ export function TerminalAccessory({
   /** Pane tools that used to live in the (removed) top bar; the drawers (keypad, AI, snippets, history) are owned by the app. */
   tools?: { onKeypad: () => void; onSearch: () => void; onHistory: () => void; onAssistant?: () => void; onSnippets?: () => void };
   hasSuggestion?: boolean;
+  isTranslucent?: boolean;
 }) {
   const touched = useRef(0);
   const toolbar = useRef<HTMLDivElement>(null);
@@ -111,8 +113,14 @@ export function TerminalAccessory({
   return (
       <div
         ref={toolbar}
-        className="nx-terminal-accessory md:hidden"
-        style={{ backgroundColor: `${bgColor}fa`, '--nx-accent': accentColor } as CSSProperties}
+        className="nx-terminal-accessory md:hidden relative z-20 shrink-0"
+        style={{
+          backgroundColor: isTranslucent ? hexToRgba(bgColor, 0.82) : `${bgColor}fa`,
+          backdropFilter: isTranslucent ? 'blur(16px)' : undefined,
+          WebkitBackdropFilter: isTranslucent ? 'blur(16px)' : undefined,
+          borderTop: isTranslucent ? '1px solid rgba(255, 255, 255, 0.06)' : undefined,
+          '--nx-accent': accentColor,
+        } as CSSProperties}
         role="toolbar"
         aria-label="Terminal keyboard keys"
       >

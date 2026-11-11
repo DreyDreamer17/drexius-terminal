@@ -5,6 +5,7 @@ export interface DrexiusTheme {
   name: string;
   accent: string;
   isLight?: boolean;
+  isCustom?: boolean;
   xterm: ITheme;
 }
 
@@ -217,4 +218,283 @@ export const THEMES: DrexiusTheme[] = [
       brightBlack: '#002b36', brightRed: '#cb4b16', brightGreen: '#586e75', brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4', brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
     },
   },
+  {
+    id: 'vesper', name: 'Vesper', accent: '#ffc799',
+    xterm: {
+      background: '#101010', foreground: '#ffffff', cursor: '#ffc799', cursorAccent: '#101010', selectionBackground: '#262626',
+      black: '#101010', red: '#f5a191', green: '#90b99f', yellow: '#e6b99d', blue: '#aca1cf', magenta: '#e29eca', cyan: '#ea83a5', white: '#cccccc',
+      brightBlack: '#505050', brightRed: '#ff8080', brightGreen: '#99ffe4', brightYellow: '#ffc799', brightBlue: '#bda6ff', brightMagenta: '#ff94d2', brightCyan: '#8bdfeb', brightWhite: '#ffffff',
+    },
+  },
+  {
+    id: 'catppuccin-mocha', name: 'Catppuccin Mocha', accent: '#cba6f7',
+    xterm: {
+      background: '#181825', foreground: '#cdd6f4', cursor: '#f5e0dc', cursorAccent: '#181825', selectionBackground: '#45475a',
+      black: '#45475a', red: '#f38ba8', green: '#a6e3a1', yellow: '#f9e2af', blue: '#89b4fa', magenta: '#f5c2e7', cyan: '#94e2d5', white: '#bac2de',
+      brightBlack: '#585b70', brightRed: '#eba0ac', brightGreen: '#a6e3a1', brightYellow: '#f9e2af', brightBlue: '#89dceb', brightMagenta: '#cba6f7', brightCyan: '#74c7ec', brightWhite: '#a6adc8',
+    },
+  },
+  {
+    id: 'catppuccin-macchiato', name: 'Catppuccin Macchiato', accent: '#b7bdf8',
+    xterm: {
+      background: '#24273a', foreground: '#cad3f5', cursor: '#f4dbd6', cursorAccent: '#24273a', selectionBackground: '#494d64',
+      black: '#494d64', red: '#ed8796', green: '#a6da95', yellow: '#eed49f', blue: '#8aadf4', magenta: '#f5bde6', cyan: '#8bd5ca', white: '#b8c0e0',
+      brightBlack: '#5b6078', brightRed: '#ee99a0', brightGreen: '#a6da95', brightYellow: '#eed49f', brightBlue: '#7dc4e4', brightMagenta: '#c6a0f6', brightCyan: '#91d7e3', brightWhite: '#a5adcb',
+    },
+  },
+  {
+    id: 'tokyo-night-storm', name: 'Tokyo Night Storm', accent: '#7aa2f7',
+    xterm: {
+      background: '#24283b', foreground: '#c0caf5', cursor: '#c0caf5', cursorAccent: '#24283b', selectionBackground: '#364a82',
+      black: '#1d202f', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68', blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
+      brightBlack: '#414868', brightRed: '#f7768e', brightGreen: '#9ece6a', brightYellow: '#e0af68', brightBlue: '#7aa2f7', brightMagenta: '#bb9af7', brightCyan: '#7dcfff', brightWhite: '#c0caf5',
+    },
+  },
+  {
+    id: 'solarized-osaka', name: 'Solarized Osaka', accent: '#00d3d0',
+    xterm: {
+      background: '#00141d', foreground: '#839496', cursor: '#00d3d0', cursorAccent: '#00141d', selectionBackground: '#073642',
+      black: '#073642', red: '#e93836', green: '#6bbe00', yellow: '#b58900', blue: '#268bd2', magenta: '#e53b82', cyan: '#00d3d0', white: '#eee8d5',
+      brightBlack: '#586e75', brightRed: '#f5532c', brightGreen: '#79dc00', brightYellow: '#e5ad00', brightBlue: '#3ea6ea', brightMagenta: '#6c71c4', brightCyan: '#2ae4d8', brightWhite: '#fdf6e3',
+    },
+  },
+  {
+    id: 'cobalt2', name: 'Cobalt2', accent: '#ffc600',
+    xterm: {
+      background: '#193549', foreground: '#ffffff', cursor: '#ffc600', cursorAccent: '#193549', selectionBackground: '#0d3a58',
+      black: '#000000', red: '#ff005b', green: '#38de21', yellow: '#ffe50a', blue: '#1460d2', magenta: '#ff0055', cyan: '#00bbbb', white: '#bbbbbb',
+      brightBlack: '#555555', brightRed: '#f40e17', brightGreen: '#3bd01d', brightYellow: '#edc809', brightBlue: '#5555ff', brightMagenta: '#ff55ff', brightCyan: '#6ae3fa', brightWhite: '#ffffff',
+    },
+  },
+  {
+    id: 'retro-amber', name: 'Retro Amber CRT', accent: '#ffb000',
+    xterm: {
+      background: '#0d0800', foreground: '#ffb000', cursor: '#ffb000', cursorAccent: '#0d0800', selectionBackground: '#ffb00033',
+      black: '#2b1b00', red: '#ff8800', green: '#ffaa00', yellow: '#ffc83b', blue: '#ff9d00', magenta: '#ffa200', cyan: '#ffbf00', white: '#ffe6a3',
+      brightBlack: '#593c00', brightRed: '#ff9f33', brightGreen: '#ffbe33', brightYellow: '#ffd666', brightBlue: '#ffb533', brightMagenta: '#ffba33', brightCyan: '#ffcf4d', brightWhite: '#fff7d6',
+    },
+  },
+  {
+    id: 'gruvbox-material', name: 'Gruvbox Material', accent: '#e78a4e',
+    xterm: {
+      background: '#282828', foreground: '#d4be98', cursor: '#d4be98', cursorAccent: '#282828', selectionBackground: '#45403d',
+      black: '#282828', red: '#ea6962', green: '#a9b665', yellow: '#d8a657', blue: '#7daea3', magenta: '#d3869b', cyan: '#89b482', white: '#dfbf8e',
+      brightBlack: '#928374', brightRed: '#ea6962', brightGreen: '#a9b665', brightYellow: '#d8a657', brightBlue: '#7daea3', brightMagenta: '#d3869b', brightCyan: '#89b482', brightWhite: '#e4caa0',
+    },
+  },
 ];
+
+export const CUSTOM_THEMES_STORAGE_KEY = 'drx.custom_themes.v1';
+
+/**
+ * Loads user-created custom themes from local storage safely.
+ */
+export function loadCustomThemes(): DrexiusTheme[] {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY) : null;
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t) => t && typeof t.id === 'string' && typeof t.name === 'string' && t.xterm);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Saves or updates a custom theme in local storage.
+ */
+export function saveCustomTheme(theme: DrexiusTheme): DrexiusTheme[] {
+  const current = loadCustomThemes();
+  const index = current.findIndex((t) => t.id === theme.id);
+  const updatedTheme: DrexiusTheme = {
+    ...theme,
+    isCustom: true,
+  };
+  let next: DrexiusTheme[];
+  if (index >= 0) {
+    next = [...current];
+    next[index] = updatedTheme;
+  } else {
+    next = [...current, updatedTheme];
+  }
+  try {
+    localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(next));
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('drx:themes-changed'));
+    }
+  } catch (err) {
+    console.warn('Failed to save custom theme:', err);
+  }
+  return next;
+}
+
+/**
+ * Deletes a custom theme by ID from local storage.
+ */
+export function deleteCustomTheme(themeId: string): DrexiusTheme[] {
+  const current = loadCustomThemes();
+  const next = current.filter((t) => t.id !== themeId);
+  try {
+    localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(next));
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('drx:themes-changed'));
+    }
+  } catch (err) {
+    console.warn('Failed to delete custom theme:', err);
+  }
+  return next;
+}
+
+/**
+ * Converts a hex or rgb color string to rgba with a specified alpha channel.
+ */
+export function hexToRgba(color: string, alpha: number): string {
+  if (alpha >= 1) return color;
+  const clampedAlpha = Math.max(0, Math.min(1, alpha));
+  if (!color) return `rgba(10, 13, 20, ${clampedAlpha})`;
+  if (color.startsWith('rgba')) {
+    return color.replace(/[\d\.]+\)$/, `${clampedAlpha})`);
+  }
+  if (color.startsWith('rgb')) {
+    return color.replace('rgb', 'rgba').replace(')', `, ${clampedAlpha})`);
+  }
+  let c = color.replace('#', '').trim();
+  if (c.length === 3) {
+    c = c.split('').map((x) => x + x).join('');
+  }
+  if (c.length >= 6) {
+    const num = parseInt(c.slice(0, 6), 16);
+    if (!Number.isNaN(num)) {
+      const r = (num >> 16) & 255;
+      const g = (num >> 8) & 255;
+      const b = num & 255;
+      return `rgba(${r}, ${g}, ${b}, ${clampedAlpha})`;
+    }
+  }
+  return color;
+}
+
+/**
+ * Exports a theme as a formatted JSON string.
+ */
+export function exportThemeJson(theme: DrexiusTheme): string {
+  return JSON.stringify(
+    {
+      name: theme.name,
+      accent: theme.accent,
+      isLight: !!theme.isLight,
+      xterm: theme.xterm,
+    },
+    null,
+    2,
+  );
+}
+
+/**
+ * Imports a theme from JSON text or key-value format.
+ */
+export function importThemeFromText(text: string): DrexiusTheme | null {
+  if (!text || typeof text !== 'string') return null;
+  const clean = text.trim();
+
+  // Try JSON first
+  try {
+    const parsed = JSON.parse(clean);
+    if (parsed && typeof parsed === 'object') {
+      const name = String(parsed.name || parsed.id || 'Custom Theme').trim();
+      const id = 'custom-' + name.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-') + '-' + Date.now().toString(36);
+      const accent = parsed.accent || parsed.xterm?.cursor || parsed.cursor || '#22d3ee';
+      const xterm = parsed.xterm || {
+        background: parsed.background || '#0a0d14',
+        foreground: parsed.foreground || '#d6deeb',
+        cursor: parsed.cursor || accent,
+        cursorAccent: parsed.cursorAccent || parsed.background || '#0a0d14',
+        selectionBackground: parsed.selectionBackground || `${accent}33`,
+        black: parsed.black || '#1b2130',
+        red: parsed.red || '#ff5f7e',
+        green: parsed.green || '#4ade80',
+        yellow: parsed.yellow || '#fbbf24',
+        blue: parsed.blue || '#60a5fa',
+        magenta: parsed.magenta || '#c084fc',
+        cyan: parsed.cyan || '#22d3ee',
+        white: parsed.white || '#d6deeb',
+        brightBlack: parsed.brightBlack || '#4b5468',
+        brightRed: parsed.brightRed || '#ff8aa1',
+        brightGreen: parsed.brightGreen || '#86efac',
+        brightYellow: parsed.brightYellow || '#fde68a',
+        brightBlue: parsed.brightBlue || '#93c5fd',
+        brightMagenta: parsed.brightMagenta || '#d8b4fe',
+        brightCyan: parsed.brightCyan || '#67e8f9',
+        brightWhite: parsed.brightWhite || '#ffffff',
+      };
+
+      return {
+        id,
+        name,
+        accent,
+        isLight: !!parsed.isLight,
+        isCustom: true,
+        xterm,
+      };
+    }
+  } catch {
+    // Not standard JSON, parse line-by-line key = value (Ghostty or Xresources style)
+  }
+
+  // Fallback: parse key-value lines
+  const lines = clean.split('\n');
+  const kv: Record<string, string> = {};
+  for (const line of lines) {
+    const paletteMatch = line.match(/^\s*palette\s*=\s*(\d+)\s*=\s*(.+)\s*$/);
+    if (paletteMatch) {
+      const idx = paletteMatch[1];
+      const val = paletteMatch[2].trim().replace(/^["']|["']$/g, '');
+      kv[`color${idx}`] = val;
+      continue;
+    }
+    const m = line.match(/^\s*([a-zA-Z0-9_\.\-]+)\s*[=:]\s*(.+)\s*$/);
+    if (m) {
+      kv[m[1].toLowerCase()] = m[2].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+
+  if (kv.background && kv.foreground) {
+    const name = kv.name || 'Imported Theme';
+    const id = 'custom-' + name.toLowerCase().replace(/[^a-z0-9_-]/g, '-') + '-' + Date.now().toString(36);
+    const cursorColor = kv['cursor-color'] || kv.cursor || kv.accent || '#22d3ee';
+    const accent = cursorColor;
+    return {
+      id,
+      name,
+      accent,
+      isLight: false,
+      isCustom: true,
+      xterm: {
+        background: kv.background,
+        foreground: kv.foreground,
+        cursor: cursorColor,
+        cursorAccent: kv['cursor-accent'] || kv.cursoraccent || kv.background,
+        selectionBackground: kv['selection-background'] || kv.selectionbackground || `${accent}33`,
+        black: kv.black || kv.color0 || '#1b2130',
+        red: kv.red || kv.color1 || '#ff5f7e',
+        green: kv.green || kv.color2 || '#4ade80',
+        yellow: kv.yellow || kv.color3 || '#fbbf24',
+        blue: kv.blue || kv.color4 || '#60a5fa',
+        magenta: kv.magenta || kv.color5 || '#c084fc',
+        cyan: kv.cyan || kv.color6 || '#22d3ee',
+        white: kv.white || kv.color7 || '#d6deeb',
+        brightBlack: kv.brightblack || kv.color8 || '#4b5468',
+        brightRed: kv.brightred || kv.color9 || '#ff8aa1',
+        brightGreen: kv.brightgreen || kv.color10 || '#86efac',
+        brightYellow: kv.brightyellow || kv.color11 || '#fde68a',
+        brightBlue: kv.brightblue || kv.color12 || '#93c5fd',
+        brightMagenta: kv.brightmagenta || kv.color13 || '#d8b4fe',
+        brightCyan: kv.brightcyan || kv.color14 || '#67e8f9',
+        brightWhite: kv.brightwhite || kv.color15 || '#ffffff',
+      },
+    };
+  }
+
+  return null;
+}

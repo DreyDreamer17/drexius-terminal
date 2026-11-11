@@ -81,7 +81,7 @@ import {
   swapLeaves,
   treeFromLayout,
 } from './lib/splitTree';
-import { THEMES, type DrexiusTheme } from './lib/themes';
+import { THEMES, loadCustomThemes, type DrexiusTheme } from './lib/themes';
 import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, PopoutPaneEntry, PopoutWindowBounds, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import {
   type LayoutPreset,
@@ -773,7 +773,17 @@ export default function App() {
     });
   }, []);
 
-  const theme = THEMES.find((t) => t.id === themeId) ?? THEMES[0];
+  const [customThemes, setCustomThemes] = useState<DrexiusTheme[]>(() => loadCustomThemes());
+  useEffect(() => {
+    const onThemesChanged = () => {
+      setCustomThemes(loadCustomThemes());
+    };
+    window.addEventListener('drx:themes-changed', onThemesChanged);
+    return () => window.removeEventListener('drx:themes-changed', onThemesChanged);
+  }, []);
+
+  const allThemes = useMemo(() => [...THEMES, ...customThemes], [customThemes]);
+  const theme = allThemes.find((t) => t.id === themeId) ?? allThemes[0];
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const lastTerminalTab = useRef<string | null>(null);
   if (activeTab && activeTab.kind !== 'sftp') lastTerminalTab.current = activeTab.id;
@@ -3742,7 +3752,7 @@ export default function App() {
                     <div className="fixed inset-0 z-30" onClick={() => setShowThemes(false)} />
                     <div className="absolute right-0 top-9 z-40 w-56 rounded-xl border border-white/10 bg-[#0e131d] p-2 shadow-2xl">
                       <div className="max-h-64 overflow-y-auto space-y-0.5 pr-0.5">
-                        {THEMES.map((t) => (
+                        {allThemes.map((t) => (
                           <button key={t.id} onClick={() => setThemeId(t.id)} className={cn('flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs', t.id === themeId ? 'bg-white/10 text-white' : 'text-slate-400 hover:bg-white/5')}>
                             <span className="flex h-5 w-8 shrink-0 overflow-hidden rounded ring-1 ring-white/10" style={{ background: t.xterm.background }}>
                               {[t.xterm.red, t.xterm.green, t.xterm.blue, t.xterm.magenta].map((c, i) => <span key={i} className="mt-auto h-1.5 flex-1" style={{ background: c }} />)}
@@ -4217,7 +4227,7 @@ export default function App() {
                 className={cn(
                   'absolute inset-0',
                   (t.id !== activeTabId || (mobile && mobilePage !== 'terminals')) && 'invisible',
-                  freeForm ? 'bg-black/40' : 'flex p-0'
+                  freeForm ? ((uiPrefs.terminalWallpaper || (uiPrefs.terminalOpacity ?? 1) < 1) ? 'bg-transparent' : 'bg-black/40') : 'flex p-0'
                 )}
               >
                 {[...t.panes]
@@ -4320,6 +4330,11 @@ export default function App() {
                           lineHeight={lineHeight}
                           cursorStyle={uiPrefs.cursorStyle}
                           cursorBlink={uiPrefs.cursorBlink}
+                          terminalPadding={uiPrefs.terminalPadding}
+                          terminalOpacity={uiPrefs.terminalOpacity}
+                          terminalBlur={uiPrefs.terminalBlur}
+                          terminalWallpaper={uiPrefs.terminalWallpaper}
+                          wallpaperOpacity={uiPrefs.wallpaperOpacity}
                           scrollback={uiPrefs.scrollback}
                           ghostSuggestions={uiPrefs.ghostSuggestions}
                           copyOnSelect={uiPrefs.copyOnSelect}
@@ -4649,7 +4664,7 @@ export default function App() {
       </MobileSheet>}
       {mobile && settingsPicker === 'theme' && <MobileSheet title="Theme" kicker="Appearance" subtitle="Applies everywhere, instantly" icon={Palette} theme={theme} onClose={() => setSettingsPicker(null)}>
         <div className="nx-settings-group" role="radiogroup" aria-label="Terminal theme">
-          {THEMES.map((t) => {
+          {allThemes.map((t) => {
             const on = t.id === themeId;
             return <button key={t.id} type="button" role="radio" aria-checked={on} className="nx-settings-row nx-option-row justify-between" onClick={() => setThemeId(t.id)}>
               <span className="flex min-w-0 items-center gap-3"><ThemeSwatch t={t} large /><span className="truncate">{t.name}</span></span>
