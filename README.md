@@ -139,22 +139,25 @@ physical-device release checklist are documented in **[docs/mobile-ui.md](docs/m
 
 ### ⚡ Performance & resource footprint
 
-Drexius Terminal is engineered with **Tauri 2 (Rust) and WebKit** rather than Electron (Chromium + Node.js). 
+Drexius Terminal is engineered with **Tauri 2 (Rust) and native WebKit** rather than Electron (Chromium + Node.js). 
 
-Empirical baseline running side-by-side on Linux:
+Empirical baseline running side-by-side on Linux (Arch Linux, x86_64):
 
 | Metric | Termius *(Electron)* | Drexius Terminal *(Tauri + Rust)* | Difference |
 |:---|:---:|:---:|:---:|
-| **Physical RAM (RSS)** | **~1,250 – 1,340 MB** *(~1.3 GB)* | **~220 – 338 MB** *(~0.25 GB)* | **~4x to 6x less RAM** 🚀 |
-| **Idle / Background CPU** | **13.8% – 78%** | **~2.7% – 3.1%** | **~5x to 25x less CPU** |
-| **Process Count** | **9 processes** | **2 processes** | **4.5x fewer processes** |
+| **ANSI Color Throughput** | **1.37 MB/s** | **7.53 MB/s** | **5.5x faster throughput** 🚀 |
+| **Raw Text Throughput** | **1.77 MB/s** | **3.67 MB/s** | **2.1x faster** ⚡ |
+| **30k Line Buffer Drain Time** | **2.34s** *(1.62s user CPU)* | **0.77s** *(0.24s user CPU)* | **3.0x faster (6.6x less CPU churn)** |
+| **Physical RAM (RSS)** | **~1,212 – 1,371 MB** *(~1.3 GB)* | **~201 MB** *(flat, non-leaking)* | **~6x less RAM** 🚀 |
+| **Idle / Background CPU** | **10.2% – 78%** *(up to 155% bursts)* | **~1.2% – 2.7%** | **~10x to 40x less CPU** |
+| **Process Count** | **10 processes** | **2 processes** | **5x fewer processes** |
 | **Telemetry / Tracking** | Sentry IPC & Crashpad handlers | **0% (Local-first)** | **100% Private & offline** |
 
 <details>
-<summary><b>🔍 How to reproduce this benchmark on your own system</b></summary>
+<summary><b>🔍 How to reproduce these benchmarks on your own system</b></summary>
 
-With both applications open, run:
-
+**1. Live Resource Monitor (RAM & CPU):**
+With both applications running, execute:
 ```bash
 ps -eo rss,pcpu,comm,args | awk '
 /[d]rexius/ {dm+=$1; dc+=$2}
@@ -163,6 +166,18 @@ END {
   printf "Drexius: %.0f MB RAM, %.1f%% CPU\n", dm/1024, dc
   printf "Termius: %.0f MB RAM, %.1f%% CPU\n", tm/1024, tc
 }'
+```
+
+**2. 5-Second Colored ANSI Throughput Test:**
+Run inside each terminal to test escape sequence parsing and GPU draw calls:
+```bash
+(timeout 5s yes $'\e[32m[OK]\e[0m \e[1;34mINFO\e[0m: Rendering throughput benchmark line 1234567890' | tee /dev/tty) | wc -c | awk '{printf "\nANSI Rendered: %.2f MB (%.2f MB/s)\n", $1/1048576, ($1/1048576)/5}'
+```
+
+**3. 5-Second Raw ASCII Throughput Test:**
+Run inside each terminal to measure PTY buffer stream bandwidth:
+```bash
+(timeout 5s yes "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" | tee /dev/tty) | wc -c | awk '{printf "\nRendered: %.2f MB (%.2f MB/s)\n", $1/1048576, ($1/1048576)/5}'
 ```
 
 </details>
