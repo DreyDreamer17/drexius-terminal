@@ -2,10 +2,11 @@ import type { Dispatch, SetStateAction } from 'react';
 import { bridge } from '../lib/bridge';
 import type { ShortcutBinding, UiPreferences } from '../lib/settings';
 import type { DrexiusTheme } from '../lib/themes';
-import type { CloudInstance, Host, HostSecret, Tab, Vault } from '../lib/types';
+import type { CloudInstance, Host, HostSecret, Snippet, Tab, Vault } from '../lib/types';
 import { AUTO_LOCK_STORAGE_KEY, type WorkspacePanelKind } from '../lib/workspaceState';
 import { safeUid } from '../utils/uuid';
 import { CloudSyncModal } from './CloudSyncModal';
+import { DeployModal } from './DeployModal';
 import { DevicePairingModal } from './DevicePairingModal';
 import { DockerModal } from './DockerModal';
 import { HostModal } from './HostModal';
@@ -54,6 +55,9 @@ export interface WorkspaceModalsProps {
   setShowCloudSync: Dispatch<SetStateAction<boolean>>;
   showDockerModal: boolean;
   setShowDockerModal: Dispatch<SetStateAction<boolean>>;
+  showDeployModal: boolean;
+  setShowDeployModal: Dispatch<SetStateAction<boolean>>;
+  snippets: Snippet[];
   dockerHostId: string | null;
   terminalContext: Tab | undefined | null;
   activePaneId: string | null;
@@ -121,6 +125,9 @@ export function WorkspaceModals({
   setShowCloudSync,
   showDockerModal,
   setShowDockerModal,
+  showDeployModal,
+  setShowDeployModal,
+  snippets,
   dockerHostId,
   terminalContext,
   activePaneId,
@@ -279,6 +286,28 @@ export function WorkspaceModals({
           }}
           onClose={() => {
             setShowDockerModal(false);
+            handleReturnToSettings();
+          }}
+          toast={toast}
+          theme={theme}
+        />
+      )}
+      {showDeployModal && (
+        <DeployModal
+          hosts={hosts}
+          snippets={snippets}
+          activeHostId={
+            dockerHostId ||
+            (terminalContext?.panes.find((p) => p.id === activePaneId)?.isLocal
+              ? '__local__'
+              : terminalContext?.panes.find((p) => p.id === activePaneId)?.hostId)
+          }
+          onOpenTerminalWithCommand={(targetHost, cmd, title) => {
+            setReturnToSettingsTab(null);
+            openTerminalWithCommand(targetHost, cmd, title);
+          }}
+          onClose={() => {
+            setShowDeployModal(false);
             handleReturnToSettings();
           }}
           toast={toast}

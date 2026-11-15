@@ -2,6 +2,7 @@
 
 mod ai_client;
 mod cloud_sync;
+mod deploy;
 mod docker;
 mod error;
 mod fs_guard;
@@ -372,6 +373,14 @@ pub fn run() {
             docker::docker_list_containers,
             docker::docker_container_action,
             docker::docker_container_logs,
+            // zero-downtime application deployment manager
+            deploy::deploy_profiles_list,
+            deploy::deploy_profile_save,
+            deploy::deploy_profile_delete,
+            deploy::deploy_list_releases,
+            deploy::deploy_run_release,
+            deploy::deploy_rollback,
+            deploy::deploy_delete_release,
             // pop-out terminal pane windows
             popout::popout_open_window,
             popout::popout_close_window,

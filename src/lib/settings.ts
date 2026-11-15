@@ -130,6 +130,7 @@ export interface UiPreferences {
   // UI Customization Toggles (Show / Hide features)
   showSerial: boolean;
   showDocker: boolean;
+  showDeploy: boolean;
   showAi: boolean;
   showSftp: boolean;
   showSnippets: boolean;
@@ -172,6 +173,7 @@ export interface UiPreferences {
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   showSerial: true,
   showDocker: true,
+  showDeploy: true,
   showAi: true,
   showSftp: true,
   showSnippets: true,

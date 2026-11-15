@@ -12,6 +12,7 @@ import {
   Minimize2,
   LayoutGrid,
   ArrowLeftRight,
+  Rocket,
 } from 'lucide-react';
 import { bridge, isTauri } from './lib/bridge';
 import { registry } from './lib/sessions';
@@ -277,6 +278,7 @@ export default function App() {
     return null;
   });
   const [showDockerModal, setShowDockerModal] = useState(false);
+  const [showDeployModal, setShowDeployModal] = useState(false);
   const [dockerHostId, setDockerHostId] = useState<string | null>(null);
   const [splitMenu, setSplitMenu] = useState<SplitMenuState | null>(null);
   const [userPresets, setUserPresets] = useState<LayoutPreset[]>(() => loadUserLayoutPresets());
@@ -2254,6 +2256,8 @@ export default function App() {
           setShowSerial={setShowSerial}
           showDockerModal={showDockerModal}
           setShowDockerModal={setShowDockerModal}
+          showDeployModal={showDeployModal}
+          setShowDeployModal={setShowDeployModal}
           setDockerHostId={setDockerHostId}
           terminalContext={terminalContext}
           activePaneId={activePaneId}
@@ -2312,9 +2316,32 @@ export default function App() {
           onOpenShareModal={() => setShareModal({ initialTab: 'share' })}
           onOpenImportModal={() => setShareModal({ initialTab: 'import' })}
           onOpenPairingModal={() => setShowPairing({ initialTab: 'share' })} theme={theme} />
-        <span className="text-xs text-slate-500">
-          {(() => { const n = activeVaultId === 'all' ? hosts.length : hosts.filter((h) => (h.vaultId || 'personal') === activeVaultId).length; return `${n} ${n === 1 ? 'profile' : 'profiles'}`; })()}
-        </span>
+        <div className="flex items-center gap-2.5">
+          {uiPrefs.showDeploy !== false && (
+            <button
+              type="button"
+              onClick={() => {
+                const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+                setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+                setShowDeployModal(true);
+              }}
+              aria-label="Application Deployment"
+              title="1-Click Atomic Application Deployment"
+              className="flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition active:scale-95"
+              style={{
+                borderColor: `${theme.accent}45`,
+                backgroundColor: `${theme.accent}16`,
+                color: theme.accent,
+              }}
+            >
+              <Rocket className="h-3.5 w-3.5" />
+              <span>Deploy</span>
+            </button>
+          )}
+          <span className="text-xs text-slate-500">
+            {(() => { const n = activeVaultId === 'all' ? hosts.length : hosts.filter((h) => (h.vaultId || 'personal') === activeVaultId).length; return `${n} ${n === 1 ? 'profile' : 'profiles'}`; })()}
+          </span>
+        </div>
       </div>}
 
       {/* Main App Body */}
@@ -2327,6 +2354,8 @@ export default function App() {
             setPanel={setPanel}
             showDockerModal={showDockerModal}
             setShowDockerModal={setShowDockerModal}
+            showDeployModal={showDeployModal}
+            setShowDeployModal={setShowDeployModal}
             setDockerHostId={setDockerHostId}
             terminalContext={terminalContext}
             activePaneId={activePaneId}
@@ -2384,6 +2413,7 @@ export default function App() {
           openTermuxPreset={openTermuxPreset}
           showDockerModal={showDockerModal}
           setShowDockerModal={setShowDockerModal}
+          setShowDeployModal={setShowDeployModal}
           hostFabsVisible={hostFabsVisible}
           setHostFabsVisible={setHostFabsVisible}
           handleQuickConnectSsh={handleQuickConnectSsh}
@@ -2725,7 +2755,7 @@ export default function App() {
       </aside>
       {toolDrawer === 'snippets' && (
         <DrawerShell drawer={drawer} label="Snippets drawer" background={drawerBg} accent={SNIPPET_TINT}>
-          <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} toast={toast}
+          <SnippetsPanel snippets={snippets} activePaneId={activePaneId} onSave={saveSnippet} onDelete={deleteSnippet} onOpenDeploy={() => setShowDeployModal(true)} toast={toast}
             drawer={{ accent: SNIPPET_TINT, onClose: drawer.requestClose }} />
         </DrawerShell>
       )}
@@ -2893,6 +2923,9 @@ export default function App() {
         setShowCloudSync={setShowCloudSync}
         showDockerModal={showDockerModal}
         setShowDockerModal={setShowDockerModal}
+        showDeployModal={showDeployModal}
+        setShowDeployModal={setShowDeployModal}
+        snippets={snippets}
         dockerHostId={dockerHostId}
         terminalContext={terminalContext}
         activePaneId={activePaneId}

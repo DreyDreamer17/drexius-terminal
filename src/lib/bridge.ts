@@ -49,6 +49,10 @@ import type {
   CloudCredentials,
   CloudInstance,
   CloudProviderId,
+  DeployProfile,
+  DeployReleaseState,
+  DeployRunRequest,
+  DeployRunResult,
   DockerContainer,
   TunnelConfig,
   Vault,
@@ -854,6 +858,256 @@ export const bridge = {
   async dockerContainerLogs(hostId: string, containerId: string, tail?: number): Promise<string> {
     if (isTauri) return invoke('docker_container_logs', { hostId, containerId, tail: tail ?? 200 });
     return `[2026-10-16 11:20:01] Starting service...\n[2026-10-16 11:20:02] Listening on 0.0.0.0\n[2026-10-16 11:20:05] Ready to accept connections.\n[2026-10-16 11:25:30] Received health check GET /healthz 200 OK`;
+  },
+
+  // ── Zero-Downtime Application Deployments (Issue #49) ──
+  async deployProfilesList(): Promise<DeployProfile[]> {
+    if (isTauri) return invoke('deploy_profiles_list');
+    try {
+      const raw = localStorage.getItem('drx.deploy.profiles.v1');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [
+      {
+        id: 'dp-laravel-prod',
+        name: 'Laravel Billing Portal',
+        hostId: 'h-prod',
+        preset: 'laravel',
+        repoUrl: 'https://github.com/acme/laravel-billing.git',
+        branch: 'main',
+        appDir: '/var/www/billing',
+        keepReleases: 2,
+        sharedFiles: ['.env'],
+        sharedDirs: ['storage'],
+        buildScript: [
+          '{{composer_bin}} install --no-dev --prefer-dist --no-interaction --optimize-autoloader',
+          '{{php_bin}} artisan storage:link || true',
+          '{{php_bin}} artisan config:cache',
+          '{{php_bin}} artisan route:cache',
+          '{{php_bin}} artisan view:cache',
+          '{{php_bin}} artisan migrate --force',
+        ].join('\n'),
+        postSwapScript: [
+          '{{php_bin}} artisan queue:restart || true',
+          'sudo -n systemctl reload {{php_fpm_service}} 2>/dev/null || true',
+        ].join('\n'),
+        snippetIds: [],
+        variables: {
+          php_bin: 'php',
+          composer_bin: 'composer',
+          php_fpm_service: 'php8.3-fpm',
+        },
+        lastDeployedAt: Math.floor(Date.now() / 1000) - 3600,
+        lastReleaseId: '20261115_112000',
+      },
+    ];
+  },
+
+  async deployProfileSave(profile: DeployProfile): Promise<DeployProfile> {
+    if (isTauri) return invoke('deploy_profile_save', { profile });
+    const list = await this.deployProfilesList();
+    const saved: DeployProfile = {
+      ...profile,
+      id: profile.id || uid(),
+      keepReleases: Math.max(2, profile.keepReleases || 2),
+    };
+    const idx = list.findIndex((p) => p.id === saved.id);
+    if (idx >= 0) list[idx] = saved;
+    else list.push(saved);
+    try {
+      localStorage.setItem('drx.deploy.profiles.v1', JSON.stringify(list));
+    } catch {}
+    return saved;
+  },
+
+  async deployProfileDelete(id: string): Promise<void> {
+    if (isTauri) return invoke('deploy_profile_delete', { id });
+    const list = (await this.deployProfilesList()).filter((p) => p.id !== id);
+    try {
+      localStorage.setItem('drx.deploy.profiles.v1', JSON.stringify(list));
+    } catch {}
+  },
+
+  async deployListReleases(hostId: string, appDir: string): Promise<DeployReleaseState> {
+    if (isTauri) return invoke('deploy_list_releases', { hostId, appDir });
+    const key = `drx.deploy.releases.${hostId}.${appDir}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return {
+      appDir,
+      currentReleaseId: '20261115_112000',
+      previousReleaseId: '20261114_194510',
+      releases: [
+        {
+          id: '20261115_112000',
+          path: `${appDir}/releases/20261115_112000`,
+          isCurrent: true,
+          isPrevious: false,
+          commit: 'a84c21f',
+          branch: 'main',
+          subject: 'feat(checkout): add Stripe webhook signature retry',
+        },
+        {
+          id: '20261114_194510',
+          path: `${appDir}/releases/20261114_194510`,
+          isCurrent: false,
+          isPrevious: true,
+          commit: '71b09e2',
+          branch: 'main',
+          subject: 'fix(queue): increase Horizon worker timeout to 90s',
+        },
+      ],
+    };
+  },
+
+  async deployRunRelease(req: DeployRunRequest): Promise<DeployRunResult> {
+    if (isTauri) return invoke('deploy_run_release', { req });
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const releaseId = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}_${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+    const releaseDir = `${req.appDir}/releases/${releaseId}`;
+    const prev = await this.deployListReleases(req.hostId, req.appDir);
+    const updatedReleases = [
+      {
+        id: releaseId,
+        path: releaseDir,
+        isCurrent: true,
+        isPrevious: false,
+        commit: Math.random().toString(16).slice(2, 9),
+        branch: req.branch || 'main',
+        subject: `Deploy ${req.branch || 'main'} via Drexius Atomic Release`,
+      },
+      ...prev.releases.map((r, i) => ({
+        ...r,
+        isCurrent: false,
+        isPrevious: i === 0,
+      })),
+    ].slice(0, Math.max(2, req.keepReleases || 2));
+    const state: DeployReleaseState = {
+      appDir: req.appDir,
+      currentReleaseId: releaseId,
+      previousReleaseId: updatedReleases[1]?.id ?? null,
+      releases: updatedReleases,
+    };
+    try {
+      localStorage.setItem(`drx.deploy.releases.${req.hostId}.${req.appDir}`, JSON.stringify(state));
+    } catch {}
+    return {
+      success: true,
+      releaseId,
+      releaseDir,
+      steps: [
+        {
+          step: 'clone',
+          title: `Clone ${req.branch || 'main'} into releases/${releaseId}`,
+          status: 'ok',
+          output: `Cloning into '${releaseDir}'...\nHEAD is now at ${updatedReleases[0].commit}`,
+          durationMs: 620,
+        },
+        {
+          step: 'shared',
+          title: 'Link shared persistent files & directories',
+          status: 'ok',
+          output: `Linked ${req.sharedDirs.length} shared dir(s) and ${req.sharedFiles.length} shared file(s)`,
+          durationMs: 45,
+        },
+        {
+          step: 'build',
+          title: 'Run build scripts & user snippets',
+          status: 'ok',
+          output: 'Installing dependencies from lock file...\nConfiguration cached successfully.\nRoutes cached successfully.\nNothing to migrate.',
+          durationMs: 1410,
+        },
+        {
+          step: 'swap',
+          title: `Atomic symlink swap (current → releases/${releaseId})`,
+          status: 'ok',
+          output: `Swapped ${req.appDir}/current → ${releaseDir}`,
+          durationMs: 12,
+        },
+        {
+          step: 'cleanup',
+          title: `Retain last ${req.keepReleases} releases & prune older folders`,
+          status: 'ok',
+          output: `Retained active + previous release folders (<= ${req.keepReleases} total)`,
+          durationMs: 28,
+        },
+      ],
+      state,
+      error: null,
+    };
+  },
+
+  async deployRollback(
+    hostId: string,
+    appDir: string,
+    targetReleaseId?: string | null,
+    postSwapScript?: string | null
+  ): Promise<DeployRunResult> {
+    if (isTauri) {
+      return invoke('deploy_rollback', {
+        hostId,
+        appDir,
+        targetReleaseId: targetReleaseId ?? null,
+        postSwapScript: postSwapScript ?? null,
+      });
+    }
+    const prev = await this.deployListReleases(hostId, appDir);
+    const targetId = targetReleaseId || prev.previousReleaseId || prev.releases[1]?.id;
+    if (!targetId) {
+      throw { code: 'NO_PREV_RELEASE', message: 'No previous release folder available to roll back to.' };
+    }
+    const targetIdx = prev.releases.findIndex((r) => r.id === targetId);
+    const nextPrevId = prev.releases[targetIdx + 1]?.id ?? prev.releases.find((r) => r.id !== targetId)?.id ?? null;
+    const state: DeployReleaseState = {
+      appDir,
+      currentReleaseId: targetId,
+      previousReleaseId: nextPrevId,
+      releases: prev.releases.map((r) => ({
+        ...r,
+        isCurrent: r.id === targetId,
+        isPrevious: r.id === nextPrevId,
+      })),
+    };
+    try {
+      localStorage.setItem(`drx.deploy.releases.${hostId}.${appDir}`, JSON.stringify(state));
+    } catch {}
+    return {
+      success: true,
+      releaseId: targetId,
+      releaseDir: `${appDir}/releases/${targetId}`,
+      steps: [
+        {
+          step: 'rollback',
+          title: `Atomic rollback (current → releases/${targetId})`,
+          status: 'ok',
+          output: `Rolled back current symlink to releases/${targetId}`,
+          durationMs: 9,
+        },
+      ],
+      state,
+      error: null,
+    };
+  },
+
+  async deployDeleteRelease(
+    hostId: string,
+    appDir: string,
+    releaseId: string
+  ): Promise<DeployReleaseState> {
+    if (isTauri) return invoke('deploy_delete_release', { hostId, appDir, releaseId });
+    const prev = await this.deployListReleases(hostId, appDir);
+    const filtered = prev.releases.filter((r) => r.id !== releaseId);
+    const state: DeployReleaseState = {
+      ...prev,
+      releases: filtered,
+    };
+    try {
+      localStorage.setItem(`drx.deploy.releases.${hostId}.${appDir}`, JSON.stringify(state));
+    } catch {}
+    return state;
   },
 
   // ── Snippets ──

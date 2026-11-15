@@ -12,6 +12,7 @@ import {
   PanelBottom,
   QrCode,
   Radio,
+  Rocket,
   RotateCcw,
   ShieldCheck,
   Sparkles,
@@ -140,6 +141,39 @@ export function GeneralAndTerminalTab({
               <ToggleSwitch
                 checked={uiPrefs.showDocker}
                 onChange={(val) => updatePref('showDocker', val)}
+                accentColor={accentColor}
+              />
+            </div>
+
+            {/* Application Deployment Toggle */}
+            <div
+              onClick={() => updatePref('showDeploy', !uiPrefs.showDeploy)}
+              className={cn(
+                'flex items-center justify-between gap-3.5 rounded-xl border p-3.5 cursor-pointer transition select-none',
+                uiPrefs.showDeploy
+                  ? 'border-white/15 bg-white/[0.04] hover:bg-white/[0.06] hover:border-white/20'
+                  : 'border-white/5 bg-white/[0.015] hover:bg-white/[0.03] opacity-65 hover:opacity-85'
+              )}
+            >
+              <div className="flex items-start gap-3 min-w-0 flex-1">
+                <div
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5 transition"
+                  style={{
+                    backgroundColor: uiPrefs.showDeploy ? `${accentColor}18` : 'rgba(255,255,255,0.03)',
+                  }}
+                >
+                  <Rocket className="h-4 w-4 text-emerald-400" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-white">Application Deployment</div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    1-Click zero-downtime Git release &amp; rollback runner in top bar and rail
+                  </p>
+                </div>
+              </div>
+              <ToggleSwitch
+                checked={uiPrefs.showDeploy}
+                onChange={(val) => updatePref('showDeploy', val)}
                 accentColor={accentColor}
               />
             </div>

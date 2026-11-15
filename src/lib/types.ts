@@ -144,6 +144,75 @@ export interface DockerContainer {
   command: string;
 }
 
+export type DeployPresetKind = 'laravel' | 'nodejs' | 'static' | 'docker' | 'custom';
+
+export interface DeployProfile {
+  id: string;
+  name: string;
+  hostId: string;
+  preset: DeployPresetKind;
+  repoUrl: string;
+  branch: string;
+  appDir: string;
+  keepReleases: number;
+  sharedFiles: string[];
+  sharedDirs: string[];
+  buildScript: string;
+  postSwapScript: string;
+  snippetIds: string[];
+  variables: Record<string, string>;
+  lastDeployedAt?: number | null;
+  lastReleaseId?: string | null;
+}
+
+export interface DeployReleaseItem {
+  id: string;
+  path: string;
+  isCurrent: boolean;
+  isPrevious: boolean;
+  commit: string;
+  branch: string;
+  subject: string;
+}
+
+export interface DeployReleaseState {
+  appDir: string;
+  currentReleaseId?: string | null;
+  previousReleaseId?: string | null;
+  releases: DeployReleaseItem[];
+}
+
+export interface DeployStepLog {
+  step: string;
+  title: string;
+  status: 'ok' | 'error' | 'skipped' | string;
+  output: string;
+  durationMs: number;
+}
+
+export interface DeployRunRequest {
+  hostId: string;
+  repoUrl: string;
+  branch: string;
+  appDir: string;
+  keepReleases: number;
+  sharedFiles: string[];
+  sharedDirs: string[];
+  buildScript: string;
+  postSwapScript: string;
+  variables: Record<string, string>;
+  profileId?: string | null;
+}
+
+export interface DeployRunResult {
+  success: boolean;
+  releaseId: string;
+  releaseDir: string;
+  steps: DeployStepLog[];
+  state?: DeployReleaseState | null;
+  error?: string | null;
+}
+
 /** Input for generating a key pair. There is deliberately no private-key
  *  field: `keychain_generate_and_save` generates *and* stores the key in Rust,
  *  so raw key material never crosses the IPC boundary. */

@@ -26,6 +26,7 @@ import {
   Plus,
   QrCode,
   Radio,
+  Rocket,
   Rows2,
   Search,
   Server,
@@ -104,6 +105,8 @@ export interface WorkspaceHeaderProps {
   setShowSerial: Dispatch<SetStateAction<boolean>>;
   showDockerModal: boolean;
   setShowDockerModal: Dispatch<SetStateAction<boolean>>;
+  showDeployModal: boolean;
+  setShowDeployModal: Dispatch<SetStateAction<boolean>>;
   setDockerHostId: Dispatch<SetStateAction<string | null>>;
   terminalContext: Tab | undefined | null;
   activePaneId: string | null;
@@ -181,6 +184,8 @@ export function WorkspaceHeader({
   setShowSerial,
   showDockerModal,
   setShowDockerModal,
+  showDeployModal,
+  setShowDeployModal,
   setDockerHostId,
   terminalContext,
   activePaneId,
@@ -475,6 +480,25 @@ export function WorkspaceHeader({
               <Boxes className="h-3.5 w-3.5 text-cyan-400" />
             )}
             <span className="hidden sm:inline">{showDockerModal ? 'Opening…' : 'Docker'}</span>
+          </button>
+        )}
+        {uiPrefs.showDeploy && (
+          <button
+            onClick={() => {
+              const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+              setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+              setShowDeployModal(true);
+            }}
+            title="1-Click Atomic Application Deployment"
+            className={cn(
+              'flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs transition',
+              showDeployModal
+                ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/40 shadow-[0_0_10px_rgba(52,211,153,0.25)]'
+                : 'text-slate-400 hover:bg-white/10 hover:text-emerald-300'
+            )}
+          >
+            <Rocket className="h-3.5 w-3.5 text-emerald-400" />
+            <span className="hidden sm:inline">Deploy</span>
           </button>
         )}
         {activeTab && (activeTab.panes.length === 1 || (maximizedPaneId !== null && activeTab.id === activeTabId)) && (
@@ -982,6 +1006,8 @@ export interface WorkspaceSidebarRailProps {
   setPanel: Dispatch<SetStateAction<WorkspacePanelKind | null>>;
   showDockerModal: boolean;
   setShowDockerModal: Dispatch<SetStateAction<boolean>>;
+  showDeployModal: boolean;
+  setShowDeployModal: Dispatch<SetStateAction<boolean>>;
   setDockerHostId: Dispatch<SetStateAction<string | null>>;
   terminalContext: Tab | undefined | null;
   activePaneId: string | null;
@@ -1007,6 +1033,8 @@ export function WorkspaceSidebarRail({
   setPanel,
   showDockerModal,
   setShowDockerModal,
+  showDeployModal,
+  setShowDeployModal,
   setDockerHostId,
   terminalContext,
   activePaneId,
@@ -1079,6 +1107,21 @@ export function WorkspaceSidebarRail({
             label: 'Snippets',
             on: panel === 'snippets',
             act: () => setPanel((p) => (p === 'snippets' ? null : 'snippets')),
+          },
+        ]
+      : []),
+    ...(uiPrefs.showDeploy
+      ? [
+          {
+            id: 'deploy',
+            icon: Rocket,
+            label: 'Application Deployment (1-Click Release)',
+            on: showDeployModal,
+            act: () => {
+              const activeP = terminalContext?.panes.find((p) => p.id === activePaneId);
+              setDockerHostId(activeP?.isLocal ? '__local__' : activeP?.hostId ?? null);
+              setShowDeployModal((v) => !v);
+            },
           },
         ]
       : []),
@@ -1374,6 +1417,7 @@ export interface WorkspaceSidePanelProps {
   openTermuxPreset: () => Promise<void> | void;
   showDockerModal: boolean;
   setShowDockerModal: Dispatch<SetStateAction<boolean>>;
+  setShowDeployModal: Dispatch<SetStateAction<boolean>>;
   hostFabsVisible: boolean;
   setHostFabsVisible: Dispatch<SetStateAction<boolean>>;
   handleQuickConnectSsh: (target: { username: string; hostname: string; port: number }) => void;
@@ -1425,6 +1469,7 @@ export function WorkspaceSidePanel({
   openTermuxPreset,
   showDockerModal,
   setShowDockerModal,
+  setShowDeployModal,
   hostFabsVisible,
   setHostFabsVisible,
   handleQuickConnectSsh,
@@ -1573,6 +1618,10 @@ export function WorkspaceSidePanel({
                   activePaneId={activePaneId}
                   onSave={saveSnippet}
                   onDelete={deleteSnippet}
+                  onOpenDeploy={() => {
+                    setPanel(null);
+                    setShowDeployModal(true);
+                  }}
                   toast={toast}
                 />
               )}
