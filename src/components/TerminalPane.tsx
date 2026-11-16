@@ -2286,6 +2286,24 @@ export const TerminalPane = memo(function TerminalPane({
         return false;
       }
 
+      // Allow tab-switching shortcuts (Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+PageUp/PageDown / Ctrl+1..9)
+      // to bubble to the workspace handler without leaking escape/tab chars into the shell.
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        e.type === 'keydown' &&
+        (e.key === 'Tab' ||
+          e.key === 'ISO_Left_Tab' ||
+          e.code === 'Tab' ||
+          (!e.shiftKey &&
+            (['PageUp', 'PageDown'].includes(e.key) ||
+              ['PageUp', 'PageDown'].includes(e.code) ||
+              /^Digit[1-9]$/.test(e.code) ||
+              /^[1-9]$/.test(e.key))))
+      ) {
+        return false;
+      }
+
       // Prevent xterm from sending control sequences on workspace shift shortcuts
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && ['i', 'd', 'e', 'a', 'f', 'z', 'b', 'k', '/', 'w', 'p', 'm', 'l', 's', 'n', 'o', 't'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
         return false;

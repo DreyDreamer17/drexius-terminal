@@ -63,6 +63,8 @@ export function ShortcutsSettingsTab({
     let keyPart = e.key;
     if (keyPart === ' ') {
       keyPart = 'Space';
+    } else if (keyPart === 'ISO_Left_Tab') {
+      keyPart = 'Tab';
     } else if (keyPart.startsWith('Arrow')) {
       // Keep ArrowLeft, ArrowRight, ArrowUp, ArrowDown
     } else if (e.code && e.code.startsWith('Key')) {

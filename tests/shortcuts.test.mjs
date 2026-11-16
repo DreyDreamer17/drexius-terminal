@@ -235,6 +235,34 @@ test('Cmd+T and Cmd+W tab shortcuts match and respect reserved built-ins', () =>
 
   // Ctrl+Shift+T is reserved as the built-in alternate for Duplicate / new tab
   assert.match(findShortcutConflict(DEFAULT_SHORTCUTS, 'toggle_zen', 'Ctrl+Shift+T'), /Duplicate \/ new tab \(alternate\)/);
+
+  // Open tab switching shortcuts are present, rebindable, and support Ctrl+Tab / Shift+Tab / ISO_Left_Tab / PageUp / PageDown
+  assert.equal(DEFAULT_SHORTCUTS.next_tab.keys, 'Ctrl+Tab');
+  assert.equal(DEFAULT_SHORTCUTS.prev_tab.keys, 'Ctrl+Shift+Tab');
+  assert.equal(DEFAULT_SHORTCUTS.next_tab.category, 'Splits & Navigation');
+  assert.equal(DEFAULT_SHORTCUTS.prev_tab.category, 'Splits & Navigation');
+  assert.equal(
+    bindingMatches(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true }), DEFAULT_SHORTCUTS.next_tab, 'Ctrl+Tab'),
+    true
+  );
+  assert.equal(
+    bindingMatches(
+      keyEvent({ key: 'ISO_Left_Tab', code: 'Tab', ctrlKey: true, shiftKey: true }),
+      DEFAULT_SHORTCUTS.prev_tab,
+      'Ctrl+Shift+Tab'
+    ),
+    true
+  );
+  assert.equal(
+    matchesShortcut(keyEvent({ key: 'PageDown', code: 'PageDown', ctrlKey: true }), 'Ctrl+PageDown'),
+    true
+  );
+  assert.equal(
+    matchesShortcut(keyEvent({ key: 'PageUp', code: 'PageUp', ctrlKey: true }), 'Ctrl+PageUp'),
+    true
+  );
+  assert.match(findShortcutConflict(DEFAULT_SHORTCUTS, 'toggle_zen', 'Ctrl+1'), /Jump to open tab \(built-in\)/);
+  assert.match(findShortcutConflict(DEFAULT_SHORTCUTS, 'toggle_zen', 'Ctrl+9'), /Jump to open tab \(built-in\)/);
 });
 
 test('canvas styling and wallpaper preferences round-trip in UI preferences', () => {

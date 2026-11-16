@@ -363,6 +363,20 @@ export const DEFAULT_SHORTCUTS: Record<string, ShortcutBinding> = {
     keys: 'Ctrl+[',
     description: 'Cycle focus backward through active split panes',
   },
+  next_tab: {
+    id: 'next_tab',
+    label: 'Next Open Tab',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Tab',
+    description: 'Switch forward through open tabs (also Ctrl+PageDown)',
+  },
+  prev_tab: {
+    id: 'prev_tab',
+    label: 'Previous Open Tab',
+    category: 'Splits & Navigation',
+    keys: 'Ctrl+Shift+Tab',
+    description: 'Switch backward through open tabs (also Ctrl+PageUp)',
+  },
   open_settings: {
     id: 'open_settings',
     label: 'Open Settings',
@@ -581,6 +595,12 @@ export const BUILTIN_SHORTCUTS: BuiltinShortcut[] = [
     description: 'Show or hide the status bar along the bottom',
     keys: ['Ctrl+/'],
   },
+  {
+    label: 'Jump to open tab',
+    description: 'Switch directly to open tabs 1–8, or the last tab with Ctrl+9',
+    keys: ['Ctrl+1 – Ctrl+9'],
+    reserved: ['Ctrl+1', 'Ctrl+2', 'Ctrl+3', 'Ctrl+4', 'Ctrl+5', 'Ctrl+6', 'Ctrl+7', 'Ctrl+8', 'Ctrl+9'],
+  },
 ];
 
 /** Every reserved combination mapped to the built-in it belongs to. */
@@ -717,6 +737,9 @@ export function matchesShortcut(e: KeyboardEvent, shortcutKey: string): boolean 
   if (targetKey === 'arrowright' && (eventKey === 'arrowright' || eventKey === 'right')) return true;
   if (targetKey === 'arrowup' && (eventKey === 'arrowup' || eventKey === 'up')) return true;
   if (targetKey === 'arrowdown' && (eventKey === 'arrowdown' || eventKey === 'down')) return true;
+  if (targetKey === 'tab' && (eventKey === 'tab' || eventKey === 'iso_left_tab' || e.code?.toLowerCase() === 'tab')) return true;
+  if (targetKey === 'pageup' && (eventKey === 'pageup' || e.code?.toLowerCase() === 'pageup')) return true;
+  if (targetKey === 'pagedown' && (eventKey === 'pagedown' || e.code?.toLowerCase() === 'pagedown')) return true;
   if ((targetKey === 'space' || targetKey === ' ') && eventKey === ' ') return true;
 
   return false;

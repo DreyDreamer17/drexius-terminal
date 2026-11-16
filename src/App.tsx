@@ -1311,6 +1311,29 @@ export default function App() {
     if (next) focusPaneInTab(activeTab.id, next);
   }, [activeTab, focusPaneInTab, visualPaneOrder]);
 
+  /** Cycle forward/backward through open workspace tabs. */
+  const cycleTab = useCallback(
+    (step: 1 | -1) => {
+      if (!unlocked || showSplash || isPopoutWindow || tabs.length <= 1) return;
+      const idx = tabs.findIndex((t) => t.id === activeTabId);
+      const nextIdx = idx === -1 ? 0 : (idx + step + tabs.length) % tabs.length;
+      const nextTab = tabs[nextIdx];
+      if (nextTab) setActiveTabId(nextTab.id);
+    },
+    [unlocked, showSplash, isPopoutWindow, tabs, activeTabId]
+  );
+
+  /** Jump directly to open tab 1–8, or to the last open tab on 9. */
+  const selectTabByNumber = useCallback(
+    (tabNumber: number) => {
+      if (!unlocked || showSplash || isPopoutWindow || tabs.length === 0) return;
+      const targetIdx = tabNumber === 9 ? tabs.length - 1 : tabNumber - 1;
+      const targetTab = tabs[targetIdx];
+      if (targetTab) setActiveTabId(targetTab.id);
+    },
+    [unlocked, showSplash, isPopoutWindow, tabs]
+  );
+
   const swapPanes = useCallback(
     (tabId: string, paneIdA: string, paneIdB: string) => {
       if (paneIdA === paneIdB) return;
@@ -2048,6 +2071,8 @@ export default function App() {
     navigateSplitDirection,
     swapSplitDirection,
     cyclePane,
+    cycleTab,
+    selectTabByNumber,
     splitPaneInDirection,
     equalizeActiveTab,
     closePane,

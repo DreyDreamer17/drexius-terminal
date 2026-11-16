@@ -6,6 +6,7 @@ import {
   bindingMatches,
   DEFAULT_TERMINAL_FONT_SIZE,
   isShortcutUnbound,
+  matchesShortcut,
   normalizeCombo,
   type ShortcutBinding,
 } from '../lib/settings';
@@ -60,6 +61,8 @@ export interface UseWorkspaceShortcutsParams {
   navigateSplitDirection: (dir: 'left' | 'right' | 'up' | 'down') => void;
   swapSplitDirection: (dir: 'left' | 'right' | 'up' | 'down') => void;
   cyclePane: (delta: 1 | -1) => void;
+  cycleTab: (delta: 1 | -1) => void;
+  selectTabByNumber: (tabNumber: number) => void;
   splitPaneInDirection: (direction: SplitDirection, targetHost?: Host, fromPaneId?: string) => void;
   equalizeActiveTab: () => void;
   closePane: (tabId: string, paneId: string) => void;
@@ -120,6 +123,8 @@ export function useWorkspaceShortcuts({
   navigateSplitDirection,
   swapSplitDirection,
   cyclePane,
+  cycleTab,
+  selectTabByNumber,
   splitPaneInDirection,
   equalizeActiveTab,
   closePane,
@@ -312,6 +317,47 @@ export function useWorkspaceShortcuts({
           e.preventDefault();
           e.stopPropagation();
           cyclePane(-1);
+          return;
+        }
+      }
+
+      // ── Next / Previous Open Tab (Ctrl+Tab / Ctrl+Shift+Tab, or Ctrl+PageDown / Ctrl+PageUp) ──
+      const nextTabAtDefault =
+        normalizeCombo(shortcuts.next_tab?.keys ?? 'Ctrl+Tab') === normalizeCombo('Ctrl+Tab');
+      if (
+        bindingMatches(e, shortcuts.next_tab, 'Ctrl+Tab') ||
+        (nextTabAtDefault && matchesShortcut(e, 'Ctrl+PageDown'))
+      ) {
+        if (!isPopoutWindow) {
+          e.preventDefault();
+          e.stopPropagation();
+          cycleTab(1);
+          return;
+        }
+      }
+      const prevTabAtDefault =
+        normalizeCombo(shortcuts.prev_tab?.keys ?? 'Ctrl+Shift+Tab') === normalizeCombo('Ctrl+Shift+Tab');
+      if (
+        bindingMatches(e, shortcuts.prev_tab, 'Ctrl+Shift+Tab') ||
+        (prevTabAtDefault && matchesShortcut(e, 'Ctrl+PageUp'))
+      ) {
+        if (!isPopoutWindow) {
+          e.preventDefault();
+          e.stopPropagation();
+          cycleTab(-1);
+          return;
+        }
+      }
+
+      // ── Direct Jump to Tab 1–9 (Ctrl/Cmd+1..9) ──
+      if (!isPopoutWindow && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && tabs.length > 0) {
+        const codeMatch = /^Digit([1-9])$/.exec(e.code || '');
+        const keyMatch = /^[1-9]$/.exec(e.key || '');
+        const digit = codeMatch?.[1] ?? keyMatch?.[1];
+        if (digit) {
+          e.preventDefault();
+          e.stopPropagation();
+          selectTabByNumber(Number(digit));
           return;
         }
       }
@@ -546,6 +592,8 @@ export function useWorkspaceShortcuts({
     navigateSplitDirection,
     swapSplitDirection,
     cyclePane,
+    cycleTab,
+    selectTabByNumber,
     splitPaneInDirection,
     equalizeActiveTab,
     closePane,
