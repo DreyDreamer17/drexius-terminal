@@ -2603,7 +2603,7 @@ export default function App() {
                           ghostSuggestions={uiPrefs.ghostSuggestions}
                           copyOnSelect={uiPrefs.copyOnSelect}
                           rightClickPaste={uiPrefs.rightClickPaste}
-                          active={t.id === activeTabId && t.activePaneId === p.id && (!mobile || (mobilePage === 'terminals' && unlocked))}
+                          active={t.id === activeTabId && t.activePaneId === p.id && unlocked && !showSplash && (!mobile || mobilePage === 'terminals')}
                           mobileHidden={t.activePaneId !== p.id}
                           hidden={isPaneHidden}
                           showHeader={isSplit && !currentTabMaximized && !mobile}

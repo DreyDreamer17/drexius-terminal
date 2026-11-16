@@ -66,6 +66,7 @@ import { parseOsFromBanner } from '../lib/os';
 import { PortStreamDetector, type DetectedPort } from '../lib/portDetector';
 import { registry } from '../lib/sessions';
 import { resolveTerminalFontFamily } from '../lib/settings';
+import { canAutoFocusTerminal, forceTerminalRenderSync } from '../lib/terminalRenderer';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import { hexToRgba, type DrexiusTheme } from '../lib/themes';
@@ -428,8 +429,19 @@ export const TerminalPane = memo(function TerminalPane({
   const pendingSize = useRef<{ cols: number; rows: number } | null>(null);
   const lastSentSize = useRef<{ cols: number; rows: number }>({ cols: 0, rows: 0 });
   const resizeScheduled = useRef(false);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const mobileRef = useRef(false);
   const hiddenRef = useRef(hidden);
   hiddenRef.current = hidden;
+  const syncRafRef = useRef<number | null>(null);
+  const syncTimerRef = useRef<number | null>(null);
+  const pendingSyncRef = useRef<{ clearAtlas: boolean; forceResize: boolean; focusIfActive: boolean }>({
+    clearAtlas: false,
+    forceResize: false,
+    focusIfActive: false,
+  });
+  const needsPostConnectSyncRef = useRef(false);
   const copyOnSelectRef = useRef(copyOnSelect);
   copyOnSelectRef.current = copyOnSelect;
   const rightClickPasteRef = useRef(rightClickPaste);
@@ -447,17 +459,120 @@ export const TerminalPane = memo(function TerminalPane({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [contextMenu]);
 
-  const refreshTerminal = useCallback(() => {
-    if (hiddenRef.current) return;
-    const el = elRef.current;
-    if (!termRef.current || !el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
-    try {
-      fitRef.current?.fit();
-    } catch {}
-    try {
-      termRef.current.refresh(0, Math.max(0, (termRef.current.rows || 1) - 1));
-    } catch {}
+  const detachLostWebgl = useCallback(() => {
+    const webgl = webglRef.current;
+    if (!webgl) return;
+    console.warn('WebGL context lost; terminal switched to the DOM renderer');
+    webglRef.current = null;
+    window.setTimeout(() => {
+      try {
+        webgl.dispose();
+      } catch {
+        /* already disposed */
+      }
+      if (!hiddenRef.current && termRef.current) {
+        try {
+          forceTerminalRenderSync({
+            term: termRef.current,
+            fit: fitRef.current,
+            el: elRef.current,
+            hidden: hiddenRef.current,
+            clearAtlas: false,
+            forceResize: true,
+            isWebglActive: false,
+          });
+        } catch {}
+      }
+    }, 0);
   }, []);
+
+  const attachWebglAddon = useCallback(
+    (term: Terminal) => {
+      if (webglRef.current) return true;
+      try {
+        const webgl = new WebglAddon();
+        webglRef.current = webgl;
+        webgl.onContextLoss(detachLostWebgl);
+        term.loadAddon(webgl);
+        return true;
+      } catch (err) {
+        console.warn('WebGL renderer unavailable, using DOM renderer:', err);
+        webglRef.current = null;
+        return false;
+      }
+    },
+    [detachLostWebgl]
+  );
+
+  const refreshTerminal = useCallback(
+    (opts?: { clearAtlas?: boolean; forceResize?: boolean; focusIfActive?: boolean }) => {
+      const clearAtlas = opts?.clearAtlas ?? false;
+      const forceResize = opts?.forceResize ?? true;
+      const result = forceTerminalRenderSync({
+        term: termRef.current,
+        fit: fitRef.current,
+        el: elRef.current,
+        hidden: hiddenRef.current,
+        clearAtlas,
+        forceResize,
+        isWebglActive: Boolean(webglRef.current),
+        onWebglContextLost: detachLostWebgl,
+      });
+      const term = termRef.current;
+      if (
+        opts?.focusIfActive &&
+        result.synced &&
+        term &&
+        activeRef.current &&
+        !mobileRef.current &&
+        !hiddenRef.current &&
+        canAutoFocusTerminal(document.activeElement as HTMLElement | null, term.textarea)
+      ) {
+        try {
+          term.focus();
+        } catch {}
+      }
+      return result;
+    },
+    [detachLostWebgl]
+  );
+
+  const scheduleRenderSync = useCallback(
+    (opts?: { clearAtlas?: boolean; forceResize?: boolean; focusIfActive?: boolean; settledMs?: number }) => {
+      if (opts?.clearAtlas) pendingSyncRef.current.clearAtlas = true;
+      if (opts?.forceResize ?? true) pendingSyncRef.current.forceResize = true;
+      if (opts?.focusIfActive) pendingSyncRef.current.focusIfActive = true;
+
+      if (syncRafRef.current === null) {
+        syncRafRef.current = requestAnimationFrame(() => {
+          syncRafRef.current = null;
+          const pending = pendingSyncRef.current;
+          pendingSyncRef.current = { clearAtlas: false, forceResize: false, focusIfActive: false };
+          refreshTerminal(pending);
+        });
+      }
+
+      if (opts?.settledMs && opts.settledMs > 0) {
+        if (syncTimerRef.current !== null) window.clearTimeout(syncTimerRef.current);
+        const clearAtlas = Boolean(opts.clearAtlas);
+        const focusIfActive = Boolean(opts.focusIfActive);
+        syncTimerRef.current = window.setTimeout(() => {
+          syncTimerRef.current = null;
+          refreshTerminal({
+            clearAtlas,
+            forceResize: true,
+            focusIfActive,
+          });
+        }, opts.settledMs);
+      }
+    },
+    [refreshTerminal]
+  );
+
+  const refreshTerminalRef = useRef(refreshTerminal);
+  refreshTerminalRef.current = refreshTerminal;
+  const scheduleRenderSyncRef = useRef(scheduleRenderSync);
+  scheduleRenderSyncRef.current = scheduleRenderSync;
 
   // Command & Clipboard history + Autosuggestion states
   const historyCacheRef = useRef<string[]>([]);
@@ -1102,6 +1217,7 @@ export const TerminalPane = memo(function TerminalPane({
   hostRef.current = host;
 
   const mobile = useMobile();
+  mobileRef.current = mobile;
   const [modifiers, setModifiers] = useState<TerminalModifiers>({ ctrl: false, alt: false });
   const modifiersRef = useRef(modifiers);
 
@@ -1147,6 +1263,20 @@ export const TerminalPane = memo(function TerminalPane({
       setError(null);
       setCountdown(null);
       update({ status: 'connecting' });
+      needsPostConnectSyncRef.current = true;
+
+      const syncConnectedPane = (resizeFn?: () => void) => {
+        needsPostConnectSyncRef.current = true;
+        refreshTerminalRef.current({ forceResize: true, focusIfActive: true });
+        resizeFn?.();
+        scheduleRenderSyncRef.current({ forceResize: true, focusIfActive: true, settledMs: 140 });
+      };
+
+      const handlePostConnectOutput = () => {
+        if (!needsPostConnectSyncRef.current) return;
+        needsPostConnectSyncRef.current = false;
+        scheduleRenderSyncRef.current({ forceResize: true, settledMs: 120 });
+      };
 
       // Native Serial Port connection
       if (isSerial) {
@@ -1162,6 +1292,7 @@ export const TerminalPane = memo(function TerminalPane({
             switch (ev.type) {
               case 'output':
                 smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+                handlePostConnectOutput();
                 break;
               case 'cwd':
                 setCwd(ev.path);
@@ -1190,6 +1321,7 @@ export const TerminalPane = memo(function TerminalPane({
           retryRef.current = 0;
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
+          syncConnectedPane();
           // Serial ports have no terminal resize — skip resize()
         } catch (e) {
           if (dead()) return;
@@ -1213,6 +1345,7 @@ export const TerminalPane = memo(function TerminalPane({
           switch (ev.type) {
             case 'output':
               smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+              handlePostConnectOutput();
               if (!suppressLocalBanner) {
                 const found = portDetectorRef.current.feed(ev.data);
                 if (found.length > 0) handleDetectedPorts(found);
@@ -1230,6 +1363,7 @@ export const TerminalPane = memo(function TerminalPane({
                 term.write(`\x1b[32m✔ Local shell session started\x1b[0m\r\n`);
               }
               window.setTimeout(syncLocalCwd, 100);
+              scheduleRenderSyncRef.current({ forceResize: true, focusIfActive: true });
               break;
             case 'disconnected':
               sessionRef.current = null;
@@ -1264,18 +1398,9 @@ export const TerminalPane = memo(function TerminalPane({
             setStatus('connected');
             update({ status: 'connected', sessionId: existingLocalSid });
             window.setTimeout(syncLocalCwd, 100);
-            refreshTerminal();
-            if (term.cols && term.rows) {
-              scheduleResize(term.cols, term.rows);
-            }
-            requestAnimationFrame(() => {
-              if (dead()) return;
-              refreshTerminal();
+            syncConnectedPane(() => {
               if (term.cols && term.rows) {
                 scheduleResize(term.cols, term.rows);
-              }
-              if (active && !mobile) {
-                term.focus();
               }
             });
             return;
@@ -1301,9 +1426,11 @@ export const TerminalPane = memo(function TerminalPane({
           setStatus('connected');
           update({ status: 'connected', sessionId: sid });
           window.setTimeout(syncLocalCwd, 100);
-          if (term.cols && term.rows) {
-            bridge.resizeLocalPty(sid, term.cols, term.rows, cw, ch);
-          }
+          syncConnectedPane(() => {
+            if (term.cols && term.rows) {
+              bridge.resizeLocalPty(sid, term.cols, term.rows, cw, ch);
+            }
+          });
           const startup = startupInput(undefined, pane.startupCommand || host.startupCommand);
           if (startup) {
             setTimeout(() => {
@@ -1333,6 +1460,7 @@ export const TerminalPane = memo(function TerminalPane({
           switch (ev.type) {
             case 'output':
               smartWriterRef.current ? smartWriterRef.current.write(ev.data) : term.write(ev.data);
+              handlePostConnectOutput();
               if (!suppressConnectBanner) {
                 const found = portDetectorRef.current.feed(ev.data);
                 if (found.length > 0) handleDetectedPorts(found);
@@ -1359,6 +1487,7 @@ export const TerminalPane = memo(function TerminalPane({
               ) {
                 bridge.saveHost({ ...currentHost, os: detected }).then(() => onChange()).catch(() => {});
               }
+              scheduleRenderSyncRef.current({ forceResize: true, focusIfActive: true });
               break;
             }
             case 'disconnected':
@@ -1405,18 +1534,9 @@ export const TerminalPane = memo(function TerminalPane({
             retryRef.current = 0;
             setStatus('connected');
             update({ status: 'connected', sessionId: existingSshSid });
-            refreshTerminal();
-            if (term.cols && term.rows) {
-              scheduleResize(term.cols, term.rows);
-            }
-            requestAnimationFrame(() => {
-              if (dead()) return;
-              refreshTerminal();
+            syncConnectedPane(() => {
               if (term.cols && term.rows) {
                 scheduleResize(term.cols, term.rows);
-              }
-              if (active && !mobile) {
-                term.focus();
               }
             });
             return;
@@ -1447,10 +1567,12 @@ export const TerminalPane = memo(function TerminalPane({
         retryRef.current = 0;
         setStatus('connected');
         update({ status: 'connected', sessionId: sid });
-        if (term.cols && term.rows && (term.cols !== initCols || term.rows !== initRows)) {
-          lastSentSize.current = { cols: term.cols, rows: term.rows };
-          bridge.resize(sid, term.cols, term.rows);
-        }
+        syncConnectedPane(() => {
+          if (term.cols && term.rows && (term.cols !== initCols || term.rows !== initRows)) {
+            lastSentSize.current = { cols: term.cols, rows: term.rows };
+            bridge.resize(sid, term.cols, term.rows);
+          }
+        });
         const startup = startupInput(undefined, pane.startupCommand || host.startupCommand);
         if (startup) {
           setTimeout(() => {
@@ -1744,25 +1866,7 @@ export const TerminalPane = memo(function TerminalPane({
     // built-in DOM renderer: disposing the addon restores it automatically.
     // Note: @xterm/addon-canvas only supports xterm 5 and crashes on dispose under
     // xterm 6, so it must not be used as a fallback here.
-    try {
-      const webgl = new WebglAddon();
-      webglRef.current = webgl;
-      webgl.onContextLoss(() => {
-        console.warn('WebGL context lost; terminal switched to the DOM renderer');
-        webglRef.current = null;
-        setTimeout(() => {
-          try {
-            webgl.dispose();
-          } catch {
-            /* already disposed */
-          }
-        }, 0);
-      });
-      term.loadAddon(webgl);
-    } catch (err) {
-      console.warn('WebGL renderer unavailable, using DOM renderer:', err);
-      webglRef.current = null;
-    }
+    attachWebglAddon(term);
 
     const helperTextarea = term.textarea;
 
@@ -2047,16 +2151,28 @@ export const TerminalPane = memo(function TerminalPane({
 
     requestAnimationFrame(() => {
       try {
-        if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
+        const { synced } = refreshTerminalRef.current({ forceResize: true, focusIfActive: true });
+        if (synced && term.cols && term.rows) {
+          scheduleResize(term.cols, term.rows);
+        }
       } catch {
         /* hidden */
       }
     });
 
     if (document.fonts?.ready) {
+      const fontsWereLoading = document.fonts.status !== 'loaded';
       document.fonts.ready.then(() => {
         try {
-          if (elRef.current?.clientWidth && elRef.current.clientHeight) fit.fit();
+          const { synced } = refreshTerminalRef.current({ clearAtlas: fontsWereLoading, forceResize: true });
+          if (synced && fontsWereLoading) {
+            for (const live of registry.all()) {
+              if (live.paneId !== pane.id) live.refresh?.();
+            }
+          }
+          if (synced && term.cols && term.rows) {
+            scheduleResize(term.cols, term.rows);
+          }
         } catch {
           /* hidden */
         }
@@ -2446,11 +2562,7 @@ export const TerminalPane = memo(function TerminalPane({
       openHistory: () => openHistoryRef.current(),
       openClipboard: () => openClipboardRef.current(),
       refresh: () => {
-        if (hiddenRef.current) return;
-        const el = elRef.current;
-        if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
-        try { fit.fit(); } catch {}
-        try { term.refresh(0, Math.max(0, (term.rows || 1) - 1)); } catch {}
+        refreshTerminalRef.current({ forceResize: true });
       },
     });
 
@@ -2460,11 +2572,9 @@ export const TerminalPane = memo(function TerminalPane({
       roFrame = requestAnimationFrame(() => {
         roFrame = null;
         if (hiddenRef.current || document.visibilityState === 'hidden') return;
-        const el = elRef.current;
-        if (!el || !el.offsetParent || el.clientWidth < 40 || el.clientHeight < 40) return;
+        const { synced } = refreshTerminalRef.current({ clearAtlas: false, forceResize: true });
+        if (!synced) return;
         try {
-          fit.fit();
-          term.refresh(0, Math.max(0, (term.rows || 1) - 1));
           updateGhostPos();
           if (term.cols && term.rows) {
             scheduleResize(term.cols, term.rows);
@@ -2477,9 +2587,20 @@ export const TerminalPane = memo(function TerminalPane({
 
     const ro = new ResizeObserver(fitAndScheduleResize);
     ro.observe(elRef.current!);
-    const handleVisibilityFit = () => {
+    const handleSurfaceRestore = () => {
       if (document.visibilityState === 'visible') {
         fitAndScheduleResize();
+        scheduleRenderSyncRef.current({ forceResize: true, focusIfActive: true, settledMs: 120 });
+      }
+    };
+    const handleWindowFocus = () => {
+      if (document.visibilityState === 'visible' && !hiddenRef.current) {
+        refreshTerminalRef.current({ clearAtlas: false, forceResize: false });
+      }
+    };
+    const handleVisibilityFit = () => {
+      if (document.visibilityState === 'visible') {
+        handleSurfaceRestore();
         if (!isLocal && !isSerial && sessionRef.current) {
           const currentSid = sessionRef.current;
           bridge.listSshSessions().then((sessions) => {
@@ -2497,13 +2618,26 @@ export const TerminalPane = memo(function TerminalPane({
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityFit);
+    window.addEventListener('pageshow', handleSurfaceRestore);
+    window.addEventListener('focus', handleWindowFocus);
 
     connect(!!pane.resume);
 
     return () => {
       genRef.current += 1;
+      needsPostConnectSyncRef.current = false;
+      if (syncRafRef.current !== null) {
+        cancelAnimationFrame(syncRafRef.current);
+        syncRafRef.current = null;
+      }
+      if (syncTimerRef.current !== null) {
+        window.clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
       if (wheelHudTimer.current !== null) window.clearTimeout(wheelHudTimer.current);
       document.removeEventListener('visibilitychange', handleVisibilityFit);
+      window.removeEventListener('pageshow', handleSurfaceRestore);
+      window.removeEventListener('focus', handleWindowFocus);
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener, true);
       helperTextarea?.removeEventListener('compositionstart', handleCompositionStart as EventListener, true);
@@ -2584,30 +2718,12 @@ export const TerminalPane = memo(function TerminalPane({
       // WebglAddon with customGlyphs provides continuous, gapless box/block drawing
       // without horizontal or vertical streak lines across TUIs.
       if (!webglRef.current) {
-        try {
-          const webgl = new WebglAddon();
-          webglRef.current = webgl;
-          webgl.onContextLoss(() => {
-            console.warn('WebGL context lost; terminal switched to the DOM renderer');
-            webglRef.current = null;
-            setTimeout(() => {
-              try {
-                webgl.dispose();
-              } catch {}
-            }, 0);
-          });
-          termRef.current.loadAddon(webgl);
-        } catch (err) {
-          console.warn('WebGL renderer unavailable:', err);
-          webglRef.current = null;
-        }
+        attachWebglAddon(termRef.current);
       }
 
-      try {
-        termRef.current.refresh(0, Math.max(0, (termRef.current.rows || 1) - 1));
-      } catch {}
+      scheduleRenderSync({ forceResize: true });
     }
-  }, [theme, terminalOpacity, terminalWallpaper]);
+  }, [theme, terminalOpacity, terminalWallpaper, attachWebglAddon, scheduleRenderSync]);
 
   useEffect(() => {
     try {
@@ -2657,25 +2773,26 @@ export const TerminalPane = memo(function TerminalPane({
   }, [lineHeight]);
 
   useEffect(() => {
-    if (active && !mobile) termRef.current?.focus();
-    if (active && !hiddenRef.current) {
-      try {
-        if (elRef.current && elRef.current.offsetParent && elRef.current.clientWidth >= 40 && elRef.current.clientHeight >= 40) {
-          fitRef.current?.fit();
-        }
-      } catch {
-        /* hidden */
-      }
+    if (
+      active &&
+      !mobile &&
+      termRef.current &&
+      canAutoFocusTerminal(document.activeElement as HTMLElement | null, termRef.current.textarea)
+    ) {
+      termRef.current.focus();
     }
-  }, [active, mobile]);
+    if (active && !hiddenRef.current) {
+      scheduleRenderSync({ forceResize: true, focusIfActive: true, settledMs: 120 });
+    }
+  }, [active, mobile, scheduleRenderSync]);
 
   const prevHiddenRef = useRef(hidden);
   useEffect(() => {
     if (prevHiddenRef.current && !hidden) {
-      refreshTerminal();
+      scheduleRenderSync({ forceResize: true, focusIfActive: true, settledMs: 80 });
     }
     prevHiddenRef.current = hidden;
-  }, [hidden, refreshTerminal]);
+  }, [hidden, scheduleRenderSync]);
 
   // Handle Ctrl+F / Cmd+F for search inside active terminal
   useEffect(() => {
