@@ -565,7 +565,7 @@ export function SerialModal({ onClose, onConnect, theme }: Props) {
                 disabled={!effectivePort}
                 style={{
                   backgroundColor: accentColor,
-                  color: '#000000',
+                  color: 'var(--nx-accent-fg, #050810)',
                   boxShadow: `0 0 20px ${accentColor}35`,
                 }}
                 className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shadow-lg"

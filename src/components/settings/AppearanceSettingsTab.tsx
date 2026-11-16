@@ -57,6 +57,24 @@ export interface AppearanceSettingsTabProps {
   toast: (msg: string) => void;
 }
 
+/**
+ * Renders the Live Terminal Preview prompt using the theme's standard ANSI green/blue/foreground
+ * colors (matching real Linux bash/zsh prompts and demoShell) rather than the UI accent color.
+ */
+function PreviewPrompt({ theme }: { theme: DrexiusTheme }) {
+  const fg = theme.xterm.foreground || '#d6deeb';
+  const userHostColor = theme.xterm.brightGreen || theme.xterm.green || '#4ade80';
+  const dirColor = theme.xterm.brightBlue || theme.xterm.blue || '#60a5fa';
+  return (
+    <span className="font-bold shrink-0" style={{ color: fg }}>
+      <span style={{ color: userHostColor }}>nexus@drexius</span>
+      <span>:</span>
+      <span style={{ color: dirColor }}>~</span>
+      <span>$</span>
+    </span>
+  );
+}
+
 export function AppearanceSettingsTab({
   mobile,
   themeId,
@@ -811,10 +829,8 @@ export function AppearanceSettingsTab({
             }}
           >
             <div className="flex items-start gap-3">
-              <div style={{ color: accentColor }} className="font-bold shrink-0">
-                nexus@drexius:~$
-              </div>
-              <div className="text-white">neofetch --drexius</div>
+              <PreviewPrompt theme={activeTheme} />
+              <div>neofetch --drexius</div>
             </div>
             <div className="mt-1.5 space-y-0.5">
               <div className="flex items-center gap-2">
@@ -840,9 +856,7 @@ export function AppearanceSettingsTab({
             </div>
 
             <div className="mt-2.5 flex items-center gap-2">
-              <span style={{ color: accentColor }} className="font-bold shrink-0">
-                nexus@drexius:~$
-              </span>
+              <PreviewPrompt theme={activeTheme} />
               {uiPrefs.cursorStyle === 'bar' ? (
                 <span
                   className={cn('inline-block w-0.5 h-4', uiPrefs.cursorBlink && 'animate-pulse')}
@@ -1037,6 +1051,7 @@ export function AppearanceSettingsTab({
             return (
               <div
                 key={t.id}
+                data-theme-card={t.isLight ? 'light' : 'dark'}
                 onClick={() => onThemeSelect(t.id)}
                 className={cn(
                   'group flex flex-col text-left rounded-xl border p-2.5 transition relative overflow-hidden cursor-pointer',
@@ -1049,10 +1064,8 @@ export function AppearanceSettingsTab({
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span
-                      className={cn(
-                        'text-xs font-semibold truncate',
-                        t.isLight ? 'text-slate-900' : 'text-white'
-                      )}
+                      className="text-xs font-semibold truncate"
+                      style={{ color: t.isLight ? '#0f172a' : '#f8fafc' }}
                     >
                       {t.name}
                     </span>

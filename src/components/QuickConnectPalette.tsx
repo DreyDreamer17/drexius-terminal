@@ -102,7 +102,7 @@ export function QuickConnectPalette({
               e.currentTarget.style.boxShadow = `0 0 0 2px ${theme.accent}20`;
             }}
             onBlur={(e) => {
-              e.currentTarget.style.borderColor = quickFilter ? `${theme.accent}60` : 'rgba(255,255,255,0.1)';
+              e.currentTarget.style.borderColor = quickFilter ? `${theme.accent}60` : '';
               e.currentTarget.style.boxShadow = 'none';
             }}
           />

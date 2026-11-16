@@ -1280,11 +1280,11 @@ export function WorkspaceSidebarRail({
                       <span>Auto-Lock Timeout</span>
                     </span>
                     <span
-                      className="text-[9px] px-2 py-0.5 rounded-full border font-mono tracking-normal shadow-sm font-semibold"
+                      className="text-[9px] px-2 py-0.5 rounded-full border border-white/10 bg-white/5 font-mono tracking-normal shadow-sm font-semibold"
                       style={{
-                        color: autoLockMinutes > 0 ? theme.accent : '#94a3b8',
-                        backgroundColor: autoLockMinutes > 0 ? `${theme.accent}15` : 'rgba(255,255,255,0.05)',
-                        borderColor: autoLockMinutes > 0 ? `${theme.accent}30` : 'rgba(255,255,255,0.1)',
+                        color: autoLockMinutes > 0 ? theme.accent : '#64748b',
+                        backgroundColor: autoLockMinutes > 0 ? `${theme.accent}15` : undefined,
+                        borderColor: autoLockMinutes > 0 ? `${theme.accent}30` : undefined,
                       }}
                     >
                       {autoLockMinutes > 0 ? `${autoLockMinutes} min` : 'Off'}

@@ -706,7 +706,7 @@ export function VaultMenu({
                   className="rounded-xl px-4 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 shadow-lg disabled:opacity-50"
                   style={{
                     backgroundColor: accentColor,
-                    color: '#000000',
+                    color: 'var(--nx-accent-fg, #050810)',
                     boxShadow: `0 0 16px ${accentColor}35`,
                   }}
                 >

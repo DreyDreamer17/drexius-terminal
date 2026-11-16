@@ -66,10 +66,15 @@ import { parseOsFromBanner } from '../lib/os';
 import { PortStreamDetector, type DetectedPort } from '../lib/portDetector';
 import { registry } from '../lib/sessions';
 import { resolveTerminalFontFamily } from '../lib/settings';
-import { canAutoFocusTerminal, forceTerminalRenderSync } from '../lib/terminalRenderer';
+import {
+  canAutoFocusTerminal,
+  forceTerminalRenderSync,
+  getTerminalMinimumContrastRatio,
+  loadWebglAddonWithBlendFix,
+} from '../lib/terminalRenderer';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
-import { hexToRgba, type DrexiusTheme } from '../lib/themes';
+import { hexToRgba, isLightTheme, type DrexiusTheme } from '../lib/themes';
 import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
@@ -493,7 +498,7 @@ export const TerminalPane = memo(function TerminalPane({
         const webgl = new WebglAddon();
         webglRef.current = webgl;
         webgl.onContextLoss(detachLostWebgl);
-        term.loadAddon(webgl);
+        loadWebglAddonWithBlendFix(term, webgl);
         return true;
       } catch (err) {
         console.warn('WebGL renderer unavailable, using DOM renderer:', err);
@@ -1767,9 +1772,13 @@ export const TerminalPane = memo(function TerminalPane({
       cursorStyle,
       scrollback,
       allowProposedApi: true,
-      allowTransparency: true,
+      allowTransparency: isTranslucent,
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
+      minimumContrastRatio: getTerminalMinimumContrastRatio({
+        isLight: isLightTheme(theme),
+        isTranslucent,
+      }),
       theme: {
         ...theme.xterm,
         background: isTranslucent
@@ -2727,6 +2736,11 @@ export const TerminalPane = memo(function TerminalPane({
     if (termRef.current) {
       const isTranslucent = !!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1);
       const effectiveBg = isTranslucent ? '#00000000' : (theme.xterm.background || '#0a0d14');
+      termRef.current.options.allowTransparency = isTranslucent;
+      termRef.current.options.minimumContrastRatio = getTerminalMinimumContrastRatio({
+        isLight: isLightTheme(theme),
+        isTranslucent,
+      });
       termRef.current.options.theme = {
         ...theme.xterm,
         background: effectiveBg,
@@ -3898,7 +3912,7 @@ export const TerminalPane = memo(function TerminalPane({
                 left: clampedX,
                 top: clampedY,
                 width: menuWidth,
-                backgroundColor: '#0e131d',
+                backgroundColor: 'var(--nx-surface, #0e131d)',
                 boxShadow: `0 0 30px ${theme.accent || '#22d3ee'}15, 0 16px 36px rgba(0, 0, 0, 0.75)`,
               }}
               className="fixed rounded-xl border border-white/15 p-1.5 text-xs text-slate-200 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100 select-none shadow-2xl"

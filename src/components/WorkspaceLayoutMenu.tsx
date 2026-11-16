@@ -537,7 +537,7 @@ export function SaveLayoutPresetModal({
             className="px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition shadow-sm"
             style={{
               backgroundColor: theme.accent,
-              color: '#000000',
+              color: 'var(--nx-accent-fg, #050810)',
             }}
           >
             Save Preset

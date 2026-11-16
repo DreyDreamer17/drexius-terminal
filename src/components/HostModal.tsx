@@ -650,7 +650,7 @@ export function HostModal({
             className="flex items-center gap-2 rounded-xl px-5 py-2 text-xs font-bold transition hover:brightness-110 active:scale-95 disabled:opacity-40 shadow-lg"
             style={{
               backgroundColor: accentColor,
-              color: '#000000',
+              color: 'var(--nx-accent-fg, #050810)',
               boxShadow: `0 0 20px ${accentColor}35`,
             }}
           >

@@ -22,6 +22,10 @@ import { leaf, splitLeaf } from '../src/lib/splitTree.ts';
 import {
   THEMES,
   hexToRgba,
+  getAccentContrastText,
+  getRelativeLuminance,
+  isColorLight,
+  isLightTheme,
   exportThemeJson,
   importThemeFromText,
   loadCustomThemes,
@@ -413,4 +417,55 @@ palette = 15=#c0caf5
   // Delete custom theme
   deleteCustomTheme('custom-neon-matrix-1');
   assert.deepEqual(loadCustomThemes(), []);
+});
+
+test('light theme helpers detect background luminance, accent contrast text, and imported light themes', () => {
+  const latte = THEMES.find((t) => t.id === 'catppuccin-latte');
+  const solarizedLight = THEMES.find((t) => t.id === 'solarized-light');
+  const drexiusNight = THEMES.find((t) => t.id === 'drexius');
+
+  assert.equal(isLightTheme(latte), true);
+  assert.equal(isLightTheme(solarizedLight), true);
+  assert.equal(isLightTheme(drexiusNight), false);
+  assert.equal(isColorLight('#eff1f5'), true);
+  assert.equal(isColorLight('#fdf6e3'), true);
+  assert.equal(isColorLight('#0a0d14'), false);
+
+  // Deep royal/ocean blue accents on light themes use white text; bright neon cyan uses dark text
+  assert.equal(getAccentContrastText(latte.accent), '#ffffff');
+  assert.equal(getAccentContrastText(solarizedLight.accent), '#ffffff');
+  assert.equal(getAccentContrastText(drexiusNight.accent), '#050810');
+
+  // Ghostty config with a light background auto-detects isLight: true
+  const lightGhostty = importThemeFromText('background = #eff1f5\nforeground = #4c4f69\ncursor-color = #1e66f5');
+  assert.ok(lightGhostty);
+  assert.equal(lightGhostty.isLight, true);
+});
+
+test('all built-in themes keep brightBlack distinguishable and preserve chromatic Solarized & Rose Pine prompt/cursor visibility', () => {
+  const contrastRatio = (c1, c2) => {
+    const l1 = getRelativeLuminance(c1);
+    const l2 = getRelativeLuminance(c2);
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  };
+
+  for (const t of THEMES) {
+    assert.ok(
+      contrastRatio(t.xterm.background, t.xterm.brightBlack) >= 1.4,
+      `${t.id} brightBlack must be distinguishable from background`,
+    );
+  }
+
+  for (const id of ['solarized', 'solarized-light']) {
+    const t = THEMES.find((x) => x.id === id);
+    assert.ok(t);
+    assert.notEqual(t.xterm.brightGreen, '#586e75');
+    assert.notEqual(t.xterm.brightBlue, '#839496');
+  }
+
+  for (const id of ['rose-pine', 'rose-pine-moon']) {
+    const t = THEMES.find((x) => x.id === id);
+    assert.ok(t);
+    assert.ok(contrastRatio(t.xterm.background, t.xterm.cursor) >= 4.5, `${id} cursor contrast >= 4.5`);
+  }
 });

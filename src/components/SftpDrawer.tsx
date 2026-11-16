@@ -426,7 +426,7 @@ function RemoteFileEditorModal({
               )}
               style={isDirty ? {
                 backgroundColor: accentColor,
-                color: '#000000',
+                color: 'var(--nx-accent-fg, #050810)',
                 boxShadow: `0 0 20px ${accentColor}35`,
               } : undefined}
             >

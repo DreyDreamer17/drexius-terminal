@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   canAutoFocusTerminal,
   forceTerminalRenderSync,
+  getTerminalMinimumContrastRatio,
+  loadWebglAddonWithBlendFix,
+  wrapWebglContextBlendFunc,
 } from '../src/lib/terminalRenderer.ts';
 
 function makeElement({
@@ -248,4 +251,89 @@ test('canAutoFocusTerminal allows focusing from body/buttons/term textarea and a
   assert.equal(canAutoFocusTerminal(searchInput, termTextarea), false);
   assert.equal(canAutoFocusTerminal(editorDiv, termTextarea), false);
   assert.equal(canAutoFocusTerminal(dialogBtn, termTextarea), false);
+});
+
+test('wrapWebglContextBlendFunc redirects glyph blending to preserve destination alpha without affecting other blend modes', () => {
+  const calls = [];
+  const fakeGl = {
+    SRC_ALPHA: 0x0302,
+    ONE_MINUS_SRC_ALPHA: 0x0303,
+    ONE: 1,
+    ZERO: 0,
+    blendFunc(sfactor, dfactor) {
+      calls.push(['blendFunc', sfactor, dfactor]);
+    },
+    blendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha) {
+      calls.push(['blendFuncSeparate', srcRGB, dstRGB, srcAlpha, dstAlpha]);
+    },
+  };
+
+  wrapWebglContextBlendFunc(fakeGl);
+  // Idempotent if called twice on the same WebGL2 context.
+  wrapWebglContextBlendFunc(fakeGl);
+
+  fakeGl.blendFunc(fakeGl.SRC_ALPHA, fakeGl.ONE_MINUS_SRC_ALPHA);
+  fakeGl.blendFunc(fakeGl.ONE, fakeGl.ZERO);
+
+  assert.deepEqual(calls, [
+    ['blendFuncSeparate', fakeGl.SRC_ALPHA, fakeGl.ONE_MINUS_SRC_ALPHA, fakeGl.ONE, fakeGl.ONE_MINUS_SRC_ALPHA],
+    ['blendFunc', fakeGl.ONE, fakeGl.ZERO],
+  ]);
+});
+
+test('loadWebglAddonWithBlendFix patches created WebGL2 contexts and always restores getContext', () => {
+  const calls = [];
+  const fakeGl = {
+    SRC_ALPHA: 0x0302,
+    ONE_MINUS_SRC_ALPHA: 0x0303,
+    ONE: 1,
+    blendFunc(s, d) {
+      calls.push(['raw', s, d]);
+    },
+    blendFuncSeparate(sr, dr, sa, da) {
+      calls.push(['sep', sr, dr, sa, da]);
+    },
+  };
+  const fake2d = { kind: '2d' };
+  const origGetContext = (contextId) => (contextId === 'webgl2' ? fakeGl : fake2d);
+  const proto = { getContext: origGetContext };
+
+  loadWebglAddonWithBlendFix(
+    {
+      loadAddon() {
+        const ctx2d = proto.getContext('2d');
+        assert.equal(ctx2d, fake2d);
+        const gl = proto.getContext('webgl2');
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      },
+    },
+    {},
+    proto,
+  );
+
+  assert.equal(proto.getContext, origGetContext);
+  assert.deepEqual(calls, [['sep', fakeGl.SRC_ALPHA, fakeGl.ONE_MINUS_SRC_ALPHA, fakeGl.ONE, fakeGl.ONE_MINUS_SRC_ALPHA]]);
+
+  // Also restores getContext if loadAddon throws.
+  assert.throws(
+    () =>
+      loadWebglAddonWithBlendFix(
+        {
+          loadAddon() {
+            throw new Error('webgl init failure');
+          },
+        },
+        {},
+        proto,
+      ),
+    /webgl init failure/,
+  );
+  assert.equal(proto.getContext, origGetContext);
+});
+
+test('getTerminalMinimumContrastRatio enforces 4.5 only on opaque light themes', () => {
+  assert.equal(getTerminalMinimumContrastRatio({ isLight: true, isTranslucent: false }), 4.5);
+  assert.equal(getTerminalMinimumContrastRatio({ isLight: true, isTranslucent: true }), 1);
+  assert.equal(getTerminalMinimumContrastRatio({ isLight: false, isTranslucent: false }), 1);
+  assert.equal(getTerminalMinimumContrastRatio({ isLight: false, isTranslucent: true }), 1);
 });

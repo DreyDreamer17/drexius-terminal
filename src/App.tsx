@@ -2,7 +2,7 @@ import { useMobile, useMobileViewport } from './hooks/useMobile';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
 import { clampTerminalFontSize } from './lib/mobileTerminal';
 import { WorkspaceAccessContext } from './components/MobileSheet';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ShieldCheck,
   Activity,
@@ -34,7 +34,7 @@ import {
   swapLeaves,
   treeFromLayout,
 } from './lib/splitTree';
-import { THEMES, loadCustomThemes, type DrexiusTheme } from './lib/themes';
+import { THEMES, getAccentContrastText, isLightTheme, loadCustomThemes, type DrexiusTheme } from './lib/themes';
 import type { CloudInstance, CloudProviderId, Host, HostSecret, KeychainItem, Layout, Pane, PopoutPaneEntry, PopoutWindowBounds, Snippet, Tab, TunnelConfig, Vault } from './lib/types';
 import {
   type LayoutPreset,
@@ -578,6 +578,18 @@ export default function App() {
 
   const allThemes = useMemo(() => [...THEMES, ...customThemes], [customThemes]);
   const theme = allThemes.find((t) => t.id === themeId) ?? allThemes[0];
+  const lightTheme = isLightTheme(theme);
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = lightTheme ? 'light' : 'dark';
+    root.style.colorScheme = lightTheme ? 'light' : 'dark';
+    root.style.setProperty('--nx-accent', theme.accent || '#22d3ee');
+    root.style.setProperty('--nx-accent-fg', getAccentContrastText(theme.accent));
+    root.style.setProperty('--nx-bg', theme.xterm.background || (lightTheme ? '#eff1f5' : '#0a0d14'));
+    root.style.setProperty('--nx-surface', lightTheme ? '#ffffff' : '#0e131d');
+    root.style.setProperty('--nx-surface-elevated', lightTheme ? '#f8fafc' : '#121826');
+  }, [theme, lightTheme]);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const lastTerminalTab = useRef<string | null>(null);
   if (activeTab && activeTab.kind !== 'sftp') lastTerminalTab.current = activeTab.id;
@@ -2236,13 +2248,14 @@ export default function App() {
     <>
     {showSplash && <LaunchSplash onFinished={() => setShowSplash(false)} />}
     {!unlocked && !showSplash && !directUnlocking && (
-      <div className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
+      <div data-theme={lightTheme ? 'light' : 'dark'} className="fixed inset-0 z-[1000] overflow-auto bg-slate-950">
         <LockScreen onUnlocked={() => setUnlocked(true)}
           onJoinRequested={() => setShowPairing({ initialTab: 'join' })} theme={theme} />
       </div>
     )}
     <WorkspaceAccessContext.Provider value={unlocked}>
     <div
+      data-theme={lightTheme ? 'light' : 'dark'}
       inert={!unlocked}
       className={cn(
         "nx-app-shell flex h-screen w-screen flex-col overflow-hidden text-slate-200 selection:bg-cyan-400/30",

@@ -165,3 +165,112 @@ export function canAutoFocusTerminal(
   }
   return true;
 }
+
+export interface WebglBlendContextLike {
+  SRC_ALPHA: number;
+  ONE_MINUS_SRC_ALPHA: number;
+  ONE: number;
+  blendFunc: (sfactor: number, dfactor: number) => void;
+  blendFuncSeparate?: (
+    srcRGB: number,
+    dstRGB: number,
+    srcAlpha: number,
+    dstAlpha: number,
+  ) => void;
+}
+
+export interface CanvasGetContextHost {
+  getContext?: (contextId: string, ...args: unknown[]) => unknown;
+}
+
+const patchedWebglContexts = new WeakSet<object>();
+
+/**
+ * Patches `gl.blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` to preserve framebuffer
+ * alpha via `gl.blendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA)`.
+ *
+ * `@xterm/addon-webgl`'s GlyphRenderer creates a `premultipliedAlpha: true` WebGL2
+ * context and draws glyphs with `gl.blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)`.
+ * That reduces destination alpha on anti-aliased glyph edges (`a^2 + (1 - a) * a_dst`),
+ * causing the page compositor to bleach dark glyph stems on light themes.
+ */
+export function wrapWebglContextBlendFunc<T extends WebglBlendContextLike>(
+  gl: T | null | undefined,
+): T | null | undefined {
+  if (!gl || typeof gl.blendFunc !== 'function' || typeof gl.blendFuncSeparate !== 'function') {
+    return gl;
+  }
+  if (patchedWebglContexts.has(gl)) {
+    return gl;
+  }
+  const origBlendFunc = gl.blendFunc.bind(gl);
+  const origBlendFuncSeparate = gl.blendFuncSeparate.bind(gl);
+  const { SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE } = gl;
+  gl.blendFunc = ((sfactor: number, dfactor: number) => {
+    if (sfactor === SRC_ALPHA && dfactor === ONE_MINUS_SRC_ALPHA) {
+      origBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA);
+      return;
+    }
+    origBlendFunc(sfactor, dfactor);
+  }) as T['blendFunc'];
+  patchedWebglContexts.add(gl);
+  return gl;
+}
+
+/**
+ * Loads `@xterm/addon-webgl` while synchronously intercepting `canvas.getContext('webgl2')`
+ * so the renderer's WebGL2 context gets `wrapWebglContextBlendFunc` without mutating
+ * global prototypes beyond the synchronous `loadAddon` call.
+ */
+export function loadWebglAddonWithBlendFix<
+  TTerm extends { loadAddon: (addon: TAddon) => void },
+  TAddon,
+>(
+  term: TTerm,
+  addon: TAddon,
+  canvasPrototype: CanvasGetContextHost | undefined =
+    typeof HTMLCanvasElement !== 'undefined'
+      ? (HTMLCanvasElement.prototype as unknown as CanvasGetContextHost)
+      : undefined,
+): void {
+  const origGetContext = canvasPrototype?.getContext;
+  if (!canvasPrototype || typeof origGetContext !== 'function') {
+    term.loadAddon(addon);
+    return;
+  }
+  canvasPrototype.getContext = function patchedGetContext(
+    this: unknown,
+    contextId: string,
+    ...args: unknown[]
+  ) {
+    const ctx = origGetContext.call(this, contextId, ...args);
+    if (contextId === 'webgl2') {
+      wrapWebglContextBlendFunc(ctx as WebglBlendContextLike | null);
+    }
+    return ctx;
+  };
+  try {
+    term.loadAddon(addon);
+  } finally {
+    canvasPrototype.getContext = origGetContext;
+  }
+}
+
+/**
+ * Returns the `minimumContrastRatio` for xterm.js: `4.5` on opaque light themes
+ * so pastel ANSI colors (`white`, `brightWhite`, `yellow`, `brightBlack`) stay legible
+ * against light surfaces; `1` on dark themes and translucent `#00000000` wallpaper
+ * modes (where xterm computes contrast against transparent black `#000000`).
+ */
+export function getTerminalMinimumContrastRatio({
+  isLight,
+  isTranslucent,
+}: {
+  isLight: boolean;
+  isTranslucent: boolean;
+}): number {
+  if (!isLight || isTranslucent) {
+    return 1;
+  }
+  return 4.5;
+}

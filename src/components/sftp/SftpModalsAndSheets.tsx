@@ -691,7 +691,7 @@ export function SftpDesktopContextMenu({
           left: clampedX,
           top: clampedY,
           width: menuWidth,
-          backgroundColor: '#0e131d',
+          backgroundColor: 'var(--nx-surface, #0e131d)',
           boxShadow: `0 0 30px ${accentColor}15, 0 16px 36px rgba(0, 0, 0, 0.75)`,
         }}
         className="fixed rounded-xl border border-white/15 p-1.5 text-xs text-slate-200 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100"

@@ -79,7 +79,7 @@ export const THEMES: DrexiusTheme[] = [
     xterm: {
       background: '#002b36', foreground: '#839496', cursor: '#839496', cursorAccent: '#002b36', selectionBackground: '#073642',
       black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
-      brightBlack: '#002b36', brightRed: '#cb4b16', brightGreen: '#586e75', brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4', brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
+      brightBlack: '#657b83', brightRed: '#cb4b16', brightGreen: '#9ab300', brightYellow: '#dfaf1c', brightBlue: '#47a6eb', brightMagenta: '#878ce6', brightCyan: '#35c4b8', brightWhite: '#fdf6e3',
     },
   },
   {
@@ -117,7 +117,7 @@ export const THEMES: DrexiusTheme[] = [
   {
     id: 'rose-pine', name: 'Rosé Pine', accent: '#eb6f92',
     xterm: {
-      background: '#191724', foreground: '#e0def4', cursor: '#524f67', cursorAccent: '#e0def4', selectionBackground: '#eb6f9226',
+      background: '#191724', foreground: '#e0def4', cursor: '#eb6f92', cursorAccent: '#191724', selectionBackground: '#eb6f9226',
       black: '#26233a', red: '#eb6f92', green: '#31748f', yellow: '#f6c177', blue: '#9ccfd8', magenta: '#c4a7e7', cyan: '#ebbcba', white: '#e0def4',
       brightBlack: '#6e6a86', brightRed: '#eb6f92', brightGreen: '#31748f', brightYellow: '#f6c177', brightBlue: '#9ccfd8', brightMagenta: '#c4a7e7', brightCyan: '#ebbcba', brightWhite: '#ffffff',
     },
@@ -125,7 +125,7 @@ export const THEMES: DrexiusTheme[] = [
   {
     id: 'rose-pine-moon', name: 'Rosé Pine Moon', accent: '#ea9a97',
     xterm: {
-      background: '#232136', foreground: '#e0def4', cursor: '#56526e', cursorAccent: '#e0def4', selectionBackground: '#ea9a9726',
+      background: '#232136', foreground: '#e0def4', cursor: '#ea9a97', cursorAccent: '#232136', selectionBackground: '#ea9a9726',
       black: '#393552', red: '#eb6f92', green: '#3e8fb0', yellow: '#f6c177', blue: '#9ccfd8', magenta: '#c4a7e7', cyan: '#ea9a97', white: '#e0def4',
       brightBlack: '#6e6a86', brightRed: '#eb6f92', brightGreen: '#3e8fb0', brightYellow: '#f6c177', brightBlue: '#9ccfd8', brightMagenta: '#c4a7e7', brightCyan: '#ea9a97', brightWhite: '#ffffff',
     },
@@ -215,7 +215,7 @@ export const THEMES: DrexiusTheme[] = [
     xterm: {
       background: '#fdf6e3', foreground: '#657b83', cursor: '#657b83', cursorAccent: '#fdf6e3', selectionBackground: '#eee8d5',
       black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900', blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
-      brightBlack: '#002b36', brightRed: '#cb4b16', brightGreen: '#586e75', brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4', brightCyan: '#93a1a1', brightWhite: '#fdf6e3',
+      brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#859900', brightYellow: '#b58900', brightBlue: '#268bd2', brightMagenta: '#6c71c4', brightCyan: '#2aa198', brightWhite: '#fdf6e3',
     },
   },
   {
@@ -376,6 +376,68 @@ export function hexToRgba(color: string, alpha: number): string {
 }
 
 /**
+ * Parses a hex or rgb(a) color string into [r, g, b] channels (0–255).
+ */
+export function parseRgbChannels(color?: string): [number, number, number] | null {
+  if (!color || typeof color !== 'string') return null;
+  const trimmed = color.trim();
+  const rgbMatch = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(trimmed);
+  if (rgbMatch) {
+    return [Number(rgbMatch[1]), Number(rgbMatch[2]), Number(rgbMatch[3])];
+  }
+  let c = trimmed.replace(/^#/, '');
+  if (c.length === 3) {
+    c = c
+      .split('')
+      .map((x) => x + x)
+      .join('');
+  }
+  if (c.length >= 6) {
+    const num = parseInt(c.slice(0, 6), 16);
+    if (!Number.isNaN(num)) {
+      return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+    }
+  }
+  return null;
+}
+
+/**
+ * Computes WCAG relative luminance (0 = black, 1 = white) for a color string.
+ */
+export function getRelativeLuminance(color?: string): number {
+  const rgb = parseRgbChannels(color);
+  if (!rgb) return 0;
+  const [r, g, b] = rgb.map((v) => {
+    const s = Math.max(0, Math.min(255, v)) / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * Returns true when a color's relative luminance is light (> 0.42).
+ */
+export function isColorLight(color?: string): boolean {
+  return getRelativeLuminance(color) > 0.42;
+}
+
+/**
+ * Returns true if the theme is marked light or has a light terminal background.
+ */
+export function isLightTheme(theme?: DrexiusTheme | null): boolean {
+  if (!theme) return false;
+  if (typeof theme.isLight === 'boolean') return theme.isLight;
+  return isColorLight(theme.xterm?.background);
+}
+
+/**
+ * Returns a high-contrast foreground color ('#050810' or '#ffffff') for an accent fill.
+ */
+export function getAccentContrastText(accent?: string): '#050810' | '#ffffff' {
+  return getRelativeLuminance(accent) > 0.36 ? '#050810' : '#ffffff';
+}
+
+/**
  * Exports a theme as a formatted JSON string.
  */
 export function exportThemeJson(theme: DrexiusTheme): string {
@@ -433,7 +495,7 @@ export function importThemeFromText(text: string): DrexiusTheme | null {
         id,
         name,
         accent,
-        isLight: !!parsed.isLight,
+        isLight: typeof parsed.isLight === 'boolean' ? parsed.isLight : isColorLight(xterm.background),
         isCustom: true,
         xterm,
       };
@@ -468,7 +530,7 @@ export function importThemeFromText(text: string): DrexiusTheme | null {
       id,
       name,
       accent,
-      isLight: false,
+      isLight: isColorLight(kv.background),
       isCustom: true,
       xterm: {
         background: kv.background,

@@ -544,7 +544,7 @@ Generated: ${new Date().toISOString()}
                 className="nx-lock-submit flex w-full items-center justify-center gap-2.5 rounded-2xl py-3.5 px-4 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[50px] shadow-lg cursor-pointer"
                 style={{
                   backgroundColor: accentColor,
-                  color: '#000000',
+                  color: 'var(--nx-accent-fg, #050810)',
                   boxShadow: `0 10px 30px -5px ${accentColor}60`,
                 }}
               >
@@ -723,7 +723,7 @@ Generated: ${new Date().toISOString()}
                 className="nx-lock-submit flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold text-black transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50 min-h-[48px] cursor-pointer"
                 style={{
                   backgroundColor: accentColor,
-                  color: '#000000',
+                  color: 'var(--nx-accent-fg, #050810)',
                   boxShadow: `0 10px 30px -5px ${accentColor}60`,
                 }}
               >
@@ -957,7 +957,7 @@ Generated: ${new Date().toISOString()}
                 className="flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl px-6 py-2.5 text-xs font-semibold text-black transition hover:brightness-110 active:scale-[0.99] shadow-lg"
                 style={{
                   backgroundColor: accentColor,
-                  color: '#000000',
+                  color: 'var(--nx-accent-fg, #050810)',
                   boxShadow: `0 4px 20px -3px ${accentColor}60`,
                 }}
               >
