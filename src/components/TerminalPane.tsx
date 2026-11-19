@@ -74,7 +74,13 @@ import {
 } from '../lib/terminalRenderer';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
-import { hexToRgba, isLightTheme, type DrexiusTheme } from '../lib/themes';
+import {
+  formatOsc11BackgroundResponse,
+  getTerminalWallpaperStyles,
+  hexToRgba,
+  isLightTheme,
+  type DrexiusTheme,
+} from '../lib/themes';
 import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
@@ -436,6 +442,10 @@ export const TerminalPane = memo(function TerminalPane({
   const resizeScheduled = useRef(false);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const isTranslucentRef = useRef(!!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1));
+  isTranslucentRef.current = !!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1);
   const mobileRef = useRef(false);
   const hiddenRef = useRef(hidden);
   hiddenRef.current = hidden;
@@ -1877,6 +1887,23 @@ export const TerminalPane = memo(function TerminalPane({
     // xterm 6, so it must not be used as a fallback here.
     attachWebglAddon(term);
 
+    // When wallpaper translucency uses `#00000000` for canvas compositing, reply to OSC 11;?
+    // queries with the theme's true RGB background instead of `#000000` so CLI tools don't assume
+    // a pitch-black background.
+    try {
+      term.parser?.registerOscHandler?.(11, (data: string) => {
+        if (data.trim() !== '?' || !isTranslucentRef.current) return false;
+        const reply = formatOsc11BackgroundResponse(themeRef.current.xterm.background || '#0a0d14');
+        if (!reply) return false;
+        const coreService = (term as any)._core?.coreService;
+        if (typeof coreService?.triggerDataEvent !== 'function') return false;
+        coreService.triggerDataEvent(reply);
+        return true;
+      });
+    } catch {
+      /* ignore unsupported parser API in mocks */
+    }
+
     const helperTextarea = term.textarea;
 
     const resetHelperValue = () => {
@@ -3031,6 +3058,15 @@ export const TerminalPane = memo(function TerminalPane({
     error: 'bg-rose-500',
   }[status];
 
+  const wallpaperLayers = getTerminalWallpaperStyles({
+    terminalWallpaper,
+    wallpaperOpacity,
+    terminalOpacity,
+    terminalBlur,
+    background: theme.xterm.background,
+    overlayZIndex: 0,
+  });
+
   return (
     <div
       onMouseDown={onFocus}
@@ -3089,33 +3125,19 @@ export const TerminalPane = memo(function TerminalPane({
           : (theme.xterm.background || '#0a0d14'),
       }}
     >
-      {/* Layer 0: Full-bleed wallpaper background */}
+      {/* Layer 0: Full-bleed wallpaper background (with overscan bleed when blurred) */}
       {terminalWallpaper && (
         <div
-          className="absolute inset-0 pointer-events-none bg-cover bg-center transition-opacity duration-300"
-          style={{
-            backgroundImage: `url(${terminalWallpaper})`,
-            opacity: wallpaperOpacity ?? 0.25,
-            zIndex: 0,
-          }}
+          className="absolute pointer-events-none bg-cover bg-center transition-all duration-300"
+          style={wallpaperLayers.layer0Style}
         />
       )}
 
-      {/* Layer 1: Frosted glass / liquid acrylic overlay (blurs wallpaper beneath and applies theme tint) */}
-      {(terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1) || (terminalBlur !== undefined && terminalBlur > 0)) && (
+      {/* Layer 1: Tinted translucent scrim (uses backdrop-filter only when no wallpaper image is active) */}
+      {wallpaperLayers.showOverlay && (
         <div
           className="absolute inset-0 pointer-events-none transition-all duration-200"
-          style={{
-            backgroundColor: hexToRgba(
-              theme.xterm.background || '#0a0d14',
-              terminalWallpaper
-                ? (terminalOpacity !== undefined && terminalOpacity < 1 ? terminalOpacity : 0.65)
-                : (terminalOpacity ?? 1)
-            ),
-            backdropFilter: terminalBlur && terminalBlur > 0 ? `blur(${terminalBlur}px) saturate(140%)` : undefined,
-            WebkitBackdropFilter: terminalBlur && terminalBlur > 0 ? `blur(${terminalBlur}px) saturate(140%)` : undefined,
-            zIndex: 0,
-          }}
+          style={wallpaperLayers.layer1Style}
         />
       )}
 

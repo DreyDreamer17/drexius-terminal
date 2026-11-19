@@ -21,6 +21,8 @@ import { createUserPreset } from '../src/lib/layoutPresets.ts';
 import { leaf, splitLeaf } from '../src/lib/splitTree.ts';
 import {
   THEMES,
+  formatOsc11BackgroundResponse,
+  getTerminalWallpaperStyles,
   hexToRgba,
   getAccentContrastText,
   getRelativeLuminance,
@@ -468,4 +470,31 @@ test('all built-in themes keep brightBlack distinguishable and preserve chromati
     assert.ok(t);
     assert.ok(contrastRatio(t.xterm.background, t.xterm.cursor) >= 4.5, `${id} cursor contrast >= 4.5`);
   }
+});
+
+test('wallpaper layer helper prevents blur edge vignettes and OSC 11 helper preserves true theme background', () => {
+  assert.equal(formatOsc11BackgroundResponse('#0a0d14'), '\x1b]11;rgb:0a0a/0d0d/1414\x1b\\');
+  assert.equal(formatOsc11BackgroundResponse('#eff1f5'), '\x1b]11;rgb:efef/f1f1/f5f5\x1b\\');
+  assert.equal(formatOsc11BackgroundResponse('invalid'), null);
+
+  const wp = getTerminalWallpaperStyles({
+    terminalWallpaper: 'data:image/png;base64,AAA',
+    wallpaperOpacity: 0.4,
+    terminalOpacity: 0.7,
+    terminalBlur: 18,
+    background: '#191724',
+  });
+  assert.equal(wp.showOverlay, true);
+  assert.equal(wp.layer0Style.inset, '-36px');
+  assert.equal(wp.layer0Style.filter, 'blur(18px) saturate(140%)');
+  assert.equal(wp.layer1Style.backdropFilter, undefined);
+
+  const noWpBlur = getTerminalWallpaperStyles({
+    terminalWallpaper: '',
+    terminalOpacity: 0.8,
+    terminalBlur: 12,
+    background: '#0a0d14',
+  });
+  assert.equal(noWpBlur.showOverlay, true);
+  assert.equal(noWpBlur.layer1Style.backdropFilter, 'blur(12px) saturate(140%)');
 });

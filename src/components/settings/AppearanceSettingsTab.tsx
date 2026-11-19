@@ -25,6 +25,7 @@ import {
 import {
   deleteCustomTheme,
   exportThemeJson,
+  getTerminalWallpaperStyles,
   hexToRgba,
   importThemeFromText,
   saveCustomTheme,
@@ -752,45 +753,33 @@ export function AppearanceSettingsTab({
             borderColor: `${accentColor}35`,
           }}
         >
-          {/* Layer 0: Wallpaper layer */}
-          {uiPrefs.terminalWallpaper && (
-            <div
-              className="absolute inset-0 pointer-events-none bg-cover bg-center transition-opacity duration-300"
-              style={{
-                backgroundImage: `url(${uiPrefs.terminalWallpaper})`,
-                opacity: uiPrefs.wallpaperOpacity ?? 0.25,
-                zIndex: 0,
-              }}
-            />
-          )}
-
-          {/* Layer 1: Frosted acrylic / liquid glass overlay */}
-          {(uiPrefs.terminalWallpaper ||
-            (uiPrefs.terminalOpacity ?? 1) < 1 ||
-            (uiPrefs.terminalBlur ?? 0) > 0) && (
-            <div
-              className="absolute inset-0 pointer-events-none transition-all duration-200"
-              style={{
-                backgroundColor: hexToRgba(
-                  activeTheme.xterm.background || '#0a0d14',
-                  uiPrefs.terminalWallpaper
-                    ? (uiPrefs.terminalOpacity ?? 1) < 1
-                      ? uiPrefs.terminalOpacity!
-                      : 0.65
-                    : (uiPrefs.terminalOpacity ?? 1)
-                ),
-                backdropFilter:
-                  uiPrefs.terminalBlur && uiPrefs.terminalBlur > 0
-                    ? `blur(${uiPrefs.terminalBlur}px) saturate(140%)`
-                    : undefined,
-                WebkitBackdropFilter:
-                  uiPrefs.terminalBlur && uiPrefs.terminalBlur > 0
-                    ? `blur(${uiPrefs.terminalBlur}px) saturate(140%)`
-                    : undefined,
-                zIndex: 1,
-              }}
-            />
-          )}
+          {/* Layer 0 & Layer 1: Wallpaper + frosted glass overlay */}
+          {(() => {
+            const previewLayers = getTerminalWallpaperStyles({
+              terminalWallpaper: uiPrefs.terminalWallpaper,
+              wallpaperOpacity: uiPrefs.wallpaperOpacity,
+              terminalOpacity: uiPrefs.terminalOpacity,
+              terminalBlur: uiPrefs.terminalBlur,
+              background: activeTheme.xterm.background,
+              overlayZIndex: 1,
+            });
+            return (
+              <>
+                {uiPrefs.terminalWallpaper && (
+                  <div
+                    className="absolute pointer-events-none bg-cover bg-center transition-all duration-300"
+                    style={previewLayers.layer0Style}
+                  />
+                )}
+                {previewLayers.showOverlay && (
+                  <div
+                    className="absolute inset-0 pointer-events-none transition-all duration-200"
+                    style={previewLayers.layer1Style}
+                  />
+                )}
+              </>
+            );
+          })()}
 
           {/* Simulated Terminal Window Header */}
           <div className="relative z-10 flex items-center justify-between px-3.5 py-2 border-b border-white/10 bg-black/30">

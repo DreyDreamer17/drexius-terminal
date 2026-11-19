@@ -5,6 +5,7 @@ import {
   forceTerminalRenderSync,
   getTerminalMinimumContrastRatio,
   loadWebglAddonWithBlendFix,
+  patchWebglRectangleBackgrounds,
   wrapWebglContextBlendFunc,
 } from '../src/lib/terminalRenderer.ts';
 
@@ -336,4 +337,44 @@ test('getTerminalMinimumContrastRatio enforces 4.5 only on opaque light themes',
   assert.equal(getTerminalMinimumContrastRatio({ isLight: true, isTranslucent: true }), 1);
   assert.equal(getTerminalMinimumContrastRatio({ isLight: false, isTranslucent: false }), 1);
   assert.equal(getTerminalMinimumContrastRatio({ isLight: false, isTranslucent: true }), 1);
+});
+
+test('patchWebglRectangleBackgrounds strips CM_DEFAULT BgFlags without mutating render model cells', () => {
+  class FakeRectangleRenderer {
+    constructor() {
+      this.seenBg = [];
+    }
+    updateBackgrounds(model) {
+      this.seenBg = [];
+      for (let i = 1; i < model.cells.length; i += 4) {
+        this.seenBg.push(model.cells[i]);
+      }
+    }
+  }
+
+  const rr = new FakeRectangleRenderer();
+  const fakeAddon = { _renderer: { _rectangleRenderer: { value: rr } } };
+  patchWebglRectangleBackgrounds(fakeAddon);
+  // Idempotent on prototype.
+  patchWebglRectangleBackgrounds(fakeAddon);
+
+  const cells = new Uint32Array([
+    65, 0x10000000, 0, 0, // HAS_EXTENDED image/underline/link cell with CM_DEFAULT -> sanitized to 0
+    66, 0x08000000, 0, 0, // DIM cell with CM_DEFAULT -> sanitized to 0
+    67, 0x04000000, 0, 0, // ITALIC cell with CM_DEFAULT -> sanitized to 0
+    68, 0x01000002, 0, 0, // CM_P16 green background -> preserved!
+    69, 0x13ff0000, 0, 0, // CM_RGB + HAS_EXTENDED -> preserved!
+  ]);
+  const snapshotBefore = new Uint32Array(cells);
+
+  rr.updateBackgrounds({ cells });
+
+  // Caller's render model cells remain unmodified for incremental frame diffing.
+  assert.deepEqual(cells, snapshotBefore);
+  assert.deepEqual(rr.seenBg, [0, 0, 0, 0x01000002, 0x13ff0000]);
+
+  // Also works transparently on fresh instances sharing the patched prototype (e.g. context restore).
+  const rr2 = new FakeRectangleRenderer();
+  rr2.updateBackgrounds({ cells });
+  assert.deepEqual(rr2.seenBg, [0, 0, 0, 0x01000002, 0x13ff0000]);
 });

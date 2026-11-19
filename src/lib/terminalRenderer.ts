@@ -184,6 +184,93 @@ export interface CanvasGetContextHost {
 }
 
 const patchedWebglContexts = new WeakSet<object>();
+const patchedRectangleTargets = new WeakSet<object>();
+
+const XTERM_BG_CM_MASK = 0x3000000;
+const XTERM_RENDER_MODEL_CELL_STRIDE = 4;
+const XTERM_RENDER_MODEL_BG_OFFSET = 1;
+
+export interface WebglRenderModelLike {
+  cells: Uint32Array;
+  lineLengths?: Uint32Array;
+  selection?: unknown;
+  cursor?: unknown;
+}
+
+export interface WebglRectangleRendererLike {
+  updateBackgrounds?: (model: WebglRenderModelLike) => void;
+}
+
+export interface WebglAddonInternalLike {
+  _renderer?: {
+    _rectangleRenderer?: {
+      value?: WebglRectangleRendererLike;
+    };
+  };
+}
+
+/**
+ * Prevents `@xterm/addon-webgl`'s `RectangleRenderer.updateBackgrounds()` from
+ * painting opaque `#000000` background rectangles over default-background cells
+ * that happen to carry `BgFlags` bits (`DIM`, `ITALIC`, `OVERLINE`, `PROTECTED`,
+ * `HAS_EXTENDED` used by hyperlinks, underlines, and `@xterm/addon-image` tiles).
+ *
+ * In xterm, `RectangleRenderer` checks `bg !== 0` instead of checking `(bg & CM_MASK) !== 0`,
+ * causing any flagged cell with default background to fall back to `colors.background`
+ * (`#00000000` RGB `0,0,0` in wallpaper mode) with hardcoded `alpha = 1`.
+ */
+export function patchWebglRectangleBackgrounds(addon: unknown): void {
+  const rectRenderer = (addon as WebglAddonInternalLike | null | undefined)?._renderer?._rectangleRenderer?.value;
+  if (!rectRenderer) return;
+  const proto = Object.getPrototypeOf(rectRenderer) as WebglRectangleRendererLike | null;
+  const target: WebglRectangleRendererLike =
+    proto && proto !== Object.prototype && typeof proto.updateBackgrounds === 'function'
+      ? proto
+      : rectRenderer;
+
+  if (patchedRectangleTargets.has(target) || typeof target.updateBackgrounds !== 'function') {
+    return;
+  }
+
+  const origUpdateBackgrounds = target.updateBackgrounds;
+  let scratchCells = new Uint32Array(0);
+
+  target.updateBackgrounds = function patchedUpdateBackgrounds(
+    this: unknown,
+    model: WebglRenderModelLike,
+  ) {
+    const cells = model?.cells;
+    if (!cells || cells.length === 0) {
+      return origUpdateBackgrounds.call(this, model);
+    }
+
+    let needsSanitize = false;
+    for (let i = XTERM_RENDER_MODEL_BG_OFFSET; i < cells.length; i += XTERM_RENDER_MODEL_CELL_STRIDE) {
+      const bg = cells[i];
+      if (bg !== 0 && (bg & XTERM_BG_CM_MASK) === 0) {
+        needsSanitize = true;
+        break;
+      }
+    }
+    if (!needsSanitize) {
+      return origUpdateBackgrounds.call(this, model);
+    }
+
+    if (scratchCells.length !== cells.length) {
+      scratchCells = new Uint32Array(cells.length);
+    }
+    scratchCells.set(cells);
+    for (let i = XTERM_RENDER_MODEL_BG_OFFSET; i < scratchCells.length; i += XTERM_RENDER_MODEL_CELL_STRIDE) {
+      const bg = scratchCells[i];
+      if (bg !== 0 && (bg & XTERM_BG_CM_MASK) === 0) {
+        scratchCells[i] = 0;
+      }
+    }
+    return origUpdateBackgrounds.call(this, { ...model, cells: scratchCells });
+  };
+
+  patchedRectangleTargets.add(target);
+}
 
 /**
  * Patches `gl.blendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` to preserve framebuffer
@@ -254,6 +341,7 @@ export function loadWebglAddonWithBlendFix<
   } finally {
     canvasPrototype.getContext = origGetContext;
   }
+  patchWebglRectangleBackgrounds(addon);
 }
 
 /**

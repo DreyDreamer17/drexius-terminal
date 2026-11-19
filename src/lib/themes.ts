@@ -438,6 +438,94 @@ export function getAccentContrastText(accent?: string): '#050810' | '#ffffff' {
 }
 
 /**
+ * Formats an xterm `OSC 11;?` background query reply (`ESC ] 11 ; rgb:rrrr/gggg/bbbb ESC \`)
+ * from a theme color string so translucent `#00000000` canvases still report their true theme
+ * background color instead of `#000000`.
+ */
+export function formatOsc11BackgroundResponse(color?: string): string | null {
+  const rgb = parseRgbChannels(color);
+  if (!rgb) return null;
+  const toHex16 = (v: number) => {
+    const h = Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+    return h + h;
+  };
+  return `\x1b]11;rgb:${toHex16(rgb[0])}/${toHex16(rgb[1])}/${toHex16(rgb[2])}\x1b\\`;
+}
+
+export interface TerminalWallpaperLayerStyles {
+  showOverlay: boolean;
+  layer0Style: {
+    inset: string;
+    backgroundImage: string;
+    opacity: number;
+    filter?: string;
+    transform?: string;
+    zIndex: number;
+  };
+  layer1Style: {
+    backgroundColor: string;
+    backdropFilter?: string;
+    WebkitBackdropFilter?: string;
+    zIndex: number;
+  };
+}
+
+/**
+ * Builds Layer 0 (wallpaper) and Layer 1 (tinted glass overlay) styles.
+ *
+ * When a wallpaper is present with blur > 0, the Gaussian blur is applied directly
+ * to Layer 0 with a negative overscan bleed (`-2 * blur` px) inside the parent
+ * `overflow-hidden` container instead of `backdrop-filter` on Layer 1. That prevents
+ * edge-clamping black/dark vignette borders around the terminal pane and ensures
+ * consistent blurring across Chromium and WebKitGTK.
+ */
+export function getTerminalWallpaperStyles({
+  terminalWallpaper,
+  wallpaperOpacity,
+  terminalOpacity,
+  terminalBlur,
+  background,
+  overlayZIndex = 0,
+}: {
+  terminalWallpaper?: string;
+  wallpaperOpacity?: number;
+  terminalOpacity?: number;
+  terminalBlur?: number;
+  background?: string;
+  overlayZIndex?: number;
+}): TerminalWallpaperLayerStyles {
+  const blurPx = Math.max(0, terminalBlur ?? 0);
+  const hasWallpaper = Boolean(terminalWallpaper);
+  const overscanPx = hasWallpaper && blurPx > 0 ? Math.min(96, Math.ceil(blurPx * 2)) : 0;
+  const resolvedOpacity = terminalOpacity ?? 1;
+  const overlayAlpha = hasWallpaper
+    ? resolvedOpacity < 1
+      ? resolvedOpacity
+      : 0.65
+    : resolvedOpacity;
+  const useBackdropBlur = !hasWallpaper && blurPx > 0;
+  const blurFilter = blurPx > 0 ? `blur(${blurPx}px) saturate(140%)` : undefined;
+
+  return {
+    showOverlay: hasWallpaper || resolvedOpacity < 1 || blurPx > 0,
+    layer0Style: {
+      inset: overscanPx > 0 ? `-${overscanPx}px` : '0px',
+      backgroundImage: terminalWallpaper ? `url(${terminalWallpaper})` : 'none',
+      opacity: wallpaperOpacity ?? 0.25,
+      filter: hasWallpaper && blurPx > 0 ? blurFilter : undefined,
+      transform: hasWallpaper && blurPx > 0 ? 'translateZ(0)' : undefined,
+      zIndex: 0,
+    },
+    layer1Style: {
+      backgroundColor: hexToRgba(background || '#0a0d14', overlayAlpha),
+      backdropFilter: useBackdropBlur ? blurFilter : undefined,
+      WebkitBackdropFilter: useBackdropBlur ? blurFilter : undefined,
+      zIndex: overlayZIndex,
+    },
+  };
+}
+
+/**
  * Exports a theme as a formatted JSON string.
  */
 export function exportThemeJson(theme: DrexiusTheme): string {
