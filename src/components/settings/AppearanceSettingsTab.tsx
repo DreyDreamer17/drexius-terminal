@@ -779,13 +779,13 @@ export function AppearanceSettingsTab({
               <>
                 {uiPrefs.terminalWallpaper && (
                   <div
-                    className="absolute pointer-events-none bg-cover bg-center transition-all duration-300"
+                    className="absolute pointer-events-none bg-cover bg-center transition-[opacity,filter] duration-300"
                     style={previewLayers.layer0Style}
                   />
                 )}
                 {previewLayers.showOverlay && (
                   <div
-                    className="absolute inset-0 pointer-events-none transition-all duration-200"
+                    className="absolute inset-0 pointer-events-none transition-[background-color,backdrop-filter] duration-200"
                     style={previewLayers.layer1Style}
                   />
                 )}
