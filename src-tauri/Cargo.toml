@@ -26,7 +26,7 @@ tauri-plugin-biometric = "2"
 ssh2 = { version = "0.9", features = ["vendored-openssl", "openssl-on-win32"] }
 
 # ── Encrypted local storage: SQLCipher (AES-256-CBC + HMAC-SHA512 per page) ──
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "serde_json"] }
+rusqlite = { version = "0.42", features = ["bundled-sqlcipher-vendored-openssl", "serde_json"] }
 
 # ── Cryptography ─────────────────────────────────────────────
 argon2 = "0.5"                       # Master-password KDF (Argon2id)
