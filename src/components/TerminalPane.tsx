@@ -79,6 +79,14 @@ import {
   type AltSidesState,
   type OptionAsMetaMode,
 } from '../lib/terminalInput';
+import {
+  commandHistoryStore,
+  extractBracketedPastePayload,
+  extractNextSuggestionWord,
+  looksSensitiveCommand,
+  rankGhostSuggestion,
+  stripShellPrompt,
+} from '../lib/commandHistory';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import { BackPriority } from '../lib/backNavigation';
@@ -93,82 +101,6 @@ import {
 import type { Host, Pane, PaneStatus, SessionEvent, TunnelConfig } from '../lib/types';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
-
-const COMMON_SHELL_COMMANDS = [
-  'pm2 status',
-  'pm2 logs',
-  'pm2 restart all',
-  'pm2 stop all',
-  'pm2 list',
-  'pm2 monit',
-  'speedtest',
-  'git status',
-  'git pull',
-  'git push',
-  'git log --oneline -n 10',
-  'git diff',
-  'git checkout -b ',
-  'git checkout ',
-  'git branch -a',
-  'git commit -m "',
-  'docker ps -a',
-  'docker compose up -d',
-  'docker compose down',
-  'docker compose logs -f --tail=100',
-  'docker exec -it ',
-  'docker images',
-  'systemctl status ',
-  'systemctl restart ',
-  'journalctl -u ',
-  'journalctl -xe',
-  'kubectl get pods -A',
-  'kubectl logs -f ',
-  'kubectl describe pod ',
-  'npm run dev',
-  'npm run build',
-  'npm test',
-  'cargo check',
-  'cargo build --release',
-  'cargo test',
-  'cargo run',
-  'htop',
-  'df -h',
-  'free -h',
-  'netstat -tulpn',
-  'ss -tulpn',
-  'tar -czvf ',
-  'tar -xzvf ',
-  'chmod +x ',
-  'find . -name "',
-  'grep -rnw . -e "',
-  'curl -fsSL ',
-];
-const COMMON_SHELL_COMMANDS_LOWER = COMMON_SHELL_COMMANDS.map((c) => c.toLowerCase());
-
-/** Strips a recognised shell prompt from the start of a logical line; null if none matched. */
-function stripShellPrompt(line: string): string | null {
-  // 1. user@host:path[$#%>] (standard Linux, macOS, bash, zsh)
-  const userHost = line.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+[^\$#%>]*[\$#%>]\s+)(.*)$/);
-  if (userHost && userHost[1] !== undefined) return userHost[1];
-
-  // 2. Bracketed prompt: [user@host path]$ or (venv) [user@host path]#
-  const bracketed = line.match(/^(?:(?:\([^)]+\)\s*)?\[[^\]]+\][\$#%>]\s+)(.*)$/);
-  if (bracketed && bracketed[1] !== undefined) return bracketed[1];
-
-  // 3. Modern prompt glyphs: ❯, ➜, λ, » (Starship, Pure, Oh-My-Zsh)
-  const glyph = line.match(/^.*?[❯➜λ»]\s*(.*)$/);
-  if (glyph && glyph[1] !== undefined) return glyph[1];
-
-  // 4. Secondary continuation prompt (PS2): "> command"
-  const ps2 = line.match(/^>\s+(.*)$/);
-  if (ps2 && ps2[1] !== undefined) return ps2[1];
-
-  // 5. Simple prompt: "$ ", "# ", "% " at prompt start (WITHOUT matching spaces in command body)
-  const simple = line.match(/^(?:(?:\([^)]+\)\s*)?[a-zA-Z0-9_.\-~/:*]*?[\$#%]\s+)(.*)$/);
-  if (simple && simple[1] !== undefined) return simple[1];
-
-  return null;
-}
 
 /** How many times an interrupted *auto-resume* is retried with backoff before the
  *  failure is surfaced as an error dialog. Chosen for phone reality: after an
@@ -608,8 +540,7 @@ export const TerminalPane = memo(function TerminalPane({
   scheduleRenderSyncRef.current = scheduleRenderSync;
 
   // Command & Clipboard history + Autosuggestion states
-  const historyCacheRef = useRef<string[]>([]);
-  const historyLowerRef = useRef<string[]>([]);
+  const inBracketedPasteRef = useRef(false);
   const [showCmdSearch, setShowCmdSearch] = useState(false);
   const [showClipboard, setShowClipboard] = useState(false);
   const pasteLockRef = useRef(false);
@@ -1016,8 +947,48 @@ export const TerminalPane = memo(function TerminalPane({
     setGhostPos(null);
   }, []);
 
+  const recordExecutedCommand = useCallback(
+    (rawCmd: string) => {
+      const cmd = rawCmd.trim();
+      if (!cmd || cmd.length > 2000 || looksSensitiveCommand(cmd)) return;
+
+      const sid = sessionRef.current;
+      const targetHost = hostRef.current;
+      const hostId = isLocal ? null : targetHost.id;
+      const hostLabel = isLocal ? 'Local Terminal' : targetHost.label;
+      const currentCwd = cwdRef.current || '~';
+
+      update({ lastCommand: cmd });
+      if (!isLocal && sid) {
+        bridge.recordSnapshot(targetHost.id, sid, { lastCommand: cmd });
+      }
+      commandHistoryStore.record({
+        hostId,
+        hostLabel,
+        command: cmd,
+        cwd: currentCwd,
+      });
+      bridge.addCommandHistory({
+        hostId,
+        hostLabel,
+        command: cmd,
+        cwd: currentCwd,
+      }).catch(() => {});
+    },
+    [isLocal, update],
+  );
+  const recordExecutedCommandRef = useRef(recordExecutedCommand);
+  recordExecutedCommandRef.current = recordExecutedCommand;
+
   const updateSuggestion = useCallback((overrideText?: string) => {
     if (ghostSuggestionsRef.current === false) {
+      if (suggestionRef.current) {
+        clearSuggestion();
+      }
+      return;
+    }
+
+    if (termRef.current?.buffer.active.type === 'alternate') {
       if (suggestionRef.current) {
         clearSuggestion();
       }
@@ -1038,44 +1009,26 @@ export const TerminalPane = memo(function TerminalPane({
       clearSuggestion();
       return;
     }
-    const prefixLower = prefix.toLowerCase();
 
-    // 1. Check history first using precomputed lowercase array (O(1) allocation per check)
-    const historyOrig = historyCacheRef.current;
-    const historyLow = historyLowerRef.current;
-    let bestMatch: string | null = null;
+    const match = rankGhostSuggestion(prefix, commandHistoryStore.getEntries(), {
+      hostId: isLocal ? null : hostRef.current.id,
+      cwd: cwdRef.current,
+    });
 
-    for (let i = 0; i < historyLow.length; i++) {
-      if (historyLow[i].startsWith(prefixLower) && historyOrig[i].length > prefix.length) {
-        bestMatch = historyOrig[i];
-        break;
-      }
-    }
-
-    // 2. Fall back to common commands if no history match
-    if (!bestMatch) {
-      for (let i = 0; i < COMMON_SHELL_COMMANDS_LOWER.length; i++) {
-        if (COMMON_SHELL_COMMANDS_LOWER[i].startsWith(prefixLower) && COMMON_SHELL_COMMANDS[i].length > prefix.length) {
-          bestMatch = COMMON_SHELL_COMMANDS[i];
-          break;
-        }
-      }
-    }
-
-    if (!bestMatch) {
+    if (!match) {
       clearSuggestion();
       return;
     }
 
     const next = {
-      full: bestMatch,
-      suffix: bestMatch.slice(prefix.length),
+      full: match.full,
+      suffix: match.suffix,
     };
     suggestionRef.current = next;
     setSuggestion(next);
-  }, [isCursorAtCommandEnd, clearSuggestion]);
+  }, [isLocal, isCursorAtCommandEnd, clearSuggestion]);
 
-  // After Tab / history navigation / paste / cursor movement, the real line only
+  // After Tab / history navigation / mid-line paste / cursor movement, the real line only
   // exists on screen. Wait for the server echo to land, then re-read it once.
   const scheduleResync = useCallback(() => {
     dirtyRef.current = true;
@@ -1114,8 +1067,57 @@ export const TerminalPane = memo(function TerminalPane({
     return true;
   }, [isSerial, isLocal, isCursorAtCommandEnd, clearSuggestion]);
 
+  /** Types just the next word/path segment of the ghost suffix (`Ctrl+ArrowRight`). */
+  const acceptSuggestionWord = useCallback((): boolean => {
+    if (ghostSuggestionsRef.current === false) return false;
+    const s = suggestionRef.current;
+    const sid = sessionRef.current;
+    if (!s || !s.suffix || !sid) return false;
+    if (!isCursorAtCommandEnd()) {
+      clearSuggestion();
+      return false;
+    }
+
+    const chunk = extractNextSuggestionWord(s.suffix);
+    if (!chunk) return false;
+
+    smartWriterRef.current?.notifyUserInput(chunk, true);
+    if (isSerial) {
+      bridge.writeSerial(sid, chunk);
+    } else if (isLocal) {
+      bridge.writeLocalPty(sid, chunk);
+    } else {
+      bridge.write(sid, chunk);
+    }
+    lineRef.current += chunk;
+    const remaining = s.suffix.slice(chunk.length);
+    if (!remaining) {
+      clearSuggestion();
+    } else {
+      const next = { full: s.full, suffix: remaining };
+      suggestionRef.current = next;
+      setSuggestion(next);
+    }
+    termRef.current?.focus();
+    return true;
+  }, [isSerial, isLocal, isCursorAtCommandEnd, clearSuggestion]);
+
   const acceptSuggestionRef = useRef(acceptSuggestion);
   acceptSuggestionRef.current = acceptSuggestion;
+  const acceptSuggestionWordRef = useRef(acceptSuggestionWord);
+  acceptSuggestionWordRef.current = acceptSuggestionWord;
+  const updateSuggestionRef = useRef(updateSuggestion);
+  updateSuggestionRef.current = updateSuggestion;
+
+  // Keep ghost suggestions synced across all open panes when history changes (new command, star, delete, clear).
+  useEffect(() => {
+    void commandHistoryStore.hydrate((limit) => bridge.listCommandHistory(limit));
+    return commandHistoryStore.subscribe(() => {
+      if (suggestionRef.current || lineRef.current.trim().length >= 2) {
+        updateSuggestionRef.current(lineRef.current);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (ghostSuggestions === false && suggestion) {
@@ -1235,15 +1237,16 @@ export const TerminalPane = memo(function TerminalPane({
         else bridge.write(sid, payload);
         termRef.current?.focus();
         if (executeImmediately) {
+          recordExecutedCommand(cmd);
           lineRef.current = '';
-          setSuggestion(null);
-          setGhostPos(null);
+          dirtyRef.current = false;
+          clearSuggestion();
         } else {
           scheduleResync();
         }
       }
     },
-    [isSerial, isLocal, scheduleResync]
+    [isSerial, isLocal, scheduleResync, recordExecutedCommand, clearSuggestion]
   );
 
   const hostRef = useRef(host);
@@ -1274,6 +1277,7 @@ export const TerminalPane = memo(function TerminalPane({
     lineRef.current = '';
     multilineBufferRef.current = [];
     dirtyRef.current = false;
+    inBracketedPasteRef.current = false;
     if (resyncTimerRef.current !== null) {
       window.clearTimeout(resyncTimerRef.current);
       resyncTimerRef.current = null;
@@ -2273,20 +2277,8 @@ export const TerminalPane = memo(function TerminalPane({
       }
     });
 
-    // Preload recent command history for instant autosuggestions
-    bridge.listCommandHistory(200).then((items) => {
-      const raw = items.map((i) => i.command.trim()).filter((c) => c.length >= 2);
-      const seen = new Set<string>();
-      const cleaned: string[] = [];
-      for (const cmd of raw) {
-        if (!seen.has(cmd)) {
-          seen.add(cmd);
-          cleaned.push(cmd);
-        }
-      }
-      historyCacheRef.current = cleaned;
-      historyLowerRef.current = cleaned.map((cmd) => cmd.toLowerCase());
-    }).catch(() => {});
+    // Hydrate shared command history store for instant cross-pane autosuggestions
+    void commandHistoryStore.hydrate((limit) => bridge.listCommandHistory(limit));
 
     // Track cursor and viewport changes to update ghost text alignment
     const dCursor = term.onCursorMove(updateGhostPos);
@@ -2448,13 +2440,22 @@ export const TerminalPane = memo(function TerminalPane({
 
 
       // Inline ghost autosuggestion key handling:
-      // - Unmodified ArrowRight accepts the suggestion (calling preventDefault so focus stays in xterm)
+      // - Unmodified ArrowRight accepts the full suggestion (preventDefault keeps focus in xterm)
+      // - Ctrl+ArrowRight accepts just the next word/path segment
       // - Unmodified Escape dismisses the suggestion without sending ESC to the shell
       // - Tab and navigation keys dismiss the suggestion and pass through to xterm so native
       //   shell Tab completion works and never causes browser Tab focus traversal (#42)
       const ghostAction = resolveGhostSuggestionKeyAction(e, !!suggestionRef.current);
       if (ghostAction === 'accept') {
         if (acceptSuggestionRef.current()) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+        return true;
+      }
+      if (ghostAction === 'accept-word') {
+        if (acceptSuggestionWordRef.current()) {
           e.preventDefault();
           e.stopPropagation();
           return false;
@@ -2528,26 +2529,54 @@ export const TerminalPane = memo(function TerminalPane({
         bridge.write(sid, data).catch((err) => console.error('SSH write failed:', err));
       }
 
-      // Escape sequences (arrows, Home/End, Delete, bracketed paste...) change the
+      // Unwrap xterm Bracketed Paste (\x1b[200~ ... \x1b[201~) BEFORE generic escape handling
+      // so pasted single-line and multi-line commands are tracked and saved to command history.
+      const pasteRes = extractBracketedPastePayload(data, inBracketedPasteRef.current);
+      inBracketedPasteRef.current = pasteRes.inPaste;
+
+      // Non-paste escape sequences (arrows, Home/End, Delete, Alt+keys...) change the
       // line in ways we can't track from keystrokes -> re-read it from the screen.
-      if (data.startsWith('\x1b')) {
+      if (!pasteRes.handled && data.startsWith('\x1b')) {
         mobileTrackerRef.current = { fullText: '', time: Date.now() };
         scheduleResync();
         onDataRef.current?.(data);
         return;
       }
 
-      if (/[\x00-\x1f]/.test(data)) {
+      const trackedData = pasteRes.handled ? pasteRes.text : data;
+
+      // Never record command history or show ghost suggestions inside alternate-screen TUIs
+      // (vim, nano, htop, less, etc.).
+      if (term.buffer.active.type === 'alternate') {
+        lineRef.current = '';
+        multilineBufferRef.current = [];
+        dirtyRef.current = false;
+        clearSuggestion();
+        onDataRef.current?.(data);
+        return;
+      }
+
+      // Guard against flooding history when someone pastes a huge multi-line file dump.
+      if (trackedData.length > 4096 || (trackedData.length > 64 && (trackedData.match(/[\r\n]/g) || []).length > 15)) {
+        lineRef.current = '';
+        multilineBufferRef.current = [];
+        scheduleResync();
+        onDataRef.current?.(data);
+        return;
+      }
+
+      if (/[\x00-\x1f]/.test(trackedData)) {
         mobileTrackerRef.current = { fullText: '', time: Date.now() };
       }
 
       // Track submitted lines for snapshot, command history, and autosuggestion
       // (sampled before the shell echoes this input, i.e. where the cursor was when the key was pressed)
-      const editingMidLine = !isCursorAtCommandEnd();
-      for (const ch of data) {
+      let editingMidLine = !isCursorAtCommandEnd();
+      for (const ch of trackedData) {
         if (ch === '\r' || ch === '\n') {
-          // Keystrokes are the truth. Only fall back to the screen if the line was
-          // modified by Tab / history navigation and hasn't been re-synced yet.
+          editingMidLine = false;
+          // Keystrokes (and unwrapped pastes) are the truth. Only fall back to the screen if the
+          // line was modified by Tab / history navigation and hasn't been re-synced yet.
           const screenCmd = dirtyRef.current ? getCurrentCommandLine() : '';
           const lineCmd = (screenCmd.trim() || lineRef.current).trim();
           if (resyncTimerRef.current !== null) {
@@ -2583,27 +2612,10 @@ export const TerminalPane = memo(function TerminalPane({
             }
           }
 
-          // Lines typed at a password prompt are secrets: skip them everywhere, including in-memory history.
+          // Lines typed or pasted at a password prompt are secrets: skip them everywhere.
           const typedSecret = !!cmd && isPasswordPromptActive();
           if (cmd && !typedSecret) {
-            update({ lastCommand: cmd });
-            if (!isLocal) {
-              bridge.recordSnapshot(host.id, sid, { lastCommand: cmd });
-            }
-            bridge.addCommandHistory({
-              hostId: isLocal ? null : host.id,
-              hostLabel: isLocal ? 'Local Terminal' : host.label,
-              command: cmd,
-              cwd: cwdRef.current || '~',
-            }).catch(() => {});
-
-            const idx = historyCacheRef.current.indexOf(cmd);
-            if (idx !== -1) {
-              historyCacheRef.current.splice(idx, 1);
-              historyLowerRef.current.splice(idx, 1);
-            }
-            historyCacheRef.current.unshift(cmd);
-            historyLowerRef.current.unshift(cmd.toLowerCase());
+            recordExecutedCommandRef.current(cmd);
           }
           lineRef.current = '';
           clearSuggestion();
@@ -2613,11 +2625,11 @@ export const TerminalPane = memo(function TerminalPane({
           // Readline/zle cursor movement (Ctrl+A/B/E/F): the line didn't change but the cursor did.
           scheduleResync();
         } else if (editingMidLine && (ch === '\x7f' || ch === '\x08' || ch === '\x17' || ch >= ' ')) {
-          // Typing/deleting in the middle of the command: appending to lineRef would be wrong.
+          // Typing/deleting/pasting in the middle of the command: appending to lineRef would be wrong.
           scheduleResync();
         } else if (ch === '\x7f' || ch === '\x08') {
           lineRef.current = lineRef.current.slice(0, -1);
-          if (data.length === 1) updateSuggestion(lineRef.current);
+          if (trackedData.length === 1) updateSuggestion(lineRef.current);
         } else if (ch === '\x03' || ch === '\x15' || ch === '\x0c') {
           multilineBufferRef.current = [];
           lineRef.current = '';
@@ -2627,13 +2639,13 @@ export const TerminalPane = memo(function TerminalPane({
           const parts = lineRef.current.trimEnd().split(/\s+/);
           parts.pop();
           lineRef.current = parts.join(' ');
-          if (data.length === 1) updateSuggestion(lineRef.current);
+          if (trackedData.length === 1) updateSuggestion(lineRef.current);
         } else if (ch >= ' ') {
           lineRef.current += ch;
-          if (data.length === 1) updateSuggestion(lineRef.current);
+          if (trackedData.length === 1) updateSuggestion(lineRef.current);
         }
       }
-      if (data.length > 1) {
+      if (trackedData.length > 1) {
         updateSuggestion(lineRef.current);
       }
       onDataRef.current?.(data);
@@ -3659,7 +3671,7 @@ export const TerminalPane = memo(function TerminalPane({
               whiteSpace: 'pre',
             }}
             className="select-none text-slate-400/50 hover:text-cyan-400/90 active:text-cyan-300 transition-colors"
-            title="Tap to complete (or press →)"
+            title="Tap to complete (→ full · Ctrl+→ word)"
           >
             {suggestion.suffix.replace(/ /g, '\u00A0')}
           </div>

@@ -97,6 +97,7 @@ import {
   type WorkspacePanelKind,
 } from './lib/workspaceState';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
+import { commandHistoryStore } from './lib/commandHistory';
 import { Welcome } from './components/WelcomeScreen';
 import { QuickConnectPalette } from './components/QuickConnectPalette';
 import { SaveLayoutPresetModal } from './components/WorkspaceLayoutMenu';
@@ -252,6 +253,13 @@ export default function App() {
   useEffect(() => { if (unlocked) setWorkspaceReady(true); }, [unlocked]);
   // A confirm left open across an auto-lock must not fire once the vault is locked.
   useEffect(() => { if (!unlocked) cancelPendingConfirm(); }, [unlocked]);
+  useEffect(() => {
+    if (unlocked) {
+      void commandHistoryStore.hydrate((limit) => bridge.listCommandHistory(limit), true);
+    } else {
+      commandHistoryStore.reset();
+    }
+  }, [unlocked]);
 
   // Quick-unlock status. `osKeychainStatus()` on its own only stats the
   // device-bound credential file, so it is safe to run on every mount/page

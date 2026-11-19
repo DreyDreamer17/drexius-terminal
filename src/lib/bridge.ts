@@ -10,6 +10,7 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readText as tauriReadText, writeText as tauriWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { DemoShell, homeOf, vfs } from './demoShell';
+import { commandHistoryStore, looksSensitiveCommand } from './commandHistory';
 import type {
   ActiveSshSession,
   ActiveTunnelInfo,
@@ -2221,28 +2222,56 @@ export const bridge = {
 
   // ── Command History ──
   async addCommandHistory(item: { hostId?: string | null; hostLabel: string; command: string; cwd?: string | null }): Promise<CommandHistoryItem> {
+    const trimmed = item.command.trim();
+    if (!trimmed) {
+      throw new Error('Empty command');
+    }
+    if (looksSensitiveCommand(trimmed)) {
+      throw new Error('Not recorded: the command looks like it contains a credential.');
+    }
     if (isTauri) {
-      return invoke('command_history_add', {
+      const saved = await invoke<CommandHistoryItem>('command_history_add', {
         hostId: item.hostId ?? null,
         hostLabel: item.hostLabel,
-        command: item.command,
+        command: trimmed,
         cwd: item.cwd ?? null,
       });
+      commandHistoryStore.reconcile(saved);
+      return saved;
     }
-    const memItem: CommandHistoryItem = {
+    const hostId = item.hostId ?? null;
+    const nowMs = Date.now();
+    let memItem: CommandHistoryItem = {
       id: uid(),
-      hostId: item.hostId,
+      hostId,
       hostLabel: item.hostLabel,
-      command: item.command,
-      cwd: item.cwd,
-      executedAt: Date.now(),
+      command: trimmed,
+      cwd: item.cwd ?? null,
+      executedAt: nowMs,
       starred: false,
+      runCount: 1,
     };
     try {
-      const list = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
+      const list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
+      const idx = list.findIndex((x) => (x.hostId ?? null) === hostId && x.command === trimmed);
+      if (idx !== -1) {
+        const prev = list[idx];
+        list.splice(idx, 1);
+        memItem = {
+          ...prev,
+          hostLabel: item.hostLabel || prev.hostLabel,
+          cwd: item.cwd ?? prev.cwd,
+          executedAt: nowMs,
+          runCount: Math.max(1, prev.runCount ?? 1) + 1,
+        };
+      }
       list.unshift(memItem);
-      localStorage.setItem('drx.cmd_history', JSON.stringify(list.slice(0, 300)));
+      // Keep all starred commands plus up to 1000 most recent unstarred commands
+      let unstarred = 0;
+      const pruned = list.filter((x) => x.starred || ++unstarred <= 1000);
+      localStorage.setItem('drx.cmd_history', JSON.stringify(pruned));
     } catch {}
+    commandHistoryStore.reconcile(memItem);
     return memItem;
   },
 
@@ -2254,7 +2283,12 @@ export const bridge = {
       let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       if (search) {
         const q = search.toLowerCase();
-        list = list.filter((i) => i.command.toLowerCase().includes(q) || i.hostLabel.toLowerCase().includes(q));
+        list = list.filter(
+          (i) =>
+            i.command.toLowerCase().includes(q) ||
+            i.hostLabel.toLowerCase().includes(q) ||
+            (i.cwd && i.cwd.toLowerCase().includes(q)),
+        );
       }
       return list.slice(0, limit);
     } catch {
@@ -2263,13 +2297,18 @@ export const bridge = {
   },
 
   async toggleStarCommandHistory(id: string): Promise<boolean> {
-    if (isTauri) return invoke('command_history_toggle_star', { id });
+    if (isTauri) {
+      const starred = await invoke<boolean>('command_history_toggle_star', { id });
+      commandHistoryStore.setStarred(id, starred);
+      return starred;
+    }
     try {
       const list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       const item = list.find((i) => i.id === id);
       if (item) {
         item.starred = !item.starred;
         localStorage.setItem('drx.cmd_history', JSON.stringify(list));
+        commandHistoryStore.setStarred(id, item.starred);
         return item.starred;
       }
     } catch {}
@@ -2277,20 +2316,30 @@ export const bridge = {
   },
 
   async deleteCommandHistory(id: string): Promise<void> {
-    if (isTauri) return invoke('command_history_delete', { id });
+    if (isTauri) {
+      await invoke('command_history_delete', { id });
+      commandHistoryStore.remove(id);
+      return;
+    }
     try {
       let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       list = list.filter((i) => i.id !== id);
       localStorage.setItem('drx.cmd_history', JSON.stringify(list));
+      commandHistoryStore.remove(id);
     } catch {}
   },
 
   async clearCommandHistory(): Promise<void> {
-    if (isTauri) return invoke('command_history_clear');
+    if (isTauri) {
+      await invoke('command_history_clear');
+      commandHistoryStore.clearUnstarred();
+      return;
+    }
     try {
       let list: CommandHistoryItem[] = JSON.parse(localStorage.getItem('drx.cmd_history') || '[]');
       list = list.filter((i) => i.starred);
       localStorage.setItem('drx.cmd_history', JSON.stringify(list));
+      commandHistoryStore.clearUnstarred();
     } catch {}
   },
 

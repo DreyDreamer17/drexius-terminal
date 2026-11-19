@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { ConnectionLog, CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { normalizeHistoryTimestampMs } from '../lib/commandHistory';
 import { cn } from '../utils/cn';
 import { safeUid } from '../utils/uuid';
 import { confirmDialog } from './ConfirmDialog';
@@ -35,7 +36,7 @@ const formatDuration = (seconds?: number | null) => {
 };
 
 const timeAgo = (ts: number): string => {
-  const diff = Math.floor((Date.now() - ts) / 1000);
+  const diff = Math.max(0, Math.floor((Date.now() - normalizeHistoryTimestampMs(ts)) / 1000));
   if (diff < 60) return `${diff}s ago`;
   const m = Math.floor(diff / 60);
   if (m < 60) return `${m}m ago`;

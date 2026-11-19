@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { CommandHistoryItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { normalizeHistoryTimestampMs } from '../lib/commandHistory';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { confirmDialog } from './ConfirmDialog';
@@ -29,7 +30,7 @@ interface Props {
 }
 
 const timeAgo = (ts: number): string => {
-  const diff = Math.floor((Date.now() - ts) / 1000);
+  const diff = Math.max(0, Math.floor((Date.now() - normalizeHistoryTimestampMs(ts)) / 1000));
   if (diff < 60) return `${diff}s ago`;
   const m = Math.floor(diff / 60);
   if (m < 60) return `${m}m ago`;
@@ -328,6 +329,17 @@ export function CommandSearchModal({
                           <Clock className="h-3 w-3" />
                           {timeAgo(item.executedAt)}
                         </span>
+                        {(item.runCount ?? 1) > 1 && (
+                          <>
+                            <span>·</span>
+                            <span
+                              className="shrink-0 rounded bg-white/5 px-1 font-mono text-slate-400"
+                              title={`Executed ${item.runCount} times`}
+                            >
+                              ×{item.runCount}
+                            </span>
+                          </>
+                        )}
                         <span>·</span>
                         <span className="rounded bg-white/5 px-1 py-0.2 font-mono text-slate-400 truncate max-w-[140px]">
                           {item.hostLabel}

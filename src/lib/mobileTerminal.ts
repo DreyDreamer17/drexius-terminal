@@ -115,14 +115,17 @@ export function modifiedTerminalInput(data: string, modifiers: TerminalModifiers
 
 export type GhostSuggestionKeyAction =
   | 'accept'
+  | 'accept-word'
   | 'dismiss-consume'
   | 'dismiss-passthrough'
   | 'passthrough';
 
 /**
  * Decides how a desktop keyboard event interacts with an active inline ghost suggestion.
- * `Tab` never accepts inline ghost suggestions so native shell Tab completion (such as
- * `cd <Tab>` on remote Linux shells) always reaches the PTY and never steals terminal focus.
+ * - Unmodified `ArrowRight` accepts the full suggestion.
+ * - `Ctrl+ArrowRight` (without Alt/Meta/Shift) accepts the next word/path segment.
+ * - `Tab` never accepts inline ghost suggestions so native shell Tab completion (such as
+ *   `cd <Tab>` on remote Linux shells) always reaches the PTY and never steals terminal focus.
  */
 export function resolveGhostSuggestionKeyAction(
   event: Pick<KeyboardEvent, 'key' | 'type' | 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'>,
@@ -133,7 +136,11 @@ export function resolveGhostSuggestionKeyAction(
   const hasModifier = event.ctrlKey || event.altKey || event.metaKey || event.shiftKey;
 
   if (event.key === 'ArrowRight') {
-    return hasModifier ? 'dismiss-passthrough' : 'accept';
+    if (!hasModifier) return 'accept';
+    if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      return 'accept-word';
+    }
+    return 'dismiss-passthrough';
   }
 
   if (event.key === 'Escape' && !hasModifier) {

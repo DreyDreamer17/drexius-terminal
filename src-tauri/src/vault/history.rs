@@ -61,6 +61,10 @@ pub fn logs_clear(vault: State<'_, Vault>) -> AppResult<()> {
 
 // ── Command History ──
 
+fn default_run_count() -> i64 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandHistoryItem {
@@ -71,6 +75,8 @@ pub struct CommandHistoryItem {
     pub cwd: Option<String>,
     pub executed_at: i64,
     pub starred: bool,
+    #[serde(default = "default_run_count")]
+    pub run_count: i64,
 }
 
 /// Heuristic for commands that probably carry a credential. Shared by command history and the snapshot path,
@@ -121,19 +127,62 @@ pub fn command_history_add(
     if looks_sensitive_command(trimmed) {
         return Err(AppError::Other("Not recorded: the command looks like it contains a credential.".into()));
     }
-    let item = CommandHistoryItem {
-        id: uuid::Uuid::new_v4().to_string(),
-        host_id,
-        host_label,
-        command: trimmed.to_string(),
-        cwd,
-        executed_at: now(),
-        starred: false,
-    };
+    let ts = now();
+
     vault.with(|c| {
+        let host_key = host_id.as_deref().unwrap_or("");
+        // Deduplicate by (host_id, command): bump timestamp, cwd, and frequency while preserving starred state.
+        let existing: Option<(String, bool, i64, Option<String>)> = c
+            .query_row(
+                "SELECT id, starred, run_count, cwd FROM command_history
+                 WHERE COALESCE(host_id, '') = ?1 AND command = ?2
+                 ORDER BY executed_at DESC LIMIT 1",
+                params![host_key, trimmed],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get::<_, i64>(1)? != 0,
+                        r.get::<_, i64>(2).unwrap_or(1).max(1),
+                        r.get(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((eid, starred, prev_runs, prev_cwd)) = existing {
+            let next_runs = prev_runs.saturating_add(1);
+            let next_cwd = cwd.clone().or(prev_cwd);
+            c.execute(
+                "UPDATE command_history
+                 SET executed_at = ?1, cwd = ?2, host_label = ?3, run_count = ?4
+                 WHERE id = ?5",
+                params![ts, next_cwd, host_label, next_runs, eid],
+            )?;
+            return Ok(CommandHistoryItem {
+                id: eid,
+                host_id,
+                host_label,
+                command: trimmed.to_string(),
+                cwd: next_cwd,
+                executed_at: ts,
+                starred,
+                run_count: next_runs,
+            });
+        }
+
+        let item = CommandHistoryItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            host_id,
+            host_label,
+            command: trimmed.to_string(),
+            cwd,
+            executed_at: ts,
+            starred: false,
+            run_count: 1,
+        };
         c.execute(
-            "INSERT INTO command_history (id, host_id, host_label, command, cwd, executed_at, starred)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO command_history (id, host_id, host_label, command, cwd, executed_at, starred, run_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1)",
             params![
                 item.id,
                 item.host_id,
@@ -141,12 +190,17 @@ pub fn command_history_add(
                 item.command,
                 item.cwd,
                 item.executed_at,
-                if item.starred { 1 } else { 0 }
             ],
         )?;
-        Ok(())
-    })?;
-    Ok(item)
+        // Cap unstarred history at 1000 unique (host, command) entries; starred commands are always kept.
+        let _ = c.execute(
+            "DELETE FROM command_history WHERE starred = 0 AND id NOT IN (
+                SELECT id FROM command_history WHERE starred = 0 ORDER BY executed_at DESC LIMIT 1000
+             )",
+            [],
+        );
+        Ok(item)
+    })
 }
 
 #[tauri::command]
@@ -156,13 +210,13 @@ pub fn command_history_list(
     vault: State<'_, Vault>,
 ) -> AppResult<Vec<CommandHistoryItem>> {
     vault.with(|c| {
-        let max_rows = limit.unwrap_or(200);
+        let max_rows = limit.unwrap_or(200).min(2000);
         if let Some(ref q) = search {
             let pattern = format!("%{}%", q);
             let mut st = c.prepare(
-                "SELECT id, host_id, host_label, command, cwd, executed_at, starred
+                "SELECT id, host_id, host_label, command, cwd, executed_at, starred, run_count
                  FROM command_history
-                 WHERE command LIKE ?1 OR host_label LIKE ?1
+                 WHERE command LIKE ?1 OR host_label LIKE ?1 OR COALESCE(cwd, '') LIKE ?1
                  ORDER BY executed_at DESC LIMIT ?2",
             )?;
             let mapped = st.query_map(params![pattern, max_rows], |r| {
@@ -175,12 +229,13 @@ pub fn command_history_list(
                     cwd: r.get(4)?,
                     executed_at: r.get(5)?,
                     starred: starred_int != 0,
+                    run_count: r.get::<_, i64>(7).unwrap_or(1).max(1),
                 })
             })?.collect::<Result<Vec<_>, _>>()?;
             Ok(mapped)
         } else {
             let mut st = c.prepare(
-                "SELECT id, host_id, host_label, command, cwd, executed_at, starred
+                "SELECT id, host_id, host_label, command, cwd, executed_at, starred, run_count
                  FROM command_history
                  ORDER BY executed_at DESC LIMIT ?1",
             )?;
@@ -194,6 +249,7 @@ pub fn command_history_list(
                     cwd: r.get(4)?,
                     executed_at: r.get(5)?,
                     starred: starred_int != 0,
+                    run_count: r.get::<_, i64>(7).unwrap_or(1).max(1),
                 })
             })?.collect::<Result<Vec<_>, _>>()?;
             Ok(mapped)

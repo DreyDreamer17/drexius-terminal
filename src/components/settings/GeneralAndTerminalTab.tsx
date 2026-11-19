@@ -876,8 +876,8 @@ export function GeneralAndTerminalTab({
                 <div className="min-w-0 flex-1">
                   <div className="text-xs font-semibold text-white">Real-time Inline Ghost Suggestions</div>
                   <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                    Display Fish/Zsh-style inline command completions from history and catalog (press → or tap to
-                    complete; Tab always uses your shell&apos;s native completion).
+                    Display Fish/Zsh-style inline command completions ranked by host, directory, and frequency (press →
+                    or tap for full command, Ctrl+→ for next word; Tab always uses your shell&apos;s native completion).
                   </p>
                 </div>
               </div>

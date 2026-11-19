@@ -489,10 +489,13 @@ test('ghost suggestion key resolution uses Right Arrow to accept and lets Tab pa
   assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight'), false), 'passthrough');
   assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { type: 'keyup' }), true), 'passthrough');
 
-  // Modified Right Arrow (word jump / selection) dismisses the ghost and passes through instead of accepting
-  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { ctrlKey: true }), true), 'dismiss-passthrough');
+  // Ctrl+Right Arrow accepts the next word; other modified Right Arrows (Alt split focus, Shift/Meta selection) dismiss and pass through
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { ctrlKey: true }), true), 'accept-word');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { ctrlKey: true }), false), 'passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { altKey: true }), true), 'dismiss-passthrough');
   assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { shiftKey: true }), true), 'dismiss-passthrough');
   assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { metaKey: true }), true), 'dismiss-passthrough');
+  assert.equal(resolveGhostSuggestionKeyAction(keyEvent('ArrowRight', { ctrlKey: true, shiftKey: true }), true), 'dismiss-passthrough');
 
   // Escape consumes the event to dismiss the ghost without sending ESC to the shell
   assert.equal(resolveGhostSuggestionKeyAction(keyEvent('Escape'), true), 'dismiss-consume');

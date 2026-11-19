@@ -499,6 +499,7 @@ export interface CommandHistoryItem {
   cwd?: string | null;
   executedAt: number;
   starred: boolean;
+  runCount?: number;
 }
 
 export interface ClipboardItem {

@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS paired_devices (
 );
 CREATE TABLE IF NOT EXISTS command_history (
     id TEXT PRIMARY KEY, host_id TEXT, host_label TEXT NOT NULL, command TEXT NOT NULL,
-    cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0
+    cwd TEXT, executed_at INTEGER NOT NULL, starred INTEGER NOT NULL DEFAULT 0,
+    run_count INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS clipboard_history (
     id TEXT PRIMARY KEY, content TEXT NOT NULL, char_count INTEGER NOT NULL,
@@ -222,6 +223,42 @@ impl Vault {
             let tx = conn.unchecked_transaction()?;
             add_column_if_missing(&tx, "hosts", "proxy_command", "TEXT")?;
             tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
+        }
+        // v6: command_history gains run_count frequency tracking, deduplication, and lookup indexes
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(5);
+        if user_version < 6 {
+            let tx = conn.unchecked_transaction()?;
+            add_column_if_missing(&tx, "command_history", "run_count", "INTEGER NOT NULL DEFAULT 1")?;
+            // Collapse legacy duplicate (host_id, command) rows into the most recent entry,
+            // preserving starred state and summing prior executions into run_count.
+            tx.execute_batch(
+                "CREATE TEMP TABLE _ch_agg AS
+                 SELECT
+                   COALESCE(host_id, '') AS host_key,
+                   command,
+                   MAX(executed_at) AS max_ts,
+                   MAX(starred) AS any_starred,
+                   SUM(CASE WHEN run_count > 0 THEN run_count ELSE 1 END) AS total_runs
+                 FROM command_history
+                 GROUP BY COALESCE(host_id, ''), command;
+                 CREATE TEMP TABLE _ch_keep AS
+                 SELECT a.host_key, a.command, a.any_starred, a.total_runs,
+                   (SELECT ch.id FROM command_history ch
+                    WHERE COALESCE(ch.host_id, '') = a.host_key AND ch.command = a.command
+                    ORDER BY ch.executed_at DESC, ch.rowid DESC LIMIT 1) AS keep_id
+                 FROM _ch_agg a;
+                 UPDATE command_history
+                 SET starred = (SELECT k.any_starred FROM _ch_keep k WHERE k.keep_id = command_history.id),
+                     run_count = (SELECT k.total_runs FROM _ch_keep k WHERE k.keep_id = command_history.id)
+                 WHERE id IN (SELECT keep_id FROM _ch_keep);
+                 DELETE FROM command_history WHERE id NOT IN (SELECT keep_id FROM _ch_keep);
+                 DROP TABLE _ch_keep;
+                 DROP TABLE _ch_agg;
+                 CREATE INDEX IF NOT EXISTS idx_command_history_host_cmd ON command_history (COALESCE(host_id, ''), command);
+                 CREATE INDEX IF NOT EXISTS idx_command_history_executed_at ON command_history (executed_at DESC);"
+            )?;
+            tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
         *self.inner.lock() = Some(Unlocked { conn, root_key: key });
