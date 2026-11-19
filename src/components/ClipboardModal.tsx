@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import type { ClipboardItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
+import { normalizeHistoryTimestampMs } from '../lib/commandHistory';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { BackPriority } from '../lib/backNavigation';
 import { useBackHandler } from '../hooks/useBackHandler';
@@ -25,7 +26,7 @@ interface Props {
 }
 
 const timeAgo = (ts: number): string => {
-  const diff = Math.floor((Date.now() - ts) / 1000);
+  const diff = Math.max(0, Math.floor((Date.now() - normalizeHistoryTimestampMs(ts)) / 1000));
   if (diff < 60) return `${diff}s ago`;
   const m = Math.floor(diff / 60);
   if (m < 60) return `${m}m ago`;
@@ -320,8 +321,12 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
                   </div>
 
                   {/* Actions on hover / selection */}
-                  <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                  <div
+                    className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <button
+                      type="button"
                       onClick={(e) => handleCopyOnly(item, e)}
                       title="Copy to OS clipboard without pasting"
                       className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white transition"
@@ -333,6 +338,7 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
                       )}
                     </button>
                     <button
+                      type="button"
                       onClick={(e) => handleDelete(item, e)}
                       title="Delete from history"
                       className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition"
@@ -340,7 +346,11 @@ export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                     <button
-                      onClick={() => handleSelectClip(item)}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectClip(item);
+                      }}
                       title="Paste into terminal"
                       className="flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition shadow-sm hover:brightness-110"
                       style={{

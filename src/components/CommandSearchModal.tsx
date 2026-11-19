@@ -391,9 +391,13 @@ export function CommandSearchModal({
                         </button>
                       </div>
                     ) : (
-                    <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                    <div
+                      className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {onSaveSnippet && (
                         <button
+                          type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             onSaveSnippet(item.command);
@@ -405,6 +409,7 @@ export function CommandSearchModal({
                         </button>
                       )}
                       <button
+                        type="button"
                         onClick={(e) => handleDelete(item, e)}
                         title="Delete from history"
                         className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition"
@@ -412,7 +417,9 @@ export function CommandSearchModal({
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                       <button
-                        onClick={() => {
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           onSelect(item.command, false);
                           onClose();
                         }}
