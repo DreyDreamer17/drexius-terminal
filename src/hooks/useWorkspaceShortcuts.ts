@@ -43,6 +43,7 @@ export interface UseWorkspaceShortcutsParams {
   terminalContext: Tab | undefined | null;
   activePaneId: string | null;
   activePane: Pane | undefined;
+  maximizedPaneId: string | null;
   tabs: Tab[];
   broadcast: boolean;
   setBroadcast: Dispatch<SetStateAction<boolean>>;
@@ -105,6 +106,7 @@ export function useWorkspaceShortcuts({
   terminalContext,
   activePaneId,
   activePane,
+  maximizedPaneId,
   tabs,
   broadcast,
   setBroadcast,
@@ -178,7 +180,7 @@ export function useWorkspaceShortcuts({
       const target = e.target as HTMLElement | null;
 
       // ── Never intercept when shortcut recorder is active ──
-      if (target && target.closest('[data-shortcut-recorder]')) return;
+      if (target && typeof target.closest === 'function' && target.closest('[data-shortcut-recorder]')) return;
 
       // ── When settings modal is open, don't execute background workspace shortcuts ──
       if (showSettings) {
@@ -200,56 +202,60 @@ export function useWorkspaceShortcuts({
         target && !inTerminal && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       if (isInput) return;
 
-      // ── Directional Split Swap / Move (Alt+Shift+Arrow) ──
-      if (bindingMatches(e, shortcuts.swap_split_left, 'Alt+Shift+ArrowLeft')) {
-        e.preventDefault();
-        e.stopPropagation();
-        swapSplitDirection('left');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.swap_split_right, 'Alt+Shift+ArrowRight')) {
-        e.preventDefault();
-        e.stopPropagation();
-        swapSplitDirection('right');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.swap_split_up, 'Alt+Shift+ArrowUp')) {
-        e.preventDefault();
-        e.stopPropagation();
-        swapSplitDirection('up');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.swap_split_down, 'Alt+Shift+ArrowDown')) {
-        e.preventDefault();
-        e.stopPropagation();
-        swapSplitDirection('down');
-        return;
-      }
+      // ── Directional Split Swap / Move & Focus (only when multiple panes are visible) ──
+      // On a single or zoomed terminal pane, let Alt+Arrow* pass through to the shell
+      // for native word-by-word cursor navigation.
+      const canNavigateSplits = Boolean(terminalContext && terminalContext.panes.length > 1 && !maximizedPaneId);
+      if (canNavigateSplits) {
+        if (bindingMatches(e, shortcuts.swap_split_left, 'Alt+Shift+ArrowLeft')) {
+          e.preventDefault();
+          e.stopPropagation();
+          swapSplitDirection('left');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.swap_split_right, 'Alt+Shift+ArrowRight')) {
+          e.preventDefault();
+          e.stopPropagation();
+          swapSplitDirection('right');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.swap_split_up, 'Alt+Shift+ArrowUp')) {
+          e.preventDefault();
+          e.stopPropagation();
+          swapSplitDirection('up');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.swap_split_down, 'Alt+Shift+ArrowDown')) {
+          e.preventDefault();
+          e.stopPropagation();
+          swapSplitDirection('down');
+          return;
+        }
 
-      // ── Directional Split Navigation ──
-      if (bindingMatches(e, shortcuts.focus_split_left, 'Alt+ArrowLeft')) {
-        e.preventDefault();
-        e.stopPropagation();
-        navigateSplitDirection('left');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.focus_split_right, 'Alt+ArrowRight')) {
-        e.preventDefault();
-        e.stopPropagation();
-        navigateSplitDirection('right');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.focus_split_up, 'Alt+ArrowUp')) {
-        e.preventDefault();
-        e.stopPropagation();
-        navigateSplitDirection('up');
-        return;
-      }
-      if (bindingMatches(e, shortcuts.focus_split_down, 'Alt+ArrowDown')) {
-        e.preventDefault();
-        e.stopPropagation();
-        navigateSplitDirection('down');
-        return;
+        if (bindingMatches(e, shortcuts.focus_split_left, 'Alt+ArrowLeft')) {
+          e.preventDefault();
+          e.stopPropagation();
+          navigateSplitDirection('left');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.focus_split_right, 'Alt+ArrowRight')) {
+          e.preventDefault();
+          e.stopPropagation();
+          navigateSplitDirection('right');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.focus_split_up, 'Alt+ArrowUp')) {
+          e.preventDefault();
+          e.stopPropagation();
+          navigateSplitDirection('up');
+          return;
+        }
+        if (bindingMatches(e, shortcuts.focus_split_down, 'Alt+ArrowDown')) {
+          e.preventDefault();
+          e.stopPropagation();
+          navigateSplitDirection('down');
+          return;
+        }
       }
 
       // ── Open Settings (Ctrl/Cmd + ,) ──
@@ -610,6 +616,7 @@ export function useWorkspaceShortcuts({
     terminalContext,
     activePaneId,
     activePane,
+    maximizedPaneId,
     activeTab,
     updatePaneFontSize,
     showFontZoomHud,

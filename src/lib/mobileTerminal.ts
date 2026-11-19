@@ -226,6 +226,12 @@ export const keyPaletteGroups = [
       { label: 'pgDn', data: '\x1b[6~' },
       { label: 'ins', data: '\x1b[2~' },
       { label: 'del', data: '\x1b[3~' },
+      { label: 'alt+.', data: '\x1b.' },
+      { label: 'alt+⌫', data: '\x1b\x7f' },
+      { label: 'alt+b', data: '\x1bb' },
+      { label: 'alt+f', data: '\x1bf' },
+      { label: 'alt+d', data: '\x1bd' },
+      { label: 'ctrl+r', data: '\x12' },
     ],
   },
   {

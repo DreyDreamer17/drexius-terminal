@@ -72,6 +72,13 @@ import {
   getTerminalMinimumContrastRatio,
   loadWebglAddonWithBlendFix,
 } from '../lib/terminalRenderer';
+import {
+  resolveAltMetaSequence,
+  shouldSwallowAltKeypress,
+  updateAltSidesFromKeyEvent,
+  type AltSidesState,
+  type OptionAsMetaMode,
+} from '../lib/terminalInput';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
 import { BackPriority } from '../lib/backNavigation';
@@ -317,6 +324,7 @@ interface Props {
   ghostSuggestions?: boolean;
   copyOnSelect?: boolean;
   rightClickPaste?: boolean;
+  optionAsMeta?: OptionAsMetaMode;
   terminalPadding?: number;
   terminalOpacity?: number;
   terminalBlur?: number;
@@ -394,6 +402,7 @@ export const TerminalPane = memo(function TerminalPane({
   ghostSuggestions = true,
   copyOnSelect = false,
   rightClickPaste = false,
+  optionAsMeta = 'both',
   terminalPadding = 10,
   terminalOpacity = 1.0,
   terminalBlur = 0,
@@ -463,6 +472,13 @@ export const TerminalPane = memo(function TerminalPane({
   copyOnSelectRef.current = copyOnSelect;
   const rightClickPasteRef = useRef(rightClickPaste);
   rightClickPasteRef.current = rightClickPaste;
+  const optionAsMetaRef = useRef<OptionAsMetaMode>(optionAsMeta);
+  optionAsMetaRef.current = optionAsMeta;
+  const isSplitRef = useRef(isSplit);
+  isSplitRef.current = isSplit;
+  const isMaximizedRef = useRef(isMaximized);
+  isMaximizedRef.current = isMaximized;
+  const altSidesRef = useRef<AltSidesState>({ left: false, right: false });
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -1793,6 +1809,7 @@ export const TerminalPane = memo(function TerminalPane({
       cursorBlink,
       cursorStyle,
       scrollback,
+      macOptionIsMeta: optionAsMetaRef.current === 'both',
       allowProposedApi: true,
       allowTransparency: isTranslucent,
       customGlyphs: true,
@@ -2289,6 +2306,21 @@ export const TerminalPane = memo(function TerminalPane({
       setIsAlternateBuffer(true);
     }
 
+    const isMacPlatform =
+      typeof navigator !== 'undefined' &&
+      (/Macintosh|Mac OS X|MacIntel|MacPPC|Mac68K/i.test(navigator.userAgent) ||
+        /Mac/i.test(navigator.platform || ''));
+
+    const handleAltSideTrack = (ev: KeyboardEvent) => {
+      altSidesRef.current = updateAltSidesFromKeyEvent(altSidesRef.current, ev);
+    };
+    const resetAltSides = () => {
+      altSidesRef.current = { left: false, right: false };
+    };
+    window.addEventListener('keydown', handleAltSideTrack, true);
+    window.addEventListener('keyup', handleAltSideTrack, true);
+    window.addEventListener('blur', resetAltSides);
+
     term.attachCustomKeyEventHandler((e) => {
       if (mobile) {
         if (e.keyCode === 13 || e.key === 'Enter') {
@@ -2316,7 +2348,15 @@ export const TerminalPane = memo(function TerminalPane({
       // handled in App.tsx through `registry.get(id).openHistory`, so it is not hardcoded here.
 
       // Allow directional split shortcuts (Alt+ArrowLeft/Right/Up/Down) to bubble to window listener
-      if (e.altKey && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase()) && e.type === 'keydown') {
+      // only when multiple panes are actually visible in this tab; on a single or zoomed pane, let
+      // Alt+ArrowLeft/Right reach the shell for word-by-word navigation.
+      if (
+        isSplitRef.current &&
+        !isMaximizedRef.current &&
+        e.altKey &&
+        ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase()) &&
+        e.type === 'keydown'
+      ) {
         return false;
       }
 
@@ -2430,6 +2470,27 @@ export const TerminalPane = memo(function TerminalPane({
       if (ghostAction === 'dismiss-passthrough') {
         clearSuggestion();
         return true;
+      }
+
+      // Cross-platform Alt / macOS Option-as-Meta handling (e.g. Alt+. yank-last-arg,
+      // Alt+B/F word motion, Alt+D/Backspace word kill, Alt+0..9, non-US layouts, Left/Right Option).
+      const altCtx = {
+        isMac: isMacPlatform,
+        optionAsMeta: optionAsMetaRef.current,
+        altSides: altSidesRef.current,
+      };
+      if (shouldSwallowAltKeypress(e, altCtx)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return false;
+      }
+      const altMetaSeq = resolveAltMetaSequence(e, altCtx);
+      if (altMetaSeq !== null) {
+        e.preventDefault();
+        e.stopPropagation();
+        clearSuggestion();
+        term.input(altMetaSeq, true);
+        return false;
       }
 
       return true;
@@ -2704,6 +2765,9 @@ export const TerminalPane = memo(function TerminalPane({
       document.removeEventListener('visibilitychange', handleVisibilityFit);
       window.removeEventListener('pageshow', handleSurfaceRestore);
       window.removeEventListener('focus', handleWindowFocus);
+      window.removeEventListener('keydown', handleAltSideTrack, true);
+      window.removeEventListener('keyup', handleAltSideTrack, true);
+      window.removeEventListener('blur', resetAltSides);
       elContainer?.removeEventListener('mouseup', handleMouseUpCopy);
       helperTextarea?.removeEventListener('beforeinput', handleBeforeInput as EventListener, true);
       helperTextarea?.removeEventListener('compositionstart', handleCompositionStart as EventListener, true);
@@ -2842,6 +2906,11 @@ export const TerminalPane = memo(function TerminalPane({
       /* */
     }
   }, [lineHeight]);
+
+  useEffect(() => {
+    if (!termRef.current) return;
+    termRef.current.options.macOptionIsMeta = optionAsMeta === 'both';
+  }, [optionAsMeta]);
 
   useEffect(() => {
     if (

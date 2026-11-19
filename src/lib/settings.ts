@@ -3,6 +3,9 @@
  * Persists general settings, UI element toggles, and customizable shortcuts.
  */
 
+import { normalizeOptionAsMetaMode, type OptionAsMetaMode } from './terminalInput.ts';
+
+export type { OptionAsMetaMode };
 export type TerminalFontWeight = '300' | '400' | '500' | '600' | '700';
 
 export interface TerminalFontOption {
@@ -155,6 +158,8 @@ export interface UiPreferences {
   ghostSuggestions: boolean;
   copyOnSelect: boolean;
   rightClickPaste: boolean;
+  /** macOS Option key as Meta/Alt (`both` = both Option keys send ESC+key, `left`/`right` keeps the opposite key for macOS symbols, `off` = native macOS symbols). */
+  optionAsMeta: OptionAsMetaMode;
 
   // Font & Typography Configuration
   fontFamily: string;
@@ -196,6 +201,7 @@ export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   ghostSuggestions: true,
   copyOnSelect: false,
   rightClickPaste: false,
+  optionAsMeta: 'both',
   fontFamily: 'JetBrains Mono',
   customFontFamily: '',
   fontWeight: '400',
@@ -487,7 +493,9 @@ export function loadUiPreferences(): UiPreferences {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_UI_PREFERENCES };
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_UI_PREFERENCES, ...parsed };
+    const merged = { ...DEFAULT_UI_PREFERENCES, ...parsed };
+    merged.optionAsMeta = normalizeOptionAsMetaMode(merged.optionAsMeta);
+    return merged;
   } catch {
     return { ...DEFAULT_UI_PREFERENCES };
   }

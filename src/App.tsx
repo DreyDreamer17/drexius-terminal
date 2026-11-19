@@ -2086,6 +2086,7 @@ export default function App() {
     terminalContext,
     activePaneId,
     activePane,
+    maximizedPaneId,
     tabs,
     broadcast,
     setBroadcast,
@@ -2702,6 +2703,7 @@ export default function App() {
                           ghostSuggestions={uiPrefs.ghostSuggestions}
                           copyOnSelect={uiPrefs.copyOnSelect}
                           rightClickPaste={uiPrefs.rightClickPaste}
+                          optionAsMeta={uiPrefs.optionAsMeta}
                           active={t.id === activeTabId && t.activePaneId === p.id && unlocked && !showSplash && (!mobile || mobilePage === 'terminals')}
                           mobileHidden={t.activePaneId !== p.id}
                           hidden={isPaneHidden}

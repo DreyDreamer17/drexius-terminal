@@ -5,6 +5,7 @@
  * including OSC-7 cwd reporting — so every UI feature is exercised identically.
  */
 import type { FileEntry, Host } from './types';
+import { extractLastShellArg } from './terminalInput';
 
 type FNode =
   | { type: 'dir'; children: Record<string, FNode>; mtime: number; mode: number }
@@ -151,6 +152,7 @@ export class DemoShell {
   private line = '';
   private history: string[] = [];
   private hIdx = -1;
+  private yankState: { historyIdx: number; insertedLen: number } | null = null;
   private home: string;
   private hostname: string;
   private startedAt = Date.now();
@@ -190,6 +192,43 @@ export class DemoShell {
   }
 
   input(data: string) {
+    // Readline yank-last-arg (Alt+.) — inserts the last argument of the previous command;
+    // pressing Alt+. repeatedly cycles backward through earlier commands' last arguments.
+    if (data === '\x1b.') {
+      if (!this.history.length) return;
+      let nextIdx = this.yankState ? this.yankState.historyIdx - 1 : this.history.length - 1;
+      let arg: string | null = null;
+      while (nextIdx >= 0) {
+        arg = extractLastShellArg(this.history[nextIdx]);
+        if (arg) break;
+        nextIdx -= 1;
+      }
+      if (!arg) return;
+      if (this.yankState && this.yankState.insertedLen > 0) {
+        const prevLen = Math.min(this.yankState.insertedLen, this.line.length);
+        this.line = this.line.slice(0, this.line.length - prevLen);
+        this.emit('\b \b'.repeat(prevLen));
+      }
+      this.line += arg;
+      this.emit(arg);
+      this.yankState = { historyIdx: nextIdx, insertedLen: arg.length };
+      return;
+    }
+    this.yankState = null;
+
+    // Readline backward-kill-word (Alt+Backspace)
+    if (data === '\x1b\x7f' || data === '\x1b\x08') {
+      if (!this.line.length) return;
+      const trimmed = this.line.replace(/\s+$/, '');
+      const cut = trimmed.replace(/\S+$/, '');
+      const removed = this.line.length - cut.length;
+      if (removed > 0) {
+        this.line = cut;
+        this.emit('\b \b'.repeat(removed));
+      }
+      return;
+    }
+
     // handle escape sequences (arrows)
     if (data === '\x1b[A' || data === '\x1b[B') {
       if (!this.history.length) return;

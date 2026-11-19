@@ -5,6 +5,7 @@ import {
   Code2,
   HardDrive,
   History,
+  Keyboard,
   KeyRound,
   Lock,
   Network,
@@ -19,7 +20,7 @@ import {
   Terminal,
   Timer,
 } from 'lucide-react';
-import { DEFAULT_UI_PREFERENCES, type UiPreferences } from '../../lib/settings';
+import { DEFAULT_UI_PREFERENCES, type OptionAsMetaMode, type UiPreferences } from '../../lib/settings';
 import type { DrexiusTheme } from '../../lib/themes';
 import { cn } from '../../utils/cn';
 import { CustomSelect } from '../CustomSelect';
@@ -784,6 +785,70 @@ export function GeneralAndTerminalTab({
                 onChange={(val) => updatePref('rightClickPaste', val)}
                 accentColor={accentColor}
               />
+            </div>
+          </div>
+
+          {/* macOS Option / Alt as Meta Key */}
+          <div className="space-y-1.5 sm:col-span-2">
+            <label className="text-xs font-medium text-slate-300">Option / Alt as Meta Key (macOS)</label>
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3.5 space-y-3">
+              <div className="flex items-start gap-3">
+                <div
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5"
+                  style={{ backgroundColor: `${accentColor}18`, color: accentColor }}
+                >
+                  <Keyboard className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-white">Treat Option (⌥) as Meta / Alt</div>
+                  <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    Send <span className="font-mono text-slate-200">ESC</span>-prefixed shell shortcuts like{' '}
+                    <span className="font-mono text-slate-200">Alt+.</span> (insert last argument),{' '}
+                    <span className="font-mono text-slate-200">Alt+B/F</span> (jump word), and{' '}
+                    <span className="font-mono text-slate-200">Alt+Backspace</span> instead of macOS symbols. Choose{' '}
+                    <span className="text-slate-200">Left</span> or <span className="text-slate-200">Right</span> to keep the opposite Option key for special characters (<span className="font-mono">@ &#123; &#125; [ ] ~</span>).
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="radiogroup" aria-label="Option as Meta mode">
+                {(
+                  [
+                    { value: 'both', label: 'Both', hint: 'Left & Right ⌥' },
+                    { value: 'left', label: 'Left only', hint: 'Right ⌥ types symbols' },
+                    { value: 'right', label: 'Right only', hint: 'Left ⌥ types symbols' },
+                    { value: 'off', label: 'Off', hint: 'macOS symbols only' },
+                  ] as { value: OptionAsMetaMode; label: string; hint: string }[]
+                ).map((opt) => {
+                  const selected = (uiPrefs.optionAsMeta ?? 'both') === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => updatePref('optionAsMeta', opt.value)}
+                      className={cn(
+                        'flex flex-col items-start rounded-lg border px-3 py-2 text-left transition cursor-pointer',
+                        selected
+                          ? 'text-white shadow-sm'
+                          : 'border-white/10 bg-white/[0.02] text-slate-400 hover:text-white hover:border-white/20'
+                      )}
+                      style={
+                        selected
+                          ? {
+                              borderColor: `${accentColor}80`,
+                              backgroundColor: `${accentColor}16`,
+                              color: accentColor,
+                            }
+                          : undefined
+                      }
+                    >
+                      <span className="text-xs font-semibold">{opt.label}</span>
+                      <span className="text-[10px] text-slate-400 leading-tight mt-0.5">{opt.hint}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
