@@ -1,6 +1,7 @@
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { AlertTriangle, HelpCircle } from 'lucide-react';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
+import { BackPriority } from '../lib/backNavigation';
 import type { DrexiusTheme } from '../lib/themes';
 
 export interface ConfirmOptions {
@@ -79,7 +80,7 @@ function ConfirmSheet({ request, theme }: { request: PendingConfirm; theme?: Dre
   return (
     // Portaled to <body> so it escapes any `inert` subtree, and layered above the lock
     // screen (z-1000) because the lock screen itself asks for confirmation.
-    <ResponsiveOverlay portal label={title} onClose={cancel} className="fixed inset-0 z-[1100] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
+    <ResponsiveOverlay portal label={title} onClose={cancel} backPriority={BackPriority.CONFIRM} className="fixed inset-0 z-[1100] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
       <div
         role="alertdialog"
         aria-describedby={message ? `confirm-${request.id}-message` : undefined}

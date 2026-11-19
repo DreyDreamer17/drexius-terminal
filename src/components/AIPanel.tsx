@@ -41,6 +41,8 @@ import { registry } from '../lib/sessions';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
 import { useMobile } from '../hooks/useMobile';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { BackPriority } from '../lib/backNavigation';
 import {
   ONE_WEEK_MS,
   createMsgId,
@@ -139,6 +141,13 @@ export function AIPanel({
   const historyRef = useRef<HTMLDivElement>(null);
 
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+
+  const isVisible = visible !== false;
+  useBackHandler(isVisible && showAttachMenu, () => setShowAttachMenu(false), BackPriority.POPOVER);
+  useBackHandler(isVisible && showProviderMenu, () => setShowProviderMenu(false), BackPriority.POPOVER);
+  useBackHandler(isVisible && showModelDropdown && !mobile, () => setShowModelDropdown(false), BackPriority.POPOVER);
+  useBackHandler(isVisible && showHistory, () => setShowHistory(false), BackPriority.PANEL_SUBVIEW);
+  useBackHandler(isVisible && showCfg, () => setShowCfg(false), BackPriority.PANEL_SUBVIEW);
   // OpenCode autonomous mode (--auto). Off by default; the user must opt in explicitly.
   const [opencodeAutonomous, setOpencodeAutonomous] = useState(
     () => localStorage.getItem(OPENCODE_AUTONOMOUS_KEY) === 'true'

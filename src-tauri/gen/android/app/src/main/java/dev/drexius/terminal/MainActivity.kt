@@ -17,7 +17,9 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -175,6 +177,10 @@ class MainActivity : TauriActivity() {
 
     private const val RENDERER_LOG_TAG = "DrexiusRenderer"
     private const val RENDERER_CRASH_LOOP_WINDOW_MS = 30_000L
+    private const val BACK_BRIDGE_NAME = "DrexiusAndroidBack"
+    private const val BACK_DISPATCH_TIMEOUT_MS = 450L
+    private const val BACK_DISPATCH_JS =
+      "(function(){try{return typeof window.__drexiusHandleBack==='function'?Boolean(window.__drexiusHandleBack()):false;}catch(_){return false;}})()"
 
     @Volatile
     private var lastRendererCrashAtMs = 0L
@@ -242,10 +248,105 @@ class MainActivity : TauriActivity() {
   }
 
   private var appWebView: WebView? = null
+  private val backHandler = Handler(Looper.getMainLooper())
+  @Volatile
+  private var webCanGoBack: Boolean = false
+  private var pendingBackToken: Long = 0L
+  private var pendingBackFallback: Runnable? = null
+
+  /**
+   * Bridges the React back-navigation stack's `canGoBack` state into Android's
+   * `OnBackPressedCallback` so Android 13+ Predictive Back-to-Home animations
+   * activate natively when at the root screen while in-app back navigation
+   * intercepts every modal, drawer, panel, sub-view, and previous tab.
+   */
+  inner class AndroidBackBridge {
+    @JavascriptInterface
+    fun setCanGoBack(canGoBack: Boolean) {
+      runOnUiThread {
+        webCanGoBack = canGoBack
+        syncBackCallbackEnabled()
+      }
+    }
+  }
+
+  private val backPressedCallback = object : OnBackPressedCallback(
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+  ) {
+    override fun handleOnBackPressed() {
+      dispatchBackToWebView()
+    }
+  }
+
+  private fun syncBackCallbackEnabled() {
+    backPressedCallback.isEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      webCanGoBack
+    } else {
+      true
+    }
+  }
+
+  private fun cancelPendingBackFallback() {
+    pendingBackFallback?.let { backHandler.removeCallbacks(it) }
+    pendingBackFallback = null
+  }
+
+  private fun dispatchBackToWebView() {
+    val webView = appWebView
+    if (webView == null || isFinishing || isDestroyed) {
+      handleUnhandledRootBack()
+      return
+    }
+
+    cancelPendingBackFallback()
+    val token = ++pendingBackToken
+    val fallback = Runnable {
+      if (pendingBackToken != token) return@Runnable
+      pendingBackFallback = null
+      handleUnhandledRootBack()
+    }
+    pendingBackFallback = fallback
+    backHandler.postDelayed(fallback, BACK_DISPATCH_TIMEOUT_MS)
+
+    try {
+      webView.evaluateJavascript(BACK_DISPATCH_JS) { rawResult ->
+        if (pendingBackToken != token) return@evaluateJavascript
+        cancelPendingBackFallback()
+        val handled = rawResult?.trim() == "true"
+        if (!handled) {
+          handleUnhandledRootBack()
+        }
+      }
+    } catch (_: Exception) {
+      if (pendingBackToken == token) {
+        cancelPendingBackFallback()
+        handleUnhandledRootBack()
+      }
+    }
+  }
+
+  private fun handleUnhandledRootBack() {
+    if (isFinishing || isDestroyed) return
+    // Move task to background rather than finishing MainActivity so active SSH/SFTP
+    // sessions and WebView scrollback stay intact across quick task switches.
+    if (!moveTaskToBack(true)) {
+      backPressedCallback.isEnabled = false
+      try {
+        onBackPressedDispatcher.onBackPressed()
+      } finally {
+        syncBackCallbackEnabled()
+      }
+    }
+  }
 
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     appWebView = webView
+    webCanGoBack = false
+    syncBackCallbackEnabled()
+    try {
+      webView.addJavascriptInterface(AndroidBackBridge(), BACK_BRIDGE_NAME)
+    } catch (_: Exception) {}
     rendererRecoveryInProgress = false
     rendererRecoveryPending = false
     Log.i(RENDERER_LOG_TAG, "WebView created: pid=${Process.myPid()}")
@@ -270,6 +371,9 @@ class MainActivity : TauriActivity() {
       // Do not let lifecycle hooks call onResume()/resumeTimers() on a
       // WebView whose renderer is already gone.
       appWebView = null
+      cancelPendingBackFallback()
+      webCanGoBack = false
+      runOnUiThread { syncBackCallbackEnabled() }
     }
 
     if (rendererRecoveryInProgress || rendererRecoveryPending) {
@@ -332,6 +436,8 @@ class MainActivity : TauriActivity() {
     installSplashScreen()
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    onBackPressedDispatcher.addCallback(this, backPressedCallback)
+    syncBackCallbackEnabled()
     instance = this
     isActivityVisible = true
     promptNotificationPermissionIfNeeded()
@@ -390,6 +496,8 @@ class MainActivity : TauriActivity() {
       rendererRecoveryPending = false
       rendererRecoveryInProgress = false
     }
+    cancelPendingBackFallback()
+    webCanGoBack = false
     appWebView = null
     super.onDestroy()
     if (instance == this) {

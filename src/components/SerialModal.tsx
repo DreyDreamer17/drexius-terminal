@@ -14,6 +14,8 @@ import {
 import { bridge } from '../lib/bridge';
 import type { SerialPortInfo } from '../lib/types';
 import type { DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -57,6 +59,7 @@ function CustomSelect<T extends string | number>({
 }: CustomSelectProps<T>) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  useBackHandler(open, () => setOpen(false), BackPriority.DROPDOWN);
 
   useEffect(() => {
     if (!open) return;
@@ -196,6 +199,7 @@ const FLOW_OPTIONS: SelectOption<string>[] = [
 ];
 
 export function SerialModal({ onClose, onConnect, theme }: Props) {
+  useBackHandler(true, onClose, BackPriority.MODAL);
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [port, setPort] = useState('');
   const [customPath, setCustomPath] = useState('');

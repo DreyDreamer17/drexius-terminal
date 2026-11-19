@@ -19,6 +19,8 @@ import type { ParsedSshHost, Vault } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 
 interface Props {
   vaults: Vault[];
@@ -58,6 +60,7 @@ export function SshConfigModal({
   const bgColor = activeTheme.xterm.background || '#0f141f';
 
   const [mode, setMode] = useState<'preview' | 'paste'>('preview');
+  useBackHandler(true, onClose, BackPriority.MODAL);
   const [pasteContent, setPasteContent] = useState('');
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [hosts, setHosts] = useState<ParsedSshHost[]>([]);

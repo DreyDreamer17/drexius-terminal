@@ -21,6 +21,8 @@ import {
 import { bridge } from '../lib/bridge';
 import type { AuthMethod, DetectedLocalKey, GeneratedKeySaved, KeychainInput, KeychainItem } from '../lib/types';
 import { cn } from '../utils/cn';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
@@ -54,6 +56,16 @@ export function KeychainPanel({ keychain, activeVaultId, onSave, onDelete, onRef
   const [generating, setGenerating] = useState(false);
   const [generatedResult, setGeneratedResult] = useState<GeneratedKeySaved | null>(null);
   const [copiedPub, setCopiedPub] = useState(false);
+
+  useBackHandler(editing !== null, () => setEditing(null), BackPriority.PANEL_SUBVIEW);
+  useBackHandler(
+    showKeyGen,
+    () => {
+      setShowKeyGen(false);
+      setGeneratedResult(null);
+    },
+    BackPriority.PANEL_SUBVIEW,
+  );
 
   const handleGenerateKey = async () => {
     setGenerating(true);

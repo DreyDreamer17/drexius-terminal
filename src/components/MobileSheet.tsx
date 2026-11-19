@@ -1,19 +1,29 @@
-import { createContext, useContext, useEffect, useRef, type CSSProperties, type ReactNode, type KeyboardEventHandler } from 'react';
+import { useContext, useEffect, useRef, type CSSProperties, type ReactNode, type KeyboardEventHandler } from 'react';
 import { createPortal } from 'react-dom';
 import { X, type LucideIcon } from 'lucide-react';
 import type { DrexiusTheme } from '../lib/themes';
+import { BackPriority, type BackPriorityLevel } from '../lib/backNavigation';
+import { useBackHandler, WorkspaceAccessContext } from '../hooks/useBackHandler';
 
-// Portaled sheets must inherit the workspace lock, not escape its inert root.
-export const WorkspaceAccessContext = createContext(true);
+export { WorkspaceAccessContext };
 
 /** Desktop styling stays with the caller. On phones the same dialog becomes a sheet. */
-export function ResponsiveOverlay({ children, onClose, className = '', label, onKeyDown, portal = false }: {
+export function ResponsiveOverlay({ children, onClose, className = '', label, onKeyDown, portal = false, backPriority = BackPriority.MODAL }: {
   children: ReactNode; onClose: () => void; className?: string; label: string;
-  onKeyDown?: KeyboardEventHandler<HTMLDivElement>; portal?: boolean;
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>; portal?: boolean; backPriority?: BackPriorityLevel;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  useBackHandler(
+    true,
+    () => {
+      if (ref.current?.closest('[inert]')) return false;
+      closeRef.current();
+      return true;
+    },
+    backPriority,
+  );
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const node = ref.current!;

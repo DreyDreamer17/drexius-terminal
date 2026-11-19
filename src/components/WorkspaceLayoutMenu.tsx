@@ -23,6 +23,8 @@ import type { SplitDirection } from '../lib/splitTree';
 import type { DrexiusTheme } from '../lib/themes';
 import type { Host, Layout, Pane, PopoutPaneEntry, Tab } from '../lib/types';
 import { LOCAL_HOST, type SplitMenuState } from '../lib/workspaceState';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { cn } from '../utils/cn';
 import { OsIcon } from './OsIcon';
 
@@ -61,6 +63,7 @@ export function SplitMenuPopover({
   onApplyLayoutPreset,
   onDeletePreset,
 }: SplitMenuPopoverProps) {
+  useBackHandler(true, () => setSplitMenu(null), BackPriority.POPOVER);
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={() => setSplitMenu(null)} />
@@ -459,6 +462,7 @@ export function SaveLayoutPresetModal({
   onClose,
   onSave,
 }: SaveLayoutPresetModalProps) {
+  useBackHandler(true, onClose, BackPriority.MODAL);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
       <div

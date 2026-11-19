@@ -25,6 +25,8 @@ import {
 import { bridge, isBridgeError, isTauri } from '../../lib/bridge';
 import type { DrexiusTheme } from '../../lib/themes';
 import { CustomSelect } from '../CustomSelect';
+import { BackPriority } from '../../lib/backNavigation';
+import { useBackHandler } from '../../hooks/useBackHandler';
 import type { SettingsTab } from '../SettingsModal';
 import { ToggleSwitch } from '../ToggleSwitch';
 
@@ -80,6 +82,15 @@ export function SecuritySettingsTab({
   const [directUnlockBusy, setDirectUnlockBusy] = useState(false);
   const [directUnlockErr, setDirectUnlockErr] = useState<string | null>(null);
   const directPwInputRef = useRef<HTMLInputElement>(null);
+
+  useBackHandler(
+    showDirectUnlockModal,
+    () => {
+      if (!directUnlockBusy) setShowDirectUnlockModal(false);
+      return true;
+    },
+    BackPriority.NESTED_MODAL,
+  );
 
   useEffect(() => {
     if (showDirectUnlockModal) {

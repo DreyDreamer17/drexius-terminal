@@ -4,6 +4,8 @@ import type { ActiveTunnelInfo, Host, TunnelConfig } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { CustomSelect } from './CustomSelect';
 import { cn } from '../utils/cn';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
@@ -26,6 +28,8 @@ export function PortForwardingPanel({ hosts, tunnels, onSave, onDelete, onClose,
   const [activeList, setActiveList] = useState<ActiveTunnelInfo[]>([]);
   const [editing, setEditing] = useState<TunnelConfig | null>(null);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+
+  useBackHandler(editing !== null, () => setEditing(null), BackPriority.PANEL_SUBVIEW);
 
   const hostMap = useMemo(() => new Map(hosts.map((h) => [h.id, h])), [hosts]);
 

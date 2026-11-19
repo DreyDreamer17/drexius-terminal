@@ -74,6 +74,8 @@ import {
 } from '../lib/terminalRenderer';
 import { ClipboardModal } from './ClipboardModal';
 import { CommandSearchModal } from './CommandSearchModal';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import {
   formatOsc11BackgroundResponse,
   getTerminalWallpaperStyles,
@@ -1684,6 +1686,16 @@ export const TerminalPane = memo(function TerminalPane({
   const [touchMenu, setTouchMenu] = useState<{ x: number; y: number } | null>(null);
   const [termInstance, setTermInstance] = useState<Terminal | null>(null);
   const [connectMenu, setConnectMenu] = useState(false);
+
+  useBackHandler(active && connectMenu, () => setConnectMenu(false), BackPriority.POPOVER);
+  useBackHandler(active && contextMenu !== null, () => setContextMenu(null), BackPriority.POPOVER);
+  useBackHandler(
+    active && showSearch && (!mobile || drawerInset <= 0),
+    () => {
+      setShowSearch(false);
+    },
+    BackPriority.SUBVIEW,
+  );
   // Pinch-to-zoom. While the fingers move the terminal is only *transformed* (a composited CSS
   // scale anchored bottom-left, so the prompt stays put and nothing reflows mid-gesture); on
   // release the preview eases onto the nearest whole font size, which is then committed and the
@@ -3532,6 +3544,7 @@ export const TerminalPane = memo(function TerminalPane({
               catch { toast('Clipboard access denied — use your keyboard’s Paste action'); }
             }}
             onClips={() => { setTouchMenu(null); setShowClipboard(true); }}
+            onDismiss={() => setTouchMenu(null)}
           />
         )}
         {zoomHud && (

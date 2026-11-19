@@ -32,6 +32,8 @@ import {
   type DrexiusTheme,
 } from '../../lib/themes';
 import { cn } from '../../utils/cn';
+import { BackPriority } from '../../lib/backNavigation';
+import { useBackHandler } from '../../hooks/useBackHandler';
 import { CustomSelect } from '../CustomSelect';
 import { ToggleSwitch } from '../ToggleSwitch';
 
@@ -132,6 +134,16 @@ export function AppearanceSettingsTab({
   const [showImportModal, setShowImportModal] = useState(false);
   const [importText, setImportText] = useState('');
   const [editingThemeId, setEditingThemeId] = useState<string | null>(null);
+
+  useBackHandler(showThemeCreator, () => setShowThemeCreator(false), BackPriority.NESTED_MODAL);
+  useBackHandler(
+    showImportModal,
+    () => {
+      setShowImportModal(false);
+      setImportText('');
+    },
+    BackPriority.NESTED_MODAL,
+  );
 
   // Form fields for Custom Theme Creator
   const [creatorName, setCreatorName] = useState('');

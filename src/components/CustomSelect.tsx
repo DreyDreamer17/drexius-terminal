@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import type { DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { cn } from '../utils/cn';
 
 export interface SelectOption<T = string | number> {
@@ -35,6 +37,8 @@ export function CustomSelect<T extends string | number>({
   const [isDropUp, setIsDropUp] = useState(dropUp);
   const [maxHeightStyle, setMaxHeightStyle] = useState<number>(220);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useBackHandler(open, () => setOpen(false), BackPriority.DROPDOWN);
 
   useEffect(() => {
     if (!open) return;

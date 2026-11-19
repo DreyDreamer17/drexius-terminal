@@ -13,6 +13,8 @@ import {
 import type { ClipboardItem } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { confirmDialog } from './ConfirmDialog';
 
 interface Props {
@@ -33,6 +35,7 @@ const timeAgo = (ts: number): string => {
 };
 
 export function ClipboardModal({ onClose, onPaste, toast, theme }: Props) {
+  useBackHandler(true, onClose, BackPriority.MODAL);
   const activeTheme = theme || THEMES.find((t) => t.id === (localStorage.getItem('drx.theme') ?? 'drexius')) || THEMES[0];
   const accentColor = activeTheme.accent;
   const bgColor = activeTheme.xterm.background || '#0e131d';

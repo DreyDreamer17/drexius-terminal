@@ -1,8 +1,14 @@
 import { useMobile, useMobileViewport } from './hooks/useMobile';
+import { useBackHandler } from './hooks/useBackHandler';
+import {
+  BackPriority,
+  pushMobileRouteHistory,
+  resolveMobileBackTarget,
+} from './lib/backNavigation';
 import { MobileNavigation, type MobilePage } from './components/MobileNavigation';
 import { clampTerminalFontSize } from './lib/mobileTerminal';
 import { WorkspaceAccessContext } from './components/MobileSheet';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import {
   ShieldCheck,
   Activity,
@@ -145,7 +151,22 @@ export default function App() {
       activePaneId: paneObj.id,
     };
   }, [popoutParams]);
-  const [mobilePage, setMobilePage] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
+  const [mobilePage, setMobilePageRaw] = useState<MobilePage>(() => persistedWorkspace?.mobilePage ?? 'terminals');
+  const mobilePageRef = useRef<MobilePage>(mobilePage);
+  mobilePageRef.current = mobilePage;
+  const [mobilePageHistory, setMobilePageHistory] = useState<MobilePage[]>([]);
+  const setMobilePage = useCallback(
+    (next: SetStateAction<MobilePage>, opts?: { recordHistory?: boolean }) => {
+      const prev = mobilePageRef.current;
+      const resolved = typeof next === 'function' ? next(prev) : next;
+      if (resolved !== prev && opts?.recordHistory !== false) {
+        setMobilePageHistory((hist) => pushMobileRouteHistory(hist, prev, resolved));
+      }
+      mobilePageRef.current = resolved;
+      setMobilePageRaw(resolved);
+    },
+    []
+  );
   // Phone settings pickers (auto-lock, theme, font, quick unlock, direct launch, recovery key, storage permissions)
   const [settingsPicker, setSettingsPicker] = useState<MobileSettingsPickerKind | null>(null);
   const [deviceLockEnabled, setDeviceLockEnabled] = useState(() => bridge.osKeychainEnabled());
@@ -2133,6 +2154,7 @@ export default function App() {
     setTabs([]);
     setPoppedOutPanes([]);
     setActiveTabId(null);
+    setMobilePageHistory([]);
     await bridge.lock();
     setUnlocked(false);
   };
@@ -2193,13 +2215,13 @@ export default function App() {
   const connected = live.filter((p) => p.status === 'connected').length;
   const activeLive = activePaneId ? registry.get(activePaneId) : undefined;
 
-  const navigateMobile = (page: MobilePage) => {
+  const navigateMobile = (page: MobilePage, opts?: { recordHistory?: boolean }) => {
     if (page === 'settings') {
       setShowSettings(true);
       return;
     }
     setReturnToSettingsTab(null);
-    setMobilePage(page);
+    setMobilePage(page, opts);
     if (page === 'hosts') {
       setHostFabsVisible(true);
     }
@@ -2222,6 +2244,45 @@ export default function App() {
   const toolDrawer = terminalScreen && terminalDrawer && terminalDrawer !== 'assistant' ? terminalDrawer : null;
   const openDrawer = aiDrawerOpen || toolDrawer ? drawer : null;
   closeTerminalDrawerRef.current = openDrawer ? () => { openDrawer.requestClose(); return true; } : null;
+
+  // Android system Back gesture / hardware Back integration for App-owned popovers, drawers, panels & tabs.
+  const workspaceInteractive = unlocked && !showSplash;
+  const hasOverlayPanel = panel !== null && !(mobile && mobilePage === 'hosts' && panel === 'hosts');
+  const canNavigateMobileBack =
+    mobile && (mobilePageHistory.length > 0 || terminalScreen || mobilePage === 'settings');
+
+  useBackHandler(workspaceInteractive && showPopoutMenu, () => setShowPopoutMenu(false), BackPriority.POPOVER);
+  useBackHandler(workspaceInteractive && showThemes, () => setShowThemes(false), BackPriority.POPOVER);
+  useBackHandler(workspaceInteractive && showAutoLockMenu, () => setShowAutoLockMenu(false), BackPriority.POPOVER);
+  useBackHandler(
+    workspaceInteractive && mobile && openDrawer !== null && !openDrawer.closing,
+    () => {
+      openDrawer?.requestClose();
+    },
+    BackPriority.PANEL_OR_DRAWER,
+  );
+  useBackHandler(
+    workspaceInteractive && hasOverlayPanel,
+    () => {
+      closePanel();
+    },
+    BackPriority.PANEL_OR_DRAWER,
+  );
+  useBackHandler(
+    workspaceInteractive && canNavigateMobileBack,
+    () => {
+      const { target, nextHistory } = resolveMobileBackTarget({
+        currentPage: mobilePageRef.current,
+        history: mobilePageHistory,
+        terminalScreen,
+      });
+      if (!target) return false;
+      setMobilePageHistory(nextHistory);
+      navigateMobile(target, { recordHistory: false });
+      return true;
+    },
+    BackPriority.NAVIGATION,
+  );
   // The drawers only exist on the terminal screen; drop the state if it goes away underneath them
   // (last session closed, viewport grew past the mobile breakpoint).
   useEffect(() => { if (terminalDrawer && !terminalScreen) setTerminalDrawer(null); }, [terminalDrawer, terminalScreen]);
@@ -2685,7 +2746,10 @@ export default function App() {
                           toast={toast}
                           mobileBar={!isPopoutWindow && mobile ? {
                             sessionCount: terminalSessionCount,
-                            onBack: () => navigateMobile('hosts'),
+                            onBack: () => {
+                              setMobilePageHistory((hist) => hist.filter((p) => p !== 'hosts'));
+                              navigateMobile('hosts', { recordHistory: false });
+                            },
                             onOpenSessions: () => setSessionSheet(true),
                             onConnectHost: () => navigateMobile('hosts'),
                             onLocalTerminal: openLocalTerminal,

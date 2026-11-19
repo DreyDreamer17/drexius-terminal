@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { confirmDialog } from './ConfirmDialog';
 
 export interface EditorFile {
@@ -22,6 +24,7 @@ export interface EditorFile {
 }
 
 interface SftpCodeEditorProps {
+  active?: boolean;
   file: EditorFile;
   hostLabel?: string;
   onSave: (newContent: string) => Promise<void>;
@@ -187,6 +190,7 @@ function highlightCode(code: string, langId: string): string {
 }
 
 export function SftpCodeEditor({
+  active = true,
   file,
   hostLabel,
   onSave,
@@ -286,6 +290,16 @@ export function SftpCodeEditor({
     }
     onClose();
   }, [isDirty, file.name, onClose]);
+
+  useBackHandler(active && showSearch, () => setShowSearch(false), BackPriority.NESTED_MODAL);
+  useBackHandler(
+    active,
+    () => {
+      void handleClose();
+      return true;
+    },
+    BackPriority.MODAL,
+  );
 
   // Handle Tab key insertion (4 spaces)
   const handleKeyDown = useCallback(

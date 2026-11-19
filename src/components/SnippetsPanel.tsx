@@ -16,6 +16,8 @@ import type { Snippet } from '../lib/types';
 import { registry } from '../lib/sessions';
 import { classifyRisk } from '../lib/ollama';
 import { SNIPPET_STARTER_TEMPLATES } from '../lib/deployPresets';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { cn } from '../utils/cn';
 
 interface Props {
@@ -73,6 +75,10 @@ export function SnippetsPanel({
     vars: Record<string, string>;
     broadcast: boolean;
   } | null>(null);
+
+  useBackHandler(running !== null, () => setRunning(null), BackPriority.PANEL_SUBVIEW);
+  useBackHandler(showTemplates, () => setShowTemplates(false), BackPriority.PANEL_SUBVIEW);
+  useBackHandler(editing !== null, () => setEditing(null), BackPriority.PANEL_SUBVIEW);
 
   const groups = useMemo(() => {
     const m = new Map<string, Snippet[]>();

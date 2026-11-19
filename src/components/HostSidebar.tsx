@@ -1,4 +1,6 @@
 import { useMobile } from '../hooks/useMobile';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { BackPriority } from '../lib/backNavigation';
 import { MobileSheet } from './MobileSheet';
 import { useMemo, useRef, useState } from 'react';
 import {
@@ -142,6 +144,8 @@ export function HostSidebar({
   const [q, setQ] = useState('');
   const [showMenu, setShowMenu] = useState(false);
   const lastScrollTop = useRef(0);
+
+  useBackHandler(showMenu, () => setShowMenu(false), BackPriority.POPOVER);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (!mobile || !onScrollFabVisibilityChange) return;

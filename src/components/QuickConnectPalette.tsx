@@ -1,6 +1,8 @@
 import { FolderInput, Plus, Terminal as TerminalIcon, Zap } from 'lucide-react';
 import type { DrexiusTheme } from '../lib/themes';
 import type { Host } from '../lib/types';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { safeUid } from '../utils/uuid';
 
 const uid = safeUid;
@@ -34,6 +36,7 @@ export function QuickConnectPalette({
   onOpenHostModal,
   onOpenSshConfig,
 }: QuickConnectPaletteProps) {
+  useBackHandler(true, onClose, BackPriority.MODAL);
   return (
     <div className="fixed inset-0 z-50 select-none" onClick={onClose}>
       <div

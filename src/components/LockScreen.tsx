@@ -21,6 +21,8 @@ import {
 } from 'lucide-react';
 import { bridge, isTauri, isBridgeError } from '../lib/bridge';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { useMobile } from '../hooks/useMobile';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
@@ -139,6 +141,23 @@ export function LockScreen({
   const [recoveryErr, setRecoveryErr] = useState<string | null>(null);
   const [resetConfirmText, setResetConfirmText] = useState('');
   const [resetBusy, setResetBusy] = useState(false);
+
+  useBackHandler(
+    showRecoveryModal,
+    () => {
+      setShowRecoveryModal(false);
+      setRecoveryErr(null);
+    },
+    BackPriority.MODAL,
+  );
+  useBackHandler(
+    createdRecoveryKey !== null,
+    () => {
+      setCreatedRecoveryKey(null);
+      finishUnlock();
+    },
+    BackPriority.MODAL,
+  );
 
   useEffect(() => {
     (async () => {

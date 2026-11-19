@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import { ClipboardList } from 'lucide-react';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { useConsumeTouchMove } from './BottomDrawer';
 
 /** A buffer cell: column + absolute buffer row (scrollback included). */
@@ -17,6 +19,7 @@ interface Props {
   onCopy: (text: string) => void;
   onPaste: () => void;
   onClips: () => void;
+  onDismiss?: () => void;
 }
 
 const HANDLE_FINGER_OFFSET = 26; // the knob hangs under the line, so the finger reads a line higher
@@ -29,7 +32,7 @@ const EDGE = 14;                 // autoscroll band at the top/bottom of the scr
  * scrolling, resizing and handle drags. Everything is positioned from xterm's buffer
  * coordinates, so it is correct for wrapped lines and scrollback.
  */
-export function TerminalSelection({ term, host, accent, background, menuAt, onCopy, onPaste, onClips }: Props) {
+export function TerminalSelection({ term, host, accent, background, menuAt, onCopy, onPaste, onClips, onDismiss }: Props) {
   const [, bump] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [bubbleSize, setBubbleSize] = useState({ w: 0, h: 0 });
@@ -163,6 +166,15 @@ export function TerminalSelection({ term, host, accent, background, menuAt, onCo
     const w = el.offsetWidth, h = el.offsetHeight;
     if (w !== bubbleSize.w || h !== bubbleSize.h) setBubbleSize({ w, h });
   });
+
+  useBackHandler(
+    Boolean(m && (sel || hasMenu)),
+    () => {
+      term?.clearSelection();
+      onDismiss?.();
+    },
+    BackPriority.SUBVIEW,
+  );
 
   if (!m || (!sel && !hasMenu)) return null;
 

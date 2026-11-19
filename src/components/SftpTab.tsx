@@ -1,4 +1,6 @@
 import { useMobile } from '../hooks/useMobile';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { BackPriority } from '../lib/backNavigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeftRight, Laptop } from 'lucide-react';
 import { bridge, isBridgeError } from '../lib/bridge';
@@ -596,6 +598,59 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       loadPane(side, next, false);
     }
   };
+
+  // System back gesture / Back button integration (active SFTP tab only)
+  const activeSide: 'left' | 'right' = mobile ? mobileSide : focusedSide;
+  const activeSearchOpen = activeSide === 'left' ? showLeftSearch : showRightSearch;
+  const activeSelectedCount = activeSide === 'left' ? leftSelected.size : rightSelected.size;
+  const activeCanGoBackFolder = activeSide === 'left' ? leftHistoryIdx > 0 : rightHistoryIdx > 0;
+
+  useBackHandler(
+    active && deleteConfirm !== null,
+    () => {
+      if (deleteConfirm && !deleteConfirm.deleting) setDeleteConfirm(null);
+      return true;
+    },
+    BackPriority.NESTED_MODAL,
+  );
+  useBackHandler(active && promptDialog !== null, () => setPromptDialog(null), BackPriority.NESTED_MODAL);
+  useBackHandler(active && hostPickerSide !== null, () => setHostPickerSide(null), BackPriority.NESTED_MODAL);
+  useBackHandler(active && permissions !== null && !mobile, () => setPermissions(null), BackPriority.NESTED_MODAL);
+  useBackHandler(active && contextMenu !== null, () => setContextMenu(null), BackPriority.POPOVER);
+  useBackHandler(
+    active && (showLeftActions || showRightActions),
+    () => {
+      setShowLeftActions(false);
+      setShowRightActions(false);
+    },
+    BackPriority.POPOVER,
+  );
+  useBackHandler(
+    active && activeSearchOpen,
+    () => {
+      if (activeSide === 'left') {
+        setShowLeftSearch(false);
+        setLeftFilter('');
+      } else {
+        setShowRightSearch(false);
+        setRightFilter('');
+      }
+    },
+    BackPriority.POPOVER,
+  );
+  useBackHandler(
+    active && activeSelectedCount > 0,
+    () => {
+      if (activeSide === 'left') setLeftSelected(new Set());
+      else setRightSelected(new Set());
+    },
+    BackPriority.POPOVER,
+  );
+  useBackHandler(
+    active && activeCanGoBackFolder,
+    () => navigateBack(activeSide),
+    BackPriority.SUBVIEW,
+  );
 
   // Breadcrumbs parsing (treats `/storage/emulated/0` as root on Android Local)
   const leftCrumbs = useMemo(() => buildSftpCrumbs(leftPath, leftHostId), [leftPath, leftHostId]);
@@ -1450,6 +1505,7 @@ export function SftpTab({ tab, hosts, onUpdateTab, toast, theme, active = true }
       {/* ── Text File Viewer / Editor (Full Screen Overlay) ── */}
       {editingFile && (
         <SftpCodeEditor
+          active={active}
           file={editingFile}
           hostLabel={
             editingFile.isRemote

@@ -17,6 +17,8 @@ import { safeUid } from '../utils/uuid';
 import { cn } from '../utils/cn';
 import { confirmDialog } from './ConfirmDialog';
 import { useMobile } from '../hooks/useMobile';
+import { useBackHandler } from '../hooks/useBackHandler';
+import { BackPriority } from '../lib/backNavigation';
 import { MobileSheet, ResponsiveOverlay, SheetHandle } from './MobileSheet';
 
 interface Props {
@@ -45,6 +47,8 @@ export function VaultMenu({
   const [open, setOpen] = useState(false);
   const mobile = useMobile();
   const [showCreateModal, setShowCreateModal] = useState(false);
+
+  useBackHandler(open && !mobile, () => setOpen(false), BackPriority.POPOVER);
   const [newVaultName, setNewVaultName] = useState('');
   const [newVaultColor, setNewVaultColor] = useState('#10b981');
   const [newVaultDesc, setNewVaultDesc] = useState('');

@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test:mobile": "node --experimental-strip-types --test tests/mobile-terminal.test.mjs",
+    "test:mobile": "node --experimental-strip-types --test tests/mobile-terminal.test.mjs tests/back-navigation.test.mjs",
     "test:split": "node --experimental-strip-types --test tests/split-tree.test.mjs tests/shortcuts.test.mjs",
     "test:split-ui": "node tests/split-layout.smoke.mjs",
     "test:mobile-ui": "node tests/mobile-ui.smoke.mjs",

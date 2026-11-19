@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Camera, X, RefreshCw, AlertCircle, Zap, ZapOff, CheckCircle2 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
+import { BackPriority } from '../lib/backNavigation';
 import type { DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
@@ -201,6 +202,7 @@ export function QrScannerModal({
   return (
     <ResponsiveOverlay
       label="QR Code Scanner"
+      backPriority={BackPriority.NESTED_MODAL}
       onClose={() => {
         stopTracks();
         onClose();

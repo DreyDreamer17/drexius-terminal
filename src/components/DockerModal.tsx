@@ -18,6 +18,8 @@ import {
 import type { DockerContainer, Host } from '../lib/types';
 import { bridge } from '../lib/bridge';
 import { ResponsiveOverlay, SheetHandle } from './MobileSheet';
+import { BackPriority } from '../lib/backNavigation';
+import { useBackHandler } from '../hooks/useBackHandler';
 import { THEMES, type DrexiusTheme } from '../lib/themes';
 import { cn } from '../utils/cn';
 
@@ -76,6 +78,8 @@ export function DockerModal({
     loading: boolean;
     tail: number;
   } | null>(null);
+
+  useBackHandler(viewingLogs !== null, () => setViewingLogs(null), BackPriority.NESTED_MODAL);
 
   const selectedHost = useMemo(
     () => selectableHosts.find((h) => h.id === selectedHostId) ?? LOCAL_HOST_OPTION,
