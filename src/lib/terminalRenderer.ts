@@ -179,12 +179,119 @@ export interface WebglBlendContextLike {
   ) => void;
 }
 
+export interface Canvas2DSourceLike {
+  width: number;
+  height: number;
+  getContext: (contextId: string) => {
+    getImageData?: (sx: number, sy: number, sw: number, sh: number) => {
+      data: Uint8ClampedArray;
+    };
+  } | null;
+}
+
+export interface WebglTexImage2DContextLike {
+  RGBA: number;
+  UNSIGNED_BYTE: number;
+  texImage2D?: (...args: unknown[]) => void;
+}
+
 export interface CanvasGetContextHost {
   getContext?: (contextId: string, ...args: unknown[]) => unknown;
 }
 
 const patchedWebglContexts = new WeakSet<object>();
+const patchedTexImageContexts = new WeakSet<object>();
 const patchedRectangleTargets = new WeakSet<object>();
+
+/**
+ * Returns true on Linux WebKitGTK (Tauri desktop on Linux), excluding Chromium,
+ * Android WebView, and macOS Safari.
+ */
+export function isLinuxWebKitGtk(
+  userAgent: string | undefined = typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+): boolean {
+  if (!userAgent) return false;
+  return (
+    /Linux/i.test(userAgent) &&
+    /AppleWebKit/i.test(userAgent) &&
+    !/Chrome|Chromium|Android|Edg/i.test(userAgent)
+  );
+}
+
+function isCanvas2DSource(value: unknown): value is Canvas2DSourceLike {
+  if (!value || typeof value !== 'object') return false;
+  if (typeof HTMLCanvasElement !== 'undefined' && !(value instanceof HTMLCanvasElement)) {
+    return false;
+  }
+  const candidate = value as Partial<Canvas2DSourceLike>;
+  return (
+    typeof candidate.getContext === 'function' &&
+    typeof candidate.width === 'number' &&
+    typeof candidate.height === 'number' &&
+    candidate.width > 0 &&
+    candidate.height > 0
+  );
+}
+
+/**
+ * On Linux WebKitGTK (2.50–2.54+ Skia GPU + DMA-BUF), passing an off-DOM 2D
+ * `<canvas>` (like `@xterm/addon-webgl`'s 512x512 glyph texture atlas) directly
+ * to `gl.texImage2D(...)` can silently upload a transparent/empty DMA-BUF texture
+ * while untextured geometry (like the cursor) still renders normally.
+ *
+ * Reading straight RGBA pixels via `getImageData` and passing a zero-copy
+ * `Uint8Array` view to the 9-argument `texImage2D` overload bypasses WebKitGTK's
+ * broken GPU Canvas2D-to-WebGL2 DMA-BUF import while keeping full hardware
+ * acceleration enabled (and only runs when a newly rasterized glyph bumps an
+ * atlas page version — zero per-frame cost).
+ */
+export function wrapWebglContextCanvasTexImage2D<T extends WebglTexImage2DContextLike>(
+  gl: T | null | undefined,
+): T | null | undefined {
+  if (!gl || typeof gl.texImage2D !== 'function') {
+    return gl;
+  }
+  if (patchedTexImageContexts.has(gl)) {
+    return gl;
+  }
+  const origTexImage2D = gl.texImage2D.bind(gl);
+  const { RGBA, UNSIGNED_BYTE } = gl;
+
+  gl.texImage2D = ((...args: unknown[]) => {
+    try {
+      // 6-arg overload: texImage2D(target, level, internalformat, format, type, HTMLCanvasElement)
+      if (args.length === 6 && args[3] === RGBA && args[4] === UNSIGNED_BYTE && isCanvas2DSource(args[5])) {
+        const canvas = args[5];
+        const ctx2d = canvas.getContext('2d');
+        const imgData = ctx2d?.getImageData?.(0, 0, canvas.width, canvas.height);
+        if (imgData?.data) {
+          const pixels = new Uint8Array(imgData.data.buffer, imgData.data.byteOffset, imgData.data.byteLength);
+          origTexImage2D(args[0], args[1], args[2], canvas.width, canvas.height, 0, args[3], args[4], pixels);
+          return;
+        }
+      }
+      // 9-arg overload: texImage2D(target, level, internalformat, width, height, border, format, type, HTMLCanvasElement)
+      if (args.length === 9 && args[6] === RGBA && args[7] === UNSIGNED_BYTE && isCanvas2DSource(args[8])) {
+        const canvas = args[8];
+        const w = typeof args[3] === 'number' && args[3] > 0 ? args[3] : canvas.width;
+        const h = typeof args[4] === 'number' && args[4] > 0 ? args[4] : canvas.height;
+        const ctx2d = canvas.getContext('2d');
+        const imgData = ctx2d?.getImageData?.(0, 0, w, h);
+        if (imgData?.data) {
+          const pixels = new Uint8Array(imgData.data.buffer, imgData.data.byteOffset, imgData.data.byteLength);
+          origTexImage2D(args[0], args[1], args[2], w, h, args[5], args[6], args[7], pixels);
+          return;
+        }
+      }
+    } catch {
+      // Fall through to native texImage2D on unreadable/tainted canvases.
+    }
+    origTexImage2D(...args);
+  }) as T['texImage2D'];
+
+  patchedTexImageContexts.add(gl);
+  return gl;
+}
 
 const XTERM_BG_CM_MASK = 0x3000000;
 const XTERM_RENDER_MODEL_CELL_STRIDE = 4;
@@ -306,8 +413,10 @@ export function wrapWebglContextBlendFunc<T extends WebglBlendContextLike>(
 
 /**
  * Loads `@xterm/addon-webgl` while synchronously intercepting `canvas.getContext('webgl2')`
- * so the renderer's WebGL2 context gets `wrapWebglContextBlendFunc` without mutating
- * global prototypes beyond the synchronous `loadAddon` call.
+ * so the renderer's WebGL2 context gets `wrapWebglContextBlendFunc` (and on Linux
+ * WebKitGTK, `wrapWebglContextCanvasTexImage2D` to bypass Skia GPU DMA-BUF blank
+ * glyph-atlas uploads) without mutating global prototypes beyond the synchronous
+ * `loadAddon` call.
  */
 export function loadWebglAddonWithBlendFix<
   TTerm extends { loadAddon: (addon: TAddon) => void },
@@ -319,6 +428,7 @@ export function loadWebglAddonWithBlendFix<
     typeof HTMLCanvasElement !== 'undefined'
       ? (HTMLCanvasElement.prototype as unknown as CanvasGetContextHost)
       : undefined,
+  useCanvasImageDataUpload: boolean = isLinuxWebKitGtk(),
 ): void {
   const origGetContext = canvasPrototype?.getContext;
   if (!canvasPrototype || typeof origGetContext !== 'function') {
@@ -333,6 +443,9 @@ export function loadWebglAddonWithBlendFix<
     const ctx = origGetContext.call(this, contextId, ...args);
     if (contextId === 'webgl2') {
       wrapWebglContextBlendFunc(ctx as WebglBlendContextLike | null);
+      if (useCanvasImageDataUpload) {
+        wrapWebglContextCanvasTexImage2D(ctx as WebglTexImage2DContextLike | null);
+      }
     }
     return ctx;
   };

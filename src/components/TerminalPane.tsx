@@ -268,6 +268,8 @@ interface Props {
   onCwdChange?: (cwd: string) => void;
   lineHeight?: number;
   active: boolean;
+  /** True while the fullscreen LaunchSplash overlay covers the window; defers WebGL2 init until visible. */
+  splashVisible?: boolean;
   showHeader: boolean;
   isSplit?: boolean;
   isMaximized?: boolean;
@@ -343,6 +345,7 @@ export const TerminalPane = memo(function TerminalPane({
   onFontSizeChange,
   lineHeight = 1.0,
   active,
+  splashVisible = false,
   showHeader,
   isSplit = false,
   isMaximized = false,
@@ -385,6 +388,8 @@ export const TerminalPane = memo(function TerminalPane({
   const resizeScheduled = useRef(false);
   const activeRef = useRef(active);
   activeRef.current = active;
+  const splashVisibleRef = useRef(splashVisible);
+  splashVisibleRef.current = splashVisible;
   const themeRef = useRef(theme);
   themeRef.current = theme;
   const isTranslucentRef = useRef(!!terminalWallpaper || (terminalOpacity !== undefined && terminalOpacity < 1));
@@ -1304,13 +1309,17 @@ export const TerminalPane = memo(function TerminalPane({
 
       const syncConnectedPane = (resizeFn?: () => void) => {
         needsPostConnectSyncRef.current = true;
+        if (splashVisibleRef.current) {
+          resizeFn?.();
+          return;
+        }
         refreshTerminalRef.current({ forceResize: true, focusIfActive: true });
         resizeFn?.();
         scheduleRenderSyncRef.current({ forceResize: true, focusIfActive: true, settledMs: 140 });
       };
 
       const handlePostConnectOutput = () => {
-        if (!needsPostConnectSyncRef.current) return;
+        if (!needsPostConnectSyncRef.current || splashVisibleRef.current) return;
         needsPostConnectSyncRef.current = false;
         scheduleRenderSyncRef.current({ forceResize: true, settledMs: 120 });
       };
@@ -1918,7 +1927,12 @@ export const TerminalPane = memo(function TerminalPane({
     // built-in DOM renderer: disposing the addon restores it automatically.
     // Note: @xterm/addon-canvas only supports xterm 5 and crashes on dispose under
     // xterm 6, so it must not be used as a fallback here.
-    attachWebglAddon(term);
+    // When LaunchSplash is currently covering the window, keep xterm on its lightweight
+    // DOM renderer until splashVisible flips false so the initial WebGL2 + DMA-BUF
+    // surface is created on an un-occluded, layout-settled pane.
+    if (!splashVisibleRef.current) {
+      attachWebglAddon(term);
+    }
 
     // When wallpaper translucency uses `#00000000` for canvas compositing, reply to OSC 11;?
     // queries with the theme's true RGB background instead of `#000000` so CLI tools don't assume
@@ -2229,9 +2243,26 @@ export const TerminalPane = memo(function TerminalPane({
       }
     });
 
+    const handleFontsLoaded = () => {
+      if (splashVisibleRef.current) return;
+      try {
+        const { synced } = refreshTerminalRef.current({ clearAtlas: true, forceResize: true });
+        if (synced) {
+          for (const live of registry.all()) {
+            if (live.paneId !== pane.id) live.refresh?.();
+          }
+          if (term.cols && term.rows) {
+            scheduleResize(term.cols, term.rows);
+          }
+        }
+      } catch {
+        /* hidden */
+      }
+    };
     if (document.fonts?.ready) {
       const fontsWereLoading = document.fonts.status !== 'loaded';
       document.fonts.ready.then(() => {
+        if (splashVisibleRef.current) return;
         try {
           const { synced } = refreshTerminalRef.current({ clearAtlas: fontsWereLoading, forceResize: true });
           if (synced && fontsWereLoading) {
@@ -2247,6 +2278,7 @@ export const TerminalPane = memo(function TerminalPane({
         }
       });
     }
+    document.fonts?.addEventListener?.('loadingdone', handleFontsLoaded);
 
     // Keep PTY dimensions in sync on any terminal resize event (coalesced)
     term.onResize(({ cols, rows }) => {
@@ -2775,6 +2807,7 @@ export const TerminalPane = memo(function TerminalPane({
       }
       if (wheelHudTimer.current !== null) window.clearTimeout(wheelHudTimer.current);
       document.removeEventListener('visibilitychange', handleVisibilityFit);
+      document.fonts?.removeEventListener?.('loadingdone', handleFontsLoaded);
       window.removeEventListener('pageshow', handleSurfaceRestore);
       window.removeEventListener('focus', handleWindowFocus);
       window.removeEventListener('keydown', handleAltSideTrack, true);
@@ -2861,16 +2894,34 @@ export const TerminalPane = memo(function TerminalPane({
         background: effectiveBg,
       };
 
-      // Ensure WebGL renderer is active for both solid and translucent wallpaper modes.
-      // WebglAddon with customGlyphs provides continuous, gapless box/block drawing
-      // without horizontal or vertical streak lines across TUIs.
-      if (!webglRef.current) {
-        attachWebglAddon(termRef.current);
+      // Ensure WebGL renderer is active for both solid and translucent wallpaper modes
+      // once the launch splash is no longer covering the surface.
+      if (!splashVisibleRef.current) {
+        if (!webglRef.current) {
+          attachWebglAddon(termRef.current);
+        }
+        scheduleRenderSync({ forceResize: true });
       }
-
-      scheduleRenderSync({ forceResize: true });
     }
   }, [theme, terminalOpacity, terminalWallpaper, attachWebglAddon, scheduleRenderSync]);
+
+  // Attach WebGL2 once LaunchSplash closes so the initial WebGL2 context and DMA-BUF
+  // surface initialize on a live, visible, layout-settled pane with loaded fonts.
+  useEffect(() => {
+    if (splashVisible || !termRef.current) return;
+    const newlyAttached = !webglRef.current;
+    if (newlyAttached) {
+      attachWebglAddon(termRef.current);
+    }
+    if (!hiddenRef.current) {
+      scheduleRenderSync({
+        clearAtlas: false,
+        forceResize: true,
+        focusIfActive: true,
+        settledMs: newlyAttached ? 140 : 80,
+      });
+    }
+  }, [splashVisible, attachWebglAddon, scheduleRenderSync]);
 
   useEffect(() => {
     try {

@@ -188,6 +188,15 @@ export default function App() {
   const [storageGranted, setStorageGranted] = useState<boolean | null>(null);
   const [requestingPerm, setRequestingPerm] = useState(false);
 
+  // Proactively warm up the default bundled monospace font during LaunchSplash so
+  // xterm's WebGL glyph atlas rasterizes real glyphs on its very first frame.
+  useEffect(() => {
+    if (typeof document !== 'undefined' && typeof document.fonts?.load === 'function') {
+      void document.fonts.load('400 14px "JetBrains Mono Variable"').catch(() => {});
+      void document.fonts.load('700 14px "JetBrains Mono Variable"').catch(() => {});
+    }
+  }, []);
+
   // Direct Launch auto-unlock on initial app startup
   useEffect(() => {
     if (directUnlockAttempted.current) return;
@@ -2713,6 +2722,7 @@ export default function App() {
                           rightClickPaste={uiPrefs.rightClickPaste}
                           optionAsMeta={uiPrefs.optionAsMeta}
                           active={t.id === activeTabId && t.activePaneId === p.id && unlocked && !showSplash && (!mobile || mobilePage === 'terminals')}
+                          splashVisible={showSplash}
                           mobileHidden={t.activePaneId !== p.id}
                           hidden={isPaneHidden}
                           showHeader={isSplit && !currentTabMaximized && !mobile}

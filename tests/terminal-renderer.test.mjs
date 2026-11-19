@@ -4,9 +4,11 @@ import {
   canAutoFocusTerminal,
   forceTerminalRenderSync,
   getTerminalMinimumContrastRatio,
+  isLinuxWebKitGtk,
   loadWebglAddonWithBlendFix,
   patchWebglRectangleBackgrounds,
   wrapWebglContextBlendFunc,
+  wrapWebglContextCanvasTexImage2D,
 } from '../src/lib/terminalRenderer.ts';
 
 function makeElement({
@@ -377,4 +379,118 @@ test('patchWebglRectangleBackgrounds strips CM_DEFAULT BgFlags without mutating 
   const rr2 = new FakeRectangleRenderer();
   rr2.updateBackgrounds({ cells });
   assert.deepEqual(rr2.seenBg, [0, 0, 0, 0x01000002, 0x13ff0000]);
+});
+
+test('isLinuxWebKitGtk matches Linux WebKitGTK and excludes Chromium, Android, and macOS Safari', () => {
+  assert.equal(
+    isLinuxWebKitGtk('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/60.5 Safari/605.1.15'),
+    true,
+  );
+  assert.equal(
+    isLinuxWebKitGtk('Mozilla/5.0 (X11; Ubuntu; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)'),
+    true,
+  );
+  assert.equal(
+    isLinuxWebKitGtk('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'),
+    false,
+  );
+  assert.equal(
+    isLinuxWebKitGtk('Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Mobile Safari/537.36'),
+    false,
+  );
+  assert.equal(
+    isLinuxWebKitGtk('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'),
+    false,
+  );
+  assert.equal(isLinuxWebKitGtk(''), false);
+});
+
+test('wrapWebglContextCanvasTexImage2D converts HTMLCanvasElement glyph atlas uploads to Uint8Array pixels', () => {
+  const texCalls = [];
+  const gl = {
+    RGBA: 6408,
+    UNSIGNED_BYTE: 5121,
+    TEXTURE_2D: 3553,
+    texImage2D(...args) {
+      texCalls.push(args);
+    },
+  };
+
+  wrapWebglContextCanvasTexImage2D(gl);
+  // Idempotent on same context
+  wrapWebglContextCanvasTexImage2D(gl);
+
+  const rawRgba = new Uint8ClampedArray([10, 20, 30, 255, 40, 50, 60, 128]);
+  const fakeCanvas = {
+    width: 2,
+    height: 1,
+    getContext(kind) {
+      if (kind !== '2d') return null;
+      return {
+        getImageData(x, y, w, h) {
+          assert.deepEqual([x, y, w, h], [0, 0, 2, 1]);
+          return { data: rawRgba };
+        },
+      };
+    },
+  };
+
+  // 6-argument HTMLCanvasElement overload (used by @xterm/addon-webgl) -> 9-arg Uint8Array upload
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fakeCanvas);
+  assert.equal(texCalls.length, 1);
+  assert.equal(texCalls[0].length, 9);
+  assert.deepEqual(texCalls[0].slice(0, 8), [gl.TEXTURE_2D, 0, gl.RGBA, 2, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE]);
+  assert.ok(texCalls[0][8] instanceof Uint8Array);
+  assert.deepEqual(Array.from(texCalls[0][8]), [10, 20, 30, 255, 40, 50, 60, 128]);
+
+  // 9-argument HTMLCanvasElement overload -> converted cleanly as well
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, fakeCanvas);
+  assert.equal(texCalls.length, 2);
+  assert.ok(texCalls[1][8] instanceof Uint8Array);
+
+  // Direct Uint8Array upload passes through untouched
+  const directPixels = new Uint8Array([255, 0, 0, 255]);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, directPixels);
+  assert.equal(texCalls.length, 3);
+  assert.equal(texCalls[2][8], directPixels);
+});
+
+test('loadWebglAddonWithBlendFix installs canvas texImage2D pixel upload fix when Linux WebKitGTK mode is enabled', () => {
+  const texCalls = [];
+  const fakeGl = {
+    SRC_ALPHA: 770,
+    ONE_MINUS_SRC_ALPHA: 771,
+    ONE: 1,
+    RGBA: 6408,
+    UNSIGNED_BYTE: 5121,
+    TEXTURE_2D: 3553,
+    blendFunc() {},
+    blendFuncSeparate() {},
+    texImage2D(...args) {
+      texCalls.push(args);
+    },
+  };
+  const proto = { getContext: (id) => (id === 'webgl2' ? fakeGl : null) };
+  const fakeCanvas = {
+    width: 1,
+    height: 1,
+    getContext: () => ({ getImageData: () => ({ data: new Uint8ClampedArray([1, 2, 3, 255]) }) }),
+  };
+
+  loadWebglAddonWithBlendFix(
+    {
+      loadAddon() {
+        const gl = proto.getContext('webgl2');
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, fakeCanvas);
+      },
+    },
+    {},
+    proto,
+    true,
+  );
+
+  assert.equal(texCalls.length, 1);
+  assert.equal(texCalls[0].length, 9);
+  assert.ok(texCalls[0][8] instanceof Uint8Array);
+  assert.deepEqual(Array.from(texCalls[0][8]), [1, 2, 3, 255]);
 });
